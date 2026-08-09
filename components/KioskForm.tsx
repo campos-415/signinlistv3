@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
-import { estimatePrice, isFullDayVisit } from "@/lib/pricing";
+import { estimatePrice } from "@/lib/pricing";
 import { prettyDateKey, todayKey } from "@/lib/dates";
+import { daysLeft, eligiblePackagesFor, packageBoughtOn } from "@/lib/clients";
+import { OpenVisit, loadPhoneContext, packageApplies, performSignIn } from "@/lib/signin";
 import {
   ADDONS,
   AddonKey,
@@ -14,11 +16,13 @@ import {
   BOARDING_ADDONS,
   Client,
   Package,
+  PICKUP_WINDOWS,
   SERVICE_TYPES,
   ServiceType,
   SignAction,
 } from "@/types";
 import lombardlogo from "@/public/lombardlogo.avif";
+import { useSettings } from "@/components/SettingsProvider";
 import Image from "next/image";
 
 interface ConfirmedDog {
@@ -27,14 +31,9 @@ interface ConfirmedDog {
   priceDue: number | null;
 }
 
-interface OpenVisit {
-  serviceType: ServiceType;
-  dropOffTime: Date;
-  addons: string[];
-  bathSize: BathSize | null;
-}
-
 export default function KioskForm() {
+  const { settings } = useSettings();
+  const business = settings.business;
   const [action, setAction] = useState<SignAction>("drop_off");
   const [phone, setPhone] = useState("");
   const [dropOffBy, setDropOffBy] = useState("");
@@ -43,6 +42,9 @@ export default function KioskForm() {
   // family dropping off two dogs together might only want a walk for one
   // of them. Keyed by client id.
   const [addonsByDog, setAddonsByDog] = useState<Record<string, AddonKey[]>>({});
+  // Which pick-up window the parent picked for a dog getting a bath, keyed
+  // by client id. Only meaningful while "bath" is among that dog's add-ons.
+  const [pickupWindowByDog, setPickupWindowByDog] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [confirmed, setConfirmed] = useState<ConfirmedDog[] | null>(null);
   const [error, setError] = useState("");
@@ -83,17 +85,31 @@ export default function KioskForm() {
   // never overwrites a change the parent made afterwards.
   const seededFromBoarding = useRef<Set<string>>(new Set());
 
+  // client_id -> bath size, seeded from a boarding reservation that already
+  // booked one. A walk-in bath has no size here — staff assign it (and its
+  // price) on /records.
+  const [bathSizeByDog, setBathSizeByDog] = useState<Record<string, BathSize>>({});
+
   const selectedDogs: Client[] = matches.filter((m) => m.id && selectedIds.includes(m.id));
 
-  function packageFor(dogName: string): Package | null {
-    const byDog = packages
-      .filter((p) => p.dog_name && p.dog_name.trim().toLowerCase() === dogName.trim().toLowerCase())
-      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime());
-    if (byDog.length) return byDog[0];
-    const shared = packages
-      .filter((p) => !p.dog_name)
-      .sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime());
-    return shared[0] ?? null;
+  // Every package on this number that could cover the dog. A visit only
+  // ever consumes a day from one of them.
+  function eligiblePackages(dog: Client): Package[] {
+    return eligiblePackagesFor(packages, phone.trim(), dog.dog_name);
+  }
+
+  // The package this dog's visit draws from. The kiosk always takes the
+  // default — choosing between a household's packages is a staff call, made
+  // on the front-desk panel (components/StaffCheckIn.tsx).
+  function packageFor(dog: Client): Package | null {
+    return eligiblePackages(dog)[0] ?? null;
+  }
+
+  // A package bought today is money owed on today's visit. One bought
+  // earlier isn't — its days are already paid for.
+  function soldToday(dog: Client): { days: number; price: number } | null {
+    const sold = packageBoughtOn(packages, phone.trim(), dog.dog_name, todayKey());
+    return sold ? { days: sold.total_days, price: sold.price ?? 0 } : null;
   }
 
   // A boarding reservation for this dog that covers today — staff add
@@ -149,13 +165,10 @@ export default function KioskForm() {
     return service;
   }
 
-  // A package only ever covers a FULL daycare day. Whether it applies
-  // depends on how long the visit actually is, so this is evaluated
-  // against a given "now" (live for the preview, submit-time for real).
+  // Whether a package covers this dog's visit right now — full daycare days
+  // only, so it depends on how long the dog has actually been here.
   function packageAppliesNow(dog: Client, open: OpenVisit | undefined, pkg: Package | null, now: Date): boolean {
-    if (!pkg || !open) return false;
-    if (effectiveService(dog) !== "daycare") return false;
-    return isFullDayVisit(open.dropOffTime, now);
+    return packageApplies(effectiveService(dog), open, pkg, now);
   }
 
   useEffect(() => {
@@ -175,73 +188,13 @@ export default function KioskForm() {
       setClientLoading(true);
       setClientChecked(false);
       try {
-        const supabase = getSupabase();
-        const [pkgRes, clientRes, historyRes, boardingRes] = await Promise.all([
-          supabase.from("packages").select("*").eq("phone", phone.trim()),
-          supabase.from("clients").select("*").eq("phone", phone.trim()).order("created_at", { ascending: true }),
-          // Not date-limited: a boarding stay's drop-off can be several
-          // days before its pick-up, so "today only" would miss it.
-          supabase
-            .from("signins")
-            .select("client_id, action, service_type, addons, bath_size, created_at")
-            .eq("phone", phone.trim())
-            .order("created_at", { ascending: true })
-            .limit(300),
-          supabase.from("boardings").select("*").eq("phone", phone.trim()),
-        ]);
-        if (pkgRes.error) throw pkgRes.error;
-        if (clientRes.error) throw clientRes.error;
-        if (historyRes.error) throw historyRes.error;
-        if (boardingRes.error) throw boardingRes.error;
-
-        setPackages((pkgRes.data as Package[]) ?? []);
-        setBoardings((boardingRes.data as Boarding[]) ?? []);
-        const found = (clientRes.data as Client[]) ?? [];
+        // Same lookup the staff front-desk panel runs — see lib/signin.ts.
+        const ctx = await loadPhoneContext(phone);
+        setPackages(ctx.packages);
+        setBoardings(ctx.boardings);
+        setOpenVisits(ctx.openVisits);
+        const found = ctx.clients;
         setMatches(found);
-
-        // Walk history in order — the last drop-off and last pick-up per
-        // dog decide whether they're currently checked in, and under
-        // which service. bath_size can be set on the drop-off row at any
-        // time via /records (even mid-visit), so it's picked up here too.
-        type HistoryRow = {
-          client_id: string | null;
-          action: SignAction;
-          service_type: ServiceType;
-          addons: string[] | null;
-          bath_size: BathSize | null;
-          created_at: string;
-        };
-        const lastDropOff = new Map<
-          string,
-          { serviceType: ServiceType; time: Date; addons: string[]; bathSize: BathSize | null }
-        >();
-        const lastPickUp = new Map<string, Date>();
-        for (const r of (historyRes.data as HistoryRow[]) ?? []) {
-          if (!r.client_id) continue;
-          if (r.action === "drop_off") {
-            lastDropOff.set(r.client_id, {
-              serviceType: r.service_type,
-              time: new Date(r.created_at),
-              addons: r.addons ?? [],
-              bathSize: r.bath_size ?? null,
-            });
-          } else {
-            lastPickUp.set(r.client_id, new Date(r.created_at));
-          }
-        }
-        const open = new Map<string, OpenVisit>();
-        lastDropOff.forEach((drop, clientId) => {
-          const pickUp = lastPickUp.get(clientId);
-          if (!pickUp || drop.time > pickUp) {
-            open.set(clientId, {
-              serviceType: drop.serviceType,
-              dropOffTime: drop.time,
-              addons: drop.addons,
-              bathSize: drop.bathSize,
-            });
-          }
-        });
-        setOpenVisits(open);
 
         // A single dog on file auto-selects itself; with more than one,
         // nothing is pre-selected — the person picks who's checking in.
@@ -278,6 +231,11 @@ export default function KioskForm() {
       if (preset.length) {
         setAddonsByDog((prev) => ({ ...prev, [dog.id as string]: preset }));
       }
+      // The stay also booked a bath size, so carry it through — otherwise
+      // the bath stays unpriced until staff retype the size on /records.
+      if (preset.includes("bath") && reservation.bath_size) {
+        setBathSizeByDog((prev) => ({ ...prev, [dog.id as string]: reservation.bath_size! }));
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds, boardings, action]);
@@ -300,10 +258,16 @@ export default function KioskForm() {
   function toggleAddon(dogId: string, key: AddonKey) {
     setAddonsByDog((prev) => {
       const current = prev[dogId] ?? [];
-      return {
-        ...prev,
-        [dogId]: current.includes(key) ? current.filter((a) => a !== key) : [...current, key],
-      };
+      const next = current.includes(key) ? current.filter((a) => a !== key) : [...current, key];
+      // Dropping the bath drops the pick-up window with it — the window
+      // only exists to tell grooming when the dog is due back out front.
+      if (key === "bath" && !next.includes("bath")) {
+        setPickupWindowByDog((windows) => {
+          const { [dogId]: _removed, ...rest } = windows;
+          return rest;
+        });
+      }
+      return { ...prev, [dogId]: next };
     });
   }
 
@@ -317,6 +281,7 @@ export default function KioskForm() {
     setDropOffBy("");
     setService("daycare");
     setAddonsByDog({});
+    setPickupWindowByDog({});
     seededFromBoarding.current.clear();
     setAction("drop_off");
     setPackages([]);
@@ -366,73 +331,34 @@ export default function KioskForm() {
     setSubmitting(true);
 
     try {
-      const supabase = getSupabase();
       const results: ConfirmedDog[] = [];
       const now = new Date();
 
       // One dog at a time so a package-day deduction failure for one dog
-      // doesn't affect the others' rows.
+      // doesn't affect the others' rows. The write itself lives in
+      // lib/signin.ts, shared with the staff front-desk panel.
       for (const dog of selectedDogs) {
-        const effService = effectiveService(dog);
-        const pkg = packageFor(dog.dog_name);
-        const open = dog.id ? openVisits.get(dog.id) : undefined;
-        let usingPackage = false;
-        let daysLeftForConfirm: number | null = null;
-        let priceDue: number | null = null;
-
-        // Package days are only ever consumed at pick-up, once the actual
-        // visit length is known — a package covers a FULL daycare day
-        // only, never a half day, so this can't be decided at drop-off.
-        if (action === "pick_up" && pkg?.id && packageAppliesNow(dog, open, pkg, now)) {
-          usingPackage = true;
-          const newUsed = Math.min(pkg.total_days, pkg.days_used + 1);
-          const { error: pkgErr } = await supabase.from("packages").update({ days_used: newUsed }).eq("id", pkg.id);
-          if (pkgErr) throw pkgErr;
-          daysLeftForConfirm = pkg.total_days - newUsed;
-        }
-
-        // Work out what's owed at pick-up — a package only ever covers
-        // the full-day rate itself, so walk/nail-trim/bath still apply on
-        // top even when a package is in use. Boarding never uses
-        // packages, so it always gets its full nightly + late-fee math.
-        if (action === "pick_up" && open) {
-          const estimate = estimatePrice(effService, open.dropOffTime, now, open.addons, usingPackage, open.bathSize);
-          priceDue = estimate?.amount ?? null;
-        }
-
         const dogAddons = dog.id ? (addonsByDog[dog.id] ?? []) : [];
-        const { error: err } = await supabase.from("signins").insert({
-          dog_name: dog.dog_name,
-          phone: phone.trim(),
-          drop_off_by: action === "drop_off" ? dropOffBy.trim() : "",
-          pick_up_by: action === "pick_up" ? dropOffBy.trim() : "",
-          last_name: dog.last_name,
+        const result = await performSignIn({
+          dog,
           action,
-          service_type: effService,
+          serviceType: effectiveService(dog),
+          phone,
+          byName: dropOffBy,
           addons: dogAddons,
-          package_id: pkg?.id ?? null,
-          client_id: dog.id,
-          price: priceDue,
-          signature_data: "", // waiver already on file from signup
+          pickupWindow:
+            dogAddons.includes("bath") && dog.id ? (pickupWindowByDog[dog.id] ?? null) : null,
+          bathSize: dog.id ? (bathSizeByDog[dog.id] ?? null) : null,
+          openVisit: dog.id ? (openVisits.get(dog.id) ?? null) : null,
+          pkg: packageFor(dog),
+          packageSold: soldToday(dog),
+          now,
         });
-        if (err) throw err;
-
-        // Fire-and-forget: push this sign-in to PetExec too, per dog. Not
-        // awaited and errors are only logged, so PetExec being
-        // unconfigured, slow, or down never blocks the kiosk.
-        fetch("/api/petexec-checkin", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dogName: dog.dog_name,
-            lastName: dog.last_name,
-            phone: phone.trim(),
-            action,
-            serviceType: effService,
-          }),
-        }).catch((e) => console.error("PetExec sync failed:", e));
-
-        results.push({ dogName: dog.dog_name, daysLeft: daysLeftForConfirm, priceDue });
+        results.push({
+          dogName: result.dogName,
+          daysLeft: result.daysLeft,
+          priceDue: result.priceDue,
+        });
       }
 
       setConfirmed(results);
@@ -498,22 +424,26 @@ export default function KioskForm() {
   return (
     <div className="mx-auto max-w-3xl px-5 py-10 sm:px-8">
       <div className="mb-8 flex flex-col items-center text-center">
+        {/* Branding comes from /settings, falling back to the bundled logo
+            so a fresh install still looks finished. */}
         <div className="mb-3 flex items-center gap-2.5">
-          <span className="flex  items-center justify-center rounded-2xl  text-xl text-white shadow-card">
-            <Image
-              src={lombardlogo}
-              alt={"Logo"}
-              width={100}
-              height={100}
-              objectFit=""
-              className="object-cover"
-            />
+          <span className="flex items-center justify-center rounded-2xl text-xl text-white shadow-card">
+            {business.logoData ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={business.logoData}
+                alt={business.name}
+                className="h-[100px] w-[100px] object-contain"
+              />
+            ) : (
+              <Image src={lombardlogo} alt={business.name} width={100} height={100} className="object-cover" />
+            )}
           </span>
         </div>
         <h1 className="font-display text-2xl font-semibold tracking-tight text-slate-900">
-          Lombard Doggy Daycare
+          {business.name}
         </h1>
-        <p className="mt-1 text-sm text-slate-500">Sign your pup in or out</p>
+        <p className="mt-1 text-sm text-slate-500">{business.tagline}</p>
       </div>
 
       <div className="rounded-3xl bg-white p-6 shadow-card sm:p-8">
@@ -583,7 +513,7 @@ export default function KioskForm() {
                 {matches.map((m) => {
                   const selected = !!m.id && selectedIds.includes(m.id);
                   const isIn = !!m.id && openVisits.has(m.id);
-                  const pkg = packageFor(m.dog_name);
+                  const pkg = packageFor(m);
                   return (
                     <button
                       key={m.id}
@@ -612,7 +542,8 @@ export default function KioskForm() {
           {selectedDogs.length > 0 && (
             <div className="mt-3 space-y-2">
               {selectedDogs.map((dog) => {
-                const pkg = packageFor(dog.dog_name);
+                const pkg = packageFor(dog);
+                const dogPackages = eligiblePackages(dog);
                 const open = dog.id ? openVisits.get(dog.id) : undefined;
                 const isIn = !!open;
                 const effService = effectiveService(dog);
@@ -632,6 +563,8 @@ export default function KioskForm() {
                         open.addons,
                         usingPackage,
                         open.bathSize,
+                        true,
+                        soldToday(dog),
                       )
                     : null;
                 const showBreakdown = breakdownOpenFor === dog.id;
@@ -683,14 +616,25 @@ export default function KioskForm() {
                         Checking for a package…
                       </p>
                     ) : pkg ? (
-                      <span className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-accent-700">
-                        📦 {Math.max(0, pkg.total_days - pkg.days_used)} of{" "}
-                        {pkg.total_days} days left
-                        {action === "pick_up" &&
-                          open &&
-                          !usingPackage &&
-                          " — today's visit was 4hrs or less, half day rate applies"}
-                      </span>
+                      <>
+                        <span className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-accent-700">
+                          📦 {daysLeft(pkg)} of {pkg.total_days} days left
+                          {pkg.dog_name ? "" : " (shared)"}
+                          {action === "pick_up" &&
+                            open &&
+                            !usingPackage &&
+                            " — today's visit was 4hrs or less, half day rate applies"}
+                        </span>
+                        {/* Which package a visit draws from is a staff
+                            decision, made on the front-desk panel — the
+                            kiosk just uses the default and says which one
+                            it landed on. */}
+                        {dogPackages.length > 1 && (
+                          <p className="mt-1 text-[11px] text-accent-500">
+                            {dogPackages.length} packages on file — this visit uses the one above.
+                          </p>
+                        )}
+                      </>
                     ) : (
                       <p className="mt-1 text-xs text-accent-600">
                         No package on file for {dog.dog_name}
@@ -758,6 +702,38 @@ export default function KioskForm() {
                             );
                           })}
                         </div>
+
+                        {/* A bath takes most of the day, so grooming needs to
+                            know when the dog is expected back out front. */}
+                        {!!dog.id && (addonsByDog[dog.id] ?? []).includes("bath") && (
+                          <div className="mt-2 rounded-xl bg-white px-3 py-2">
+                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent-500">
+                              🛁 What time will you pick {dog.dog_name} up?
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {PICKUP_WINDOWS.map((w) => {
+                                const active = pickupWindowByDog[dog.id!] === w;
+                                return (
+                                  <button
+                                    key={w}
+                                    onClick={() =>
+                                      setPickupWindowByDog((prev) => ({
+                                        ...prev,
+                                        [dog.id!]: active ? "" : w,
+                                      }))
+                                    }
+                                    className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                                      active
+                                        ? "border-sky-500 bg-sky-50 text-sky-700"
+                                        : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                    }`}>
+                                    {w}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     {priceEstimate && (
@@ -896,24 +872,8 @@ export default function KioskForm() {
                 </>
               ) : (
                 selectedDogs.some((d) => !d.id || !openVisits.has(d.id)) && (
-                  <>
-                    <label className="mb-1.5 block text-xs font-medium text-slate-500">
-                      Service (fallback for dogs with no open drop-off)
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {SERVICE_TYPES.map((s) => (
-                        <button
-                          key={s.key}
-                          onClick={() => setService(s.key)}
-                          className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
-                            service === s.key
-                              ? "border-accent-500 bg-accent-50 text-accent-700"
-                              : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
-                          }`}>
-                          {s.icon} {s.label}
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <p className="mb-2 rounded-lg bg-accent-50 px-2.5 py-1.5 text-xs text-accent-700">pleses sign in pets first</p>
                   </>
                 )
               )}

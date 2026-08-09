@@ -1,14 +1,100 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { BATH_PRICES, estimatePrice, isFullDayVisit, PriceEstimate } from "@/lib/pricing";
-import { AddonKey, ADDONS, BathSize, Package, ServiceType, SERVICE_TYPES, SignInRecord } from "@/types";
+import {
+  AddonKey,
+  ADDONS,
+  BathSize,
+  Boarding,
+  Client,
+  Package,
+  ServiceType,
+  SERVICE_TYPES,
+  SignInRecord,
+  WalkLog,
+} from "@/types";
 import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
+import { findClient, findPackageFor, packageBoughtOn } from "@/lib/clients";
 import StaffNav from "@/components/StaffNav";
+import DogLink from "@/components/DogLink";
+import StaffCheckIn from "@/components/StaffCheckIn";
 
 const PASSCODE = process.env.NEXT_PUBLIC_RECORDS_PASSCODE;
 const BATH_SIZES: BathSize[] = ["S", "M", "L"];
+
+type SortKey =
+  | "dog_name"
+  | "status"
+  | "last_name"
+  | "phone"
+  | "service"
+  | "drop_off_by"
+  | "pick_up_time"
+  | "drop_off_time"
+  | "pick_up_by"
+  | "price";
+
+// A dog is still here if it was dropped off and no pick-up has been logged
+// after it. A row with only a pick-up (a manual correction) counts as gone.
+function isStillIn(r: MergedRow): boolean {
+  return !!r.drop_off_time && !r.pick_up_time;
+}
+
+const SORT_LABELS: Record<SortKey, string> = {
+  dog_name: "dog",
+  status: "status",
+  last_name: "last name",
+  phone: "phone",
+  service: "service",
+  drop_off_by: "drop-off by",
+  drop_off_time: "drop-off time",
+  pick_up_by: "picked-up by",
+  pick_up_time: "pick-up time",
+  price: "price",
+};
+
+function timeValue(iso?: string): number | null {
+  return iso ? new Date(iso).getTime() : null;
+}
+
+// Blank cells always sort last, in both directions — a dog still here has no
+// pick-up time, and reversing the column shouldn't float it to the top as if
+// it were the earliest. Direction is applied only to real comparisons.
+function compareBy(
+  a: string | number | null,
+  b: string | number | null,
+  dir: 1 | -1
+): number {
+  const aBlank = a == null || a === "";
+  const bBlank = b == null || b === "";
+  if (aBlank && bBlank) return 0;
+  if (aBlank) return 1;
+  if (bBlank) return -1;
+  const cmp =
+    typeof a === "string" && typeof b === "string" ? a.localeCompare(b) : Number(a) - Number(b);
+  return cmp * dir;
+}
+
+type WalkField = "walk_out" | "walk_in" | "walk_staff_initials";
+
+// One line on the printable walk log. Daycare and boarding walks come from
+// different tables and save differently, so each row carries its own save
+// function and the table just renders them.
+interface WalkRow {
+  key: string;
+  service: "daycare" | "boarding";
+  dogName: string;
+  phone: string;
+  clientId?: string;
+  handler: string;
+  slot: string;
+  out: string;
+  back: string;
+  initials: string;
+  save: (field: WalkField, value: string) => void;
+}
 
 interface MergedRow {
   key: string;
@@ -30,6 +116,7 @@ interface MergedRow {
   walk_out?: string | null;
   walk_in?: string | null;
   walk_staff_initials?: string | null;
+  pickup_window?: string | null;
 }
 
 interface EditState {
@@ -83,6 +170,7 @@ function mergeRecords(records: SignInRecord[]): MergedRow[] {
       row.walk_out = r.walk_out ?? row.walk_out;
       row.walk_in = r.walk_in ?? row.walk_in;
       row.walk_staff_initials = r.walk_staff_initials ?? row.walk_staff_initials;
+      row.pickup_window = r.pickup_window ?? row.pickup_window;
     } else {
       row.pick_up_id = r.id;
       row.pick_up_time = r.created_at;
@@ -93,6 +181,39 @@ function mergeRecords(records: SignInRecord[]): MergedRow[] {
   }
   return Array.from(map.values()).sort(
     (a, b) => new Date(b.drop_off_time ?? b.pick_up_time ?? 0).getTime() - new Date(a.drop_off_time ?? a.pick_up_time ?? 0).getTime()
+  );
+}
+
+// A column header that sorts: first click ascending, second descending,
+// third back to the default service grouping. Renders as plain text when
+// printed, since a print-out has no sort affordance.
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: { key: SortKey; dir: "asc" | "desc" } | null;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = sort?.key === sortKey;
+  return (
+    <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+      <button
+        onClick={() => onSort(sortKey)}
+        title={`Sort by ${label.replace(/^\W+\s*/, "")}`}
+        className={`inline-flex items-center gap-1 uppercase tracking-wide transition hover:text-slate-600 print:pointer-events-none ${
+          active ? "font-semibold text-accent-600" : ""
+        }`}
+      >
+        {label}
+        <span className={`text-[9px] print:hidden ${active ? "" : "text-slate-300"}`}>
+          {active ? (sort!.dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
   );
 }
 
@@ -133,6 +254,29 @@ export default function RecordsPage() {
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [breakdownOpenKey, setBreakdownOpenKey] = useState<string | null>(null);
   const [view, setView] = useState<"signins" | "walklog">("signins");
+  // Null means the default grouped-by-service view; a key takes over from it.
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" } | null>(null);
+  // Staff front-desk panel, collapsed until needed.
+  const [deskOpen, setDeskOpen] = useState(false);
+  // Set when the dashboard links here for one service — e.g. tapping a bar
+  // on its revenue chart.
+  const [serviceFilter, setServiceFilter] = useState<ServiceType | null>(null);
+
+  // The dashboard deep-links into this page with ?date=, ?service=, and
+  // ?desk=1, so those links land on exactly the view staff expected.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const date = params.get("date");
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) setSelectedDate(date);
+    const service = params.get("service");
+    if (service === "daycare" || service === "boarding" || service === "meet_greet") {
+      setServiceFilter(service);
+    }
+    if (params.get("desk")) setDeskOpen(true);
+  }, []);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [boardings, setBoardings] = useState<Boarding[]>([]);
+  const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
 
   useEffect(() => {
     if (isStaffUnlocked()) setUnlocked(true);
@@ -146,14 +290,21 @@ export default function RecordsPage() {
     setLoading(true);
     try {
       const supabase = getSupabase();
-      const [signinsRes, packagesRes] = await Promise.all([
+      const [signinsRes, packagesRes, clientsRes, boardingsRes] = await Promise.all([
         supabase.from("signins").select("*").order("created_at", { ascending: false }).limit(500),
         supabase.from("packages").select("*"),
+        // Clients back the hover cards and profile links on dog names.
+        supabase.from("clients").select("*"),
+        supabase.from("boardings").select("*"),
       ]);
       if (signinsRes.error) throw signinsRes.error;
       if (packagesRes.error) throw packagesRes.error;
+      if (clientsRes.error) throw clientsRes.error;
+      if (boardingsRes.error) throw boardingsRes.error;
       setRecords((signinsRes.data as SignInRecord[]) ?? []);
       setPackages((packagesRes.data as Package[]) ?? []);
+      setClients((clientsRes.data as Client[]) ?? []);
+      setBoardings((boardingsRes.data as Boarding[]) ?? []);
     } catch (e) {
       console.error("Loading records failed:", e);
       setError("Could not load records.");
@@ -161,6 +312,36 @@ export default function RecordsPage() {
       setLoading(false);
     }
   }
+
+  // Walk entries for the boarding stays covering the selected date. Kept
+  // separate from `records` because a stay's walks aren't sign-ins — one
+  // reservation spans many days with several walks a day.
+  const loadWalkLogs = useCallback(async () => {
+    const stayIds = boardings
+      .filter((b) => b.start_date <= selectedDate && b.end_date >= selectedDate)
+      .map((b) => b.id)
+      .filter(Boolean) as string[];
+    if (!stayIds.length) {
+      setWalkLogs([]);
+      return;
+    }
+    try {
+      const supabase = getSupabase();
+      const { data, error: err } = await supabase
+        .from("walk_logs")
+        .select("*")
+        .in("boarding_id", stayIds)
+        .eq("date", selectedDate);
+      if (err) throw err;
+      setWalkLogs((data as WalkLog[]) ?? []);
+    } catch (e) {
+      console.error("Loading walk logs failed:", e);
+    }
+  }, [boardings, selectedDate]);
+
+  useEffect(() => {
+    if (unlocked) loadWalkLogs();
+  }, [unlocked, loadWalkLogs]);
 
   // Packages looked up live per row — prefers a package tied to that
   // specific dog (dog_name set), falling back to a phone-only package
@@ -212,6 +393,9 @@ export default function RecordsPage() {
     const pickedUp = !!r.pick_up_time;
     const pickUp = pickedUp ? new Date(r.pick_up_time as string) : new Date();
     const usingPackage = !!pkg && r.service_type === "daycare" && isFullDayVisit(dropOff, pickUp);
+    // A package bought on this same day is part of what the client pays for
+    // this visit; one bought earlier isn't — those days are already paid for.
+    const sold = packageBoughtOn(packages, r.phone, r.dog_name, r.dateKey);
     return estimatePrice(
       r.service_type,
       dropOff,
@@ -219,30 +403,129 @@ export default function RecordsPage() {
       r.addons ?? [],
       usingPackage,
       r.bath_size ?? null,
-      pickedUp
+      pickedUp,
+      sold ? { days: sold.total_days, price: sold.price ?? 0 } : null
     );
   }
 
   const merged = useMemo(() => mergeRecords(records), [records]);
   const SERVICE_ORDER: Record<string, number> = { daycare: 0, boarding: 1, meet_greet: 2 };
   const filtered = useMemo(() => {
-    return merged
+    const rows = merged
       .filter((r) => r.dateKey === selectedDate)
-      .sort((a, b) => {
+      .filter((r) => !serviceFilter || r.service_type === serviceFilter);
+
+    // No explicit sort means the default view: grouped by service, most
+    // recent first inside each group.
+    if (!sort) {
+      return rows.sort((a, b) => {
         const orderA = SERVICE_ORDER[a.service_type ?? ""] ?? 99;
         const orderB = SERVICE_ORDER[b.service_type ?? ""] ?? 99;
         if (orderA !== orderB) return orderA - orderB;
         return 0; // stable sort keeps merged's existing recency order within the group
       });
-  }, [merged, selectedDate]);
+    }
 
-  // Daycare dogs (not boarding) with the walk add-on, for the printable
-  // walk log — a separate thing from the per-stay walk chart on /report,
-  // which only covers boarding.
-  const walkLogDogs = useMemo(
-    () => filtered.filter((r) => r.service_type === "daycare" && r.addons?.includes("walk")),
-    [filtered]
-  );
+    const dir: 1 | -1 = sort.dir === "asc" ? 1 : -1;
+    const key = sort.key;
+    return rows.sort((a, b) => compareBy(sortValue(a, key), sortValue(b, key), dir));
+  }, [merged, selectedDate, serviceFilter, sort]);
+
+  // Sorting a column replaces the service grouping, so the service is shown
+  // as a badge on each row instead (see the Dog cell below).
+  function sortValue(r: MergedRow, key: SortKey): string | number | null {
+    switch (key) {
+      case "dog_name":
+        return r.dog_name;
+      // In-house first when ascending — that's the list staff actually act on.
+      case "status":
+        return isStillIn(r) ? 0 : 1;
+      case "last_name":
+        return r.last_name;
+      case "phone":
+        return r.phone;
+      case "service":
+        return SERVICE_ORDER[r.service_type ?? ""] ?? 99;
+      case "drop_off_by":
+        return r.drop_off_by;
+      case "pick_up_by":
+        return r.pick_up_by;
+      case "drop_off_time":
+        return timeValue(r.drop_off_time);
+      case "pick_up_time":
+        return timeValue(r.pick_up_time);
+      case "price":
+        return priceValue(r);
+      default:
+        return null;
+    }
+  }
+
+  // Whichever price the row displays — the final one once set, otherwise the
+  // running estimate, so sorting matches what staff can see.
+  function priceValue(r: MergedRow): number | null {
+    if (r.price != null) return r.price;
+    const estimate = computeEstimate(r, findPackage(r.phone, r.dog_name));
+    return estimate?.amount ?? null;
+  }
+
+  function toggleSort(key: SortKey) {
+    setSort((prev) => {
+      if (prev?.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return null; // third click returns to the grouped default
+    });
+  }
+
+  // Every walk owed on the selected date, from both sources: daycare dogs
+  // who added a walk at drop-off (stored on their sign-in row) and boarding
+  // dogs whose stay covers today (stored per day/slot in walk_logs, since
+  // one stay spans many days and can have several walks a day).
+  const stillInCount = useMemo(() => filtered.filter(isStillIn).length, [filtered]);
+
+  const walkRows: WalkRow[] = useMemo(() => {
+    const daycare: WalkRow[] = filtered
+      .filter((r) => r.service_type === "daycare" && r.addons?.includes("walk"))
+      .map((r) => ({
+        key: `daycare-${r.key}`,
+        service: "daycare",
+        dogName: r.dog_name,
+        phone: r.phone,
+        clientId: undefined,
+        handler: r.drop_off_by,
+        slot: "Walk",
+        out: r.walk_out ?? "",
+        back: r.walk_in ?? "",
+        initials: r.walk_staff_initials ?? "",
+        save: (field, value) => saveWalkField(r, field, value),
+      }));
+
+    const boarding: WalkRow[] = [];
+    for (const b of boardings) {
+      if (b.start_date > selectedDate || b.end_date < selectedDate) continue;
+      if (!(b.addons ?? []).includes("walk")) continue;
+      const perDay = Math.max(1, b.walks_per_day ?? 1);
+      for (let i = 0; i < perDay; i++) {
+        const entry = walkLogs.find((w) => w.boarding_id === b.id && w.walk_index === i);
+        boarding.push({
+          key: `boarding-${b.id}-${i}`,
+          service: "boarding",
+          dogName: b.dog_name,
+          phone: b.phone,
+          clientId: b.client_id ?? undefined,
+          handler: b.last_name,
+          slot: perDay > 1 ? `Walk ${i + 1} of ${perDay}` : "Walk",
+          out: entry?.walk_out ?? "",
+          back: entry?.walk_in ?? "",
+          initials: entry?.staff_initials ?? "",
+          save: (field, value) => saveBoardingWalkField(b, i, field, value),
+        });
+      }
+    }
+
+    return [...daycare, ...boarding];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, boardings, walkLogs, selectedDate]);
 
   const prettyDate = useMemo(() => {
     const [y, m, d] = selectedDate.split("-").map(Number);
@@ -372,6 +655,51 @@ export default function RecordsPage() {
     }
   }
 
+  // Same idea for a boarding walk, but keyed by stay + day + slot in
+  // walk_logs rather than living on a sign-in row.
+  async function saveBoardingWalkField(
+    boarding: Boarding,
+    walkIndex: number,
+    field: WalkField,
+    value: string
+  ) {
+    if (!boarding.id) return;
+    const trimmed = value.trim() || null;
+    const column =
+      field === "walk_staff_initials" ? "staff_initials" : (field as "walk_out" | "walk_in");
+    const existing = walkLogs.find((w) => w.boarding_id === boarding.id && w.walk_index === walkIndex);
+    const next: WalkLog = {
+      ...(existing ?? {
+        boarding_id: boarding.id,
+        date: selectedDate,
+        walk_index: walkIndex,
+      }),
+      [column]: trimmed,
+    } as WalkLog;
+    setWalkLogs((prev) => [
+      ...prev.filter((w) => !(w.boarding_id === boarding.id && w.walk_index === walkIndex)),
+      next,
+    ]);
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("walk_logs").upsert(
+        {
+          boarding_id: boarding.id,
+          date: selectedDate,
+          walk_index: walkIndex,
+          walk_out: next.walk_out ?? null,
+          walk_in: next.walk_in ?? null,
+          staff_initials: next.staff_initials ?? null,
+        },
+        { onConflict: "boarding_id,date,walk_index" }
+      );
+      if (err) throw err;
+    } catch (e) {
+      console.error("Saving boarding walk log failed:", e);
+      setError("Could not save the walk log.");
+    }
+  }
+
   async function deleteRow(row: MergedRow) {
     const label = `${row.dog_name}'s visit on ${row.dateKey}`;
     const extra = row.allIds.length > 2 ? " (including some duplicate sign-ins found for this day)" : "";
@@ -456,6 +784,11 @@ export default function RecordsPage() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <h1 className="font-display text-xl font-semibold text-slate-900">
           {view === "signins" ? "Sign-in records" : "Walk log"}
+          {view === "signins" && stillInCount > 0 && (
+            <span className="ml-2.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+              🟢 {stillInCount} still here
+            </span>
+          )}
         </h1>
         <div className="flex items-center gap-2">
           <input
@@ -470,12 +803,61 @@ export default function RecordsPage() {
             {view === "signins" ? "🚶 Walk log" : "📋 Sign-in list"}
           </button>
           <button
+            onClick={() => setDeskOpen((v) => !v)}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              deskOpen
+                ? "bg-slate-700 text-white shadow-card hover:bg-slate-800"
+                : "border border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+            }`}>
+            {deskOpen ? "✕ Close front desk" : "🚗 Sign a dog in / out"}
+          </button>
+          <button
             onClick={() => window.print()}
             className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600">
             🖨️ Print / Save as PDF
           </button>
         </div>
       </div>
+
+      {/* Front desk — for when a client doesn't use the lobby kiosk. Writes
+          through the same path the kiosk does, and reloads the list after. */}
+      {deskOpen && (
+        <div className="mb-6 print:hidden">
+          <StaffCheckIn onDone={loadAll} />
+        </div>
+      )}
+
+      {/* Say so when a deep link narrowed the list, or a sort replaced the
+          default grouping — otherwise a filtered view reads as a quiet day. */}
+      {(serviceFilter || sort) && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 print:hidden">
+          {serviceFilter && (
+            <>
+              <span className="rounded-full bg-accent-50 px-3 py-1 text-xs font-medium text-accent-700">
+                Showing {SERVICE_TYPES.find((s) => s.key === serviceFilter)?.label ?? serviceFilter}{" "}
+                only
+              </span>
+              <button
+                onClick={() => setServiceFilter(null)}
+                className="text-xs font-medium text-slate-400 hover:text-slate-600">
+                Show all services
+              </button>
+            </>
+          )}
+          {sort && (
+            <>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Sorted by {SORT_LABELS[sort.key]} {sort.dir === "asc" ? "↑" : "↓"}
+              </span>
+              <button
+                onClick={() => setSort(null)}
+                className="text-xs font-medium text-slate-400 hover:text-slate-600">
+                Back to grouped by service
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="print-header mb-5 hidden px-6 py-5 print:block">
         <span className="print-paw" style={{ top: -10, right: 30 }}>
@@ -497,7 +879,7 @@ export default function RecordsPage() {
             <p>
               {view === "signins"
                 ? `${filtered.length} dog${filtered.length === 1 ? "" : "s"} today`
-                : `${walkLogDogs.length} walk${walkLogDogs.length === 1 ? "" : "s"} today`}
+                : `${walkRows.length} walk${walkRows.length === 1 ? "" : "s"} today`}
             </p>
             <p className="text-white/80">Printed {printedAt}</p>
           </div>
@@ -518,36 +900,21 @@ export default function RecordsPage() {
         <table className="w-full text-left text-sm print:border-collapse">
           <thead>
             <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400 print:border-b-2 print:border-amber-300 print:bg-amber-100 print:text-amber-900">
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                🐕 Dog
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Last name
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Phone
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Drop off by
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Drop off
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Picked up by
-              </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Pick up
-              </th>
+              <SortableTh label="🐕 Dog" sortKey="dog_name" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Last name" sortKey="last_name" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Phone" sortKey="phone" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Drop off by" sortKey="drop_off_by" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Drop off" sortKey="drop_off_time" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Picked up by" sortKey="pick_up_by" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Pick up" sortKey="pick_up_time" sort={sort} onSort={toggleSort} />
               <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
                 Add-ons
               </th>
               <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
                 Package
               </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                Price
-              </th>
+              <SortableTh label="Price" sortKey="price" sort={sort} onSort={toggleSort} />
               <th className="px-4 py-3 print:hidden">Actions</th>
             </tr>
           </thead>
@@ -558,15 +925,18 @@ export default function RecordsPage() {
                 ? Math.max(0, pkg.total_days - pkg.days_used)
                 : null;
               const isEditing = editingKey === r.key;
+              // Grouping only makes sense in the default order — once a
+              // column is sorted, rows interleave and the group bands would
+              // fragment, so the service moves onto the row itself.
               const showGroupHeader =
-                i === 0 || r.service_type !== filtered[i - 1].service_type;
+                !sort && (i === 0 || r.service_type !== filtered[i - 1].service_type);
               const groupInfo = SERVICE_TYPES.find(
                 (s) => s.key === r.service_type,
               );
               const groupHeader = showGroupHeader && (
                 <tr key={`${r.key}-group`}>
                   <td
-                    colSpan={12}
+                    colSpan={13}
                     className="bg-slate-100 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 print:border print:border-amber-200 print:bg-amber-50 print:px-2 print:text-amber-900">
                     {groupInfo
                       ? `${groupInfo.icon} ${groupInfo.label}`
@@ -582,6 +952,13 @@ export default function RecordsPage() {
                     <tr className="border-b border-slate-100 bg-accent-50/40 align-top print:hidden">
                       <td className="px-4 py-3 font-medium text-slate-800">
                         {r.dog_name}
+                      </td>
+                      {/* Status is derived from the times below, so it's shown
+                          rather than edited — keeps the columns aligned. */}
+                      <td className="px-4 py-3">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                          {isStillIn(r) ? "🟢 In" : "✓ Left"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <input
@@ -748,12 +1125,43 @@ export default function RecordsPage() {
                 );
               }
 
+              const stillIn = isStillIn(r);
               return (
                 <Fragment key={r.key}>
                   {groupHeader}
-                  <tr className="border-b border-slate-50 last:border-0 print:border-b-0">
+                  {/* A left edge and faint tint make the dogs still on site
+                      scannable without reading the times column. */}
+                  <tr
+                    className={`border-b border-slate-50 last:border-0 print:border-b-0 ${
+                      stillIn
+                        ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 print:bg-transparent"
+                        : "border-l-4 border-l-transparent"
+                    }`}>
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                      {r.dog_name}
+                      <DogLink
+                        client={findClient(clients, { dogName: r.dog_name, phone: r.phone })}
+                        name={r.dog_name}
+                        badges={{ packageDaysLeft: left }}
+                        className="font-medium text-slate-800"
+                      />
+                      {/* Sorting drops the service group bands, so carry the
+                          service here instead of losing it. */}
+                      {sort && groupInfo && (
+                        <span className="ml-1.5 text-[10px] font-normal text-slate-400">
+                          {groupInfo.icon} {groupInfo.label}
+                        </span>
+                      )}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                      {stillIn ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-800 print:bg-transparent print:px-0 print:font-bold">
+                          🟢 In
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 print:bg-transparent print:px-0">
+                          ✓ Left
+                        </span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
                       {r.last_name}
@@ -787,6 +1195,19 @@ export default function RecordsPage() {
                             )
                           .join(", ")
                         : "—"}
+                      {r.pickup_window && (
+                        <span className="block text-[10px] text-sky-700">
+                          🕑 Pick up {r.pickup_window}
+                        </span>
+                      )}
+                      {/* A bath has no price until it has a size, so an
+                          unsized one silently undercharges. Say so loudly
+                          rather than letting the dog leave unbilled. */}
+                      {r.addons?.includes("bath") && !r.bath_size && (
+                        <span className="mt-0.5 block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                          ⚠️ Set bath size to charge it
+                        </span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
                       {pkg ? `${left} / ${pkg.total_days}` : "—"}
@@ -862,7 +1283,7 @@ export default function RecordsPage() {
             {filtered.length === 0 && !loading && (
               <tr>
                 <td
-                  colSpan={12}
+                  colSpan={13}
                   className="px-4 py-6 text-center text-sm text-slate-400 print:border print:border-amber-100">
                   No sign-ins for this date.
                 </td>
@@ -882,7 +1303,7 @@ export default function RecordsPage() {
                   🐕 Dog
                 </th>
                 <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
-                  Drop off by
+                  Walk
                 </th>
                 <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
                   Walk out
@@ -896,50 +1317,79 @@ export default function RecordsPage() {
               </tr>
             </thead>
             <tbody>
-              {walkLogDogs.map((r) => (
-                <tr key={r.key} className="border-b border-slate-50 last:border-0 print:border-b-0">
-                  <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                    {r.dog_name}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                    {r.drop_off_by || "—"}
-                  </td>
-                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                    <input
-                      key={`${r.key}-walk-out`}
-                      defaultValue={r.walk_out ?? ""}
-                      onBlur={(e) => saveWalkField(r, "walk_out", e.target.value)}
-                      placeholder="e.g. 2:15pm"
-                      className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-20 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
-                    />
-                  </td>
-                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                    <input
-                      key={`${r.key}-walk-in`}
-                      defaultValue={r.walk_in ?? ""}
-                      onBlur={(e) => saveWalkField(r, "walk_in", e.target.value)}
-                      placeholder="e.g. 2:45pm"
-                      className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-20 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
-                    />
-                  </td>
-                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
-                    <input
-                      key={`${r.key}-walk-initials`}
-                      defaultValue={r.walk_staff_initials ?? ""}
-                      onBlur={(e) => saveWalkField(r, "walk_staff_initials", e.target.value)}
-                      placeholder="e.g. JS"
-                      maxLength={8}
-                      className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-14 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
-                    />
-                  </td>
-                </tr>
-              ))}
-              {walkLogDogs.length === 0 && !loading && (
+              {walkRows.map((r, i) => {
+                const showGroupHeader = i === 0 || r.service !== walkRows[i - 1].service;
+                const groupInfo = SERVICE_TYPES.find((s) => s.key === r.service);
+                const client = findClient(clients, {
+                  clientId: r.clientId,
+                  dogName: r.dogName,
+                  phone: r.phone,
+                });
+                const pkg = findPackageFor(packages, r.phone, r.dogName);
+                return (
+                  <Fragment key={r.key}>
+                    {showGroupHeader && (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="bg-slate-100 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 print:border print:border-amber-200 print:bg-amber-50 print:px-2 print:text-amber-900">
+                          {groupInfo ? `${groupInfo.icon} ${groupInfo.label}` : r.service}
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="border-b border-slate-50 last:border-0 print:border-b-0">
+                      <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                        <DogLink
+                          client={client}
+                          name={r.dogName}
+                          badges={{
+                            packageDaysLeft: pkg ? Math.max(0, pkg.total_days - pkg.days_used) : null,
+                          }}
+                          className="font-medium text-slate-800"
+                        />
+                        <span className="block text-[10px] font-normal text-slate-400">
+                          {r.handler || "—"}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                        {r.slot}
+                      </td>
+                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                        <WalkCell
+                          cellKey={`${r.key}-out`}
+                          value={r.out}
+                          placeholder="e.g. 2:15pm"
+                          onSave={(v) => r.save("walk_out", v)}
+                        />
+                      </td>
+                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                        <WalkCell
+                          cellKey={`${r.key}-in`}
+                          value={r.back}
+                          placeholder="e.g. 2:45pm"
+                          onSave={(v) => r.save("walk_in", v)}
+                        />
+                      </td>
+                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                        <WalkCell
+                          cellKey={`${r.key}-by`}
+                          value={r.initials}
+                          placeholder="e.g. JS"
+                          width="w-16 print:w-14"
+                          maxLength={8}
+                          onSave={(v) => r.save("walk_staff_initials", v)}
+                        />
+                      </td>
+                    </tr>
+                  </Fragment>
+                );
+              })}
+              {walkRows.length === 0 && !loading && (
                 <tr>
                   <td
                     colSpan={5}
                     className="px-4 py-6 text-center text-sm text-slate-400 print:border print:border-amber-100">
-                    No daycare dogs with a walk add-on for this date.
+                    No walks booked for this date.
                   </td>
                 </tr>
               )}
@@ -952,5 +1402,37 @@ export default function RecordsPage() {
         🐾 Thanks for a pawsome day! 🐾
       </p>
     </div>
+  );
+}
+
+// Uncontrolled so typing stays snappy, saving on blur only when the value
+// actually changed. Degrades to a dotted line in print so a partly-filled
+// sheet is still writable by hand.
+function WalkCell({
+  cellKey,
+  value,
+  placeholder,
+  width = "w-24 print:w-20",
+  maxLength,
+  onSave,
+}: {
+  cellKey: string;
+  value: string;
+  placeholder: string;
+  width?: string;
+  maxLength?: number;
+  onSave: (value: string) => void;
+}) {
+  return (
+    <input
+      key={cellKey}
+      defaultValue={value}
+      placeholder={placeholder}
+      maxLength={maxLength}
+      onBlur={(e) => {
+        if (e.target.value.trim() !== value.trim()) onSave(e.target.value);
+      }}
+      className={`${width} rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
+    />
   );
 }

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Fredoka, Inter } from "next/font/google";
 import "./globals.css";
+import SettingsProvider from "@/components/SettingsProvider";
 
 const fredoka = Fredoka({ subsets: ["latin"], weight: ["500", "600"], variable: "--font-display" });
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-body" });
@@ -22,7 +23,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${fredoka.variable} ${inter.variable}`}>
-      <body>{children}</body>
+      <body>
+        {/* Hydrates the prices, catalogs, and branding every page reads. */}
+        <SettingsProvider>{children}</SettingsProvider>
+      </body>
     </html>
   );
 }

@@ -1,3 +1,5 @@
+import { getSettings } from "@/lib/settings";
+
 // -----------------------------------------------------------------------
 // Walk-in pricing. Covers daycare/boarding base rate, walk/nail-trim
 // (fixed the moment picked at drop-off), and bath (priced by size,
@@ -6,41 +8,93 @@
 // can show a line-by-line total, not just one number.
 // -----------------------------------------------------------------------
 
-export const PRICING = {
-  daycareFullDay: 70,
-  daycareHalfDay: 50, // 4 hours or less
-  daycareHalfDayThresholdHours: 4,
-  boardingPerNight: 90,
-  latePickupHour: 12, // pick-up at or after noon on a boarding stay adds a half-day daycare fee
-  latePickupFee: 50,
-} as const;
+// Every price below is read live from the settings row (lib/settings.ts)
+// rather than baked in, so staff can change them on /settings. They're
+// exposed as getter objects so existing call sites — PRICING.daycareFullDay,
+// BATH_PRICES[size] — keep working untouched, and every pricing function
+// here stays pure and synchronous.
 
-// Fixed add-on prices, applied automatically once selected at drop-off.
-export const ADDON_PRICES: Record<"walk" | "nail_trim", number> = {
-  walk: 30,
-  nail_trim: 25,
+export const PRICING = {
+  get daycareFullDay() {
+    return getSettings().pricing.daycareFullDay;
+  },
+  get daycareHalfDay() {
+    return getSettings().pricing.daycareHalfDay;
+  },
+  get daycareHalfDayThresholdHours() {
+    return getSettings().pricing.daycareHalfDayThresholdHours;
+  },
+  get boardingPerNight() {
+    return getSettings().pricing.boardingPerNight;
+  },
+  get latePickupHour() {
+    return getSettings().pricing.latePickupHour;
+  },
+  get latePickupFee() {
+    return getSettings().pricing.latePickupFee;
+  },
 };
 
-// Bath has no fixed price — size (and price) is assigned on /records.
+// Walk-in add-on prices, applied once selected at drop-off. Indexed by
+// add-on key so custom add-ons created on /settings price themselves.
+export const ADDON_PRICES: Record<string, number> = new Proxy(
+  {},
+  {
+    get: (_t, key: string) => getSettings().pricing.addons[key] ?? 0,
+    has: (_t, key: string) => key in getSettings().pricing.addons,
+    ownKeys: () => Reflect.ownKeys(getSettings().pricing.addons),
+    getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+  }
+);
+
+// Bath is priced by size. A boarding reservation books a size, so those
+// carry onto the sign-in automatically (see lib/signin.ts); a walk-in bath
+// has no size until staff assign one on /records, and until then no bath
+// charge applies — /records flags those rows so they can't slip through.
 export const BATH_PRICES: Record<"S" | "M" | "L", number> = {
-  S: 60,
-  M: 80,
-  L: 100,
+  get S() {
+    return getSettings().pricing.bath.S;
+  },
+  get M() {
+    return getSettings().pricing.bath.M;
+  },
+  get L() {
+    return getSettings().pricing.bath.L;
+  },
 };
 
 // Boarding add-on pricing. Walk is per walk (so a stay with 2 walks/day
 // over 3 nights charges 6 walks); medication is a flat daily fee for
 // the whole stay; nail trim is a flat one-time fee for the stay.
 export const BOARDING_ADDON_PRICES = {
-  walkPerWalk: 25,
-  medicationPerDay: 10,
-  nailTrim: 25,
-} as const;
+  get walkPerWalk() {
+    return getSettings().pricing.boardingWalkPerWalk;
+  },
+  get medicationPerDay() {
+    return getSettings().pricing.boardingMedicationPerDay;
+  },
+  get nailTrim() {
+    return getSettings().pricing.boardingNailTrim;
+  },
+};
 
 export interface BoardingAddonInput {
   addons: string[];
   walksPerDay?: number | null;
   bathSize?: "S" | "M" | "L" | null;
+}
+
+// A dog's package only covers a visit's base rate when the visit is a
+// FULL day. A half-day (4 hours or less) visit is never covered by a
+// package — it's always billed as a walk-in half day — so this returns
+// false in that case even when hasPackage is true.
+export function isBaseCoveredByPackage(
+  hasPackage: boolean,
+  dropOffTime: Date,
+  pickUpTime: Date
+): boolean {
+  if (!hasPackage) return false;
+  return isFullDayVisit(dropOffTime, pickUpTime);
 }
 
 // Price breakdown for a boarding reservation's add-ons only (not the
@@ -133,11 +187,28 @@ export function estimatePrice(
   // stand-in "now". Only matters for boarding: the late-pickup daycare
   // fee is a last-day charge, so a running mid-stay estimate must not
   // add it just because the clock has passed noon on some earlier day.
-  isFinalPickUp: boolean = true
+  isFinalPickUp: boolean = true,
+  // A package the client bought on this visit. The sale is money changing
+  // hands today, so it belongs in today's total — but only today. Later
+  // visits merely spend days that were already paid for.
+  packageSold: { days: number; price: number } | null = null
 ): PriceEstimate | null {
   const breakdown: PriceBreakdownItem[] = [];
 
-  if (!baseCovered) {
+  if (packageSold) {
+    breakdown.push({
+      label: `Package (${packageSold.days} days)`,
+      amount: packageSold.price,
+    });
+  }
+
+  if (baseCovered) {
+    // The package absorbs the full-day rate. Show it as a $0 line rather
+    // than dropping it: silently omitting the base makes the total look
+    // like the daycare charge went missing, and a package-covered day with
+    // no add-ons would otherwise produce no breakdown at all.
+    breakdown.push({ label: "Daycare (full day) — covered by package", amount: 0 });
+  } else {
     if (serviceType === "daycare") {
       const fullDay = isFullDayVisit(dropOffTime, pickUpTime);
       breakdown.push(
@@ -153,7 +224,7 @@ export function estimatePrice(
       });
       // Charged once, on the day the dog actually goes home after noon.
       if (isFinalPickUp && pickUpTime.getHours() >= PRICING.latePickupHour) {
-        breakdown.push({ label: "Daycare fee (late pick-up)", amount: PRICING.latePickupFee });
+        breakdown.push({ label: "Daycare fee (after 12PM)", amount: PRICING.latePickupFee });
       }
     }
   }

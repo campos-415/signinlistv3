@@ -1,12 +1,13 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { dateRange, prettyDateKey } from "@/lib/dates";
 import { estimateBoardingTotal } from "@/lib/pricing";
-import { fileToResizedDataUrl } from "@/lib/image";
-import { Boarding, Client, MEAL_TYPES, MealLog, MealType, SignInRecord } from "@/types";
+import { dogHref } from "@/lib/clients";
+import { Boarding, Client, MEAL_TYPES, MealLog, MealType, SignInRecord, WalkLog } from "@/types";
 import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
 import StaffNav from "@/components/StaffNav";
 
@@ -26,6 +27,7 @@ export default function ReportPage() {
   const [selectedBoardingId, setSelectedBoardingId] = useState<string | null>(null);
   const [signins, setSignins] = useState<SignInRecord[]>([]);
   const [mealLogs, setMealLogs] = useState<MealLog[]>([]);
+  const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   useEffect(() => {
@@ -54,14 +56,29 @@ export default function ReportPage() {
     }
   }
 
+  // Dogs on this number that actually have a stay — this report is about a
+  // boarding reservation, so a daycare-only dog has nothing to show here
+  // and is sent to its profile instead.
+  const [dogsWithoutStays, setDogsWithoutStays] = useState<Client[]>([]);
+
   async function searchPhone() {
     setSearching(true);
     setError("");
     try {
       const supabase = getSupabase();
-      const { data, error: err } = await supabase.from("clients").select("*").eq("phone", phone.trim());
-      if (err) throw err;
-      setMatches((data as Client[]) ?? []);
+      const [clientRes, boardingRes] = await Promise.all([
+        supabase.from("clients").select("*").eq("phone", phone.trim()),
+        supabase.from("boardings").select("dog_name").eq("phone", phone.trim()),
+      ]);
+      if (clientRes.error) throw clientRes.error;
+      if (boardingRes.error) throw boardingRes.error;
+
+      const found = (clientRes.data as Client[]) ?? [];
+      const staying = new Set(
+        ((boardingRes.data as { dog_name: string }[]) ?? []).map((b) => b.dog_name.trim().toLowerCase())
+      );
+      setMatches(found.filter((c) => staying.has(c.dog_name.trim().toLowerCase())));
+      setDogsWithoutStays(found.filter((c) => !staying.has(c.dog_name.trim().toLowerCase())));
     } catch (e) {
       console.error("Client search failed:", e);
       setError("Could not search for that phone number.");
@@ -147,26 +164,6 @@ export default function ReportPage() {
     }
   }
 
-  // Staff set this once per dog, after signup — it then shows read-only on
-  // the kiosk sign-in/out page for that dog going forward (see
-  // components/KioskForm.tsx), so parents recognize their own dog's card
-  // but can't change the photo themselves.
-  async function handleClientPhotoChange(client: Client, e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !client.id) return;
-    try {
-      const dataUrl = await fileToResizedDataUrl(file);
-      const supabase = getSupabase();
-      const { error: err } = await supabase.from("clients").update({ photo_data: dataUrl }).eq("id", client.id);
-      if (err) throw err;
-      setSelectedClient((prev) => (prev && prev.id === client.id ? { ...prev, photo_data: dataUrl } : prev));
-    } catch (e) {
-      console.error("Saving dog photo failed:", e);
-      setError("Could not save that photo — try a different one.");
-    }
-  }
-
   const selectedBoarding = useMemo(
     () => boardingsForDog.find((b) => b.id === selectedBoardingId) ?? null,
     [boardingsForDog, selectedBoardingId]
@@ -175,22 +172,68 @@ export default function ReportPage() {
   useEffect(() => {
     if (!selectedBoardingId) {
       setMealLogs([]);
+      setWalkLogs([]);
       return;
     }
     (async () => {
       try {
         const supabase = getSupabase();
-        const { data, error: err } = await supabase
-          .from("meal_logs")
-          .select("*")
-          .eq("boarding_id", selectedBoardingId);
-        if (err) throw err;
-        setMealLogs((data as MealLog[]) ?? []);
+        const [mealRes, walkRes] = await Promise.all([
+          supabase.from("meal_logs").select("*").eq("boarding_id", selectedBoardingId),
+          supabase.from("walk_logs").select("*").eq("boarding_id", selectedBoardingId),
+        ]);
+        if (mealRes.error) throw mealRes.error;
+        if (walkRes.error) throw walkRes.error;
+        setMealLogs((mealRes.data as MealLog[]) ?? []);
+        setWalkLogs((walkRes.data as WalkLog[]) ?? []);
       } catch (e) {
-        console.error("Loading meal logs failed:", e);
+        console.error("Loading stay logs failed:", e);
       }
     })();
   }, [selectedBoardingId]);
+
+  // Walk entries are saved per stay/day/slot as staff type them, the same
+  // way the meal chart saves — the printed grid stays fillable by hand, but
+  // anything entered here persists and shows on the dog's profile too.
+  async function saveWalkField(
+    day: string,
+    walkIndex: number,
+    field: "walk_out" | "walk_in" | "staff_initials",
+    value: string
+  ) {
+    if (!selectedBoardingId) return;
+    const trimmed = value.trim() || null;
+    const existing = walkLogs.find((w) => w.date === day && w.walk_index === walkIndex);
+    // Optimistic so the input doesn't fight the user between keystrokes.
+    setWalkLogs((prev) => {
+      const rest = prev.filter((w) => !(w.date === day && w.walk_index === walkIndex));
+      return [
+        ...rest,
+        {
+          ...(existing ?? { boarding_id: selectedBoardingId, date: day, walk_index: walkIndex }),
+          [field]: trimmed,
+        } as WalkLog,
+      ];
+    });
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("walk_logs").upsert(
+        {
+          boarding_id: selectedBoardingId,
+          date: day,
+          walk_index: walkIndex,
+          walk_out: field === "walk_out" ? trimmed : (existing?.walk_out ?? null),
+          walk_in: field === "walk_in" ? trimmed : (existing?.walk_in ?? null),
+          staff_initials: field === "staff_initials" ? trimmed : (existing?.staff_initials ?? null),
+        },
+        { onConflict: "boarding_id,date,walk_index" }
+      );
+      if (err) throw err;
+    } catch (e) {
+      console.error("Saving walk log failed:", e);
+      setError("Could not save the walk log.");
+    }
+  }
 
   async function toggleMeal(day: string, mealType: MealType) {
     if (!selectedBoardingId) return;
@@ -271,7 +314,7 @@ export default function ReportPage() {
   if (!unlocked) {
     return (
       <div className="mx-auto mt-28 flex max-w-xs flex-col gap-3 px-5">
-        <h1 className="font-display text-xl font-semibold text-slate-900">Staff dog report</h1>
+        <h1 className="font-display text-xl font-semibold text-slate-900">Staff stay report</h1>
         <input
           type="password"
           value={entered}
@@ -308,7 +351,7 @@ export default function ReportPage() {
 
       <div className="mb-6 flex items-center justify-between print:hidden">
         <h1 className="font-display text-xl font-semibold text-slate-900">
-          Dog report
+          Boarding stay report
         </h1>
         {selectedClient && (
           <button
@@ -358,9 +401,30 @@ export default function ReportPage() {
               ))}
             </div>
           )}
+          {/* Dogs on the number with no stay can't have a stay report —
+              point staff at the profile, which is where their daycare
+              history and details live. */}
+          {!searching && dogsWithoutStays.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-medium text-slate-500">No boarding stay on file</p>
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {dogsWithoutStays.map((c) => (
+                  <Link
+                    key={c.id}
+                    href={c.id ? dogHref(c.id) : "#"}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-accent-300"
+                  >
+                    🐕 {c.dog_name} — open profile →
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!searching &&
             phone.replace(/\D/g, "").length >= 7 &&
-            matches.length === 0 && (
+            matches.length === 0 &&
+            dogsWithoutStays.length === 0 && (
               <p className="text-sm text-slate-400">
                 No dog on file for that number.
               </p>
@@ -403,7 +467,14 @@ export default function ReportPage() {
               🐾 Lombard Doggy Daycare
             </h2>
             <p className="text-base font-medium text-white/90">
-              Dog report — {selectedClient.dog_name}
+              Boarding stay — {selectedClient.dog_name}
+              {selectedBoarding && (
+                <>
+                  {" · "}
+                  {prettyDateKey(selectedBoarding.start_date)} →{" "}
+                  {prettyDateKey(selectedBoarding.end_date)}
+                </>
+              )}
             </p>
           </div>
 
@@ -411,63 +482,35 @@ export default function ReportPage() {
             <p className="text-sm text-slate-500 print:hidden">Loading…</p>
           ) : (
             <div className="space-y-5">
-              {/* Contact info */}
+              {/* Who the stay is for. Read-only — the dog's details, photo,
+                  vaccines, and history all live on its profile now. */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  Dog &amp; contact info
-                </h3>
-                <div className="flex items-start gap-4">
-                  <div className="shrink-0">
-                    {selectedClient.photo_data ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={selectedClient.photo_data}
-                        alt={`${selectedClient.dog_name}'s photo`}
-                        className="h-20 w-20 rounded-xl object-cover print:h-24 print:w-24"
-                      />
-                    ) : (
-                      <div className="flex h-20 w-20 items-center justify-center rounded-xl bg-slate-100 text-2xl text-slate-300 print:hidden">
-                        🐕
-                      </div>
-                    )}
-                    <label className="mt-1.5 block cursor-pointer text-center text-[10px] font-medium text-accent-600 hover:text-accent-800 print:hidden">
-                      {selectedClient.photo_data
-                        ? "Change photo"
-                        : "+ Add photo"}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) =>
-                          handleClientPhotoChange(selectedClient, e)
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div>
-                    <p className="text-sm text-slate-800 font-medium">
-                      <span className="font-extrabold">
-                        {selectedClient.dog_name}
-                      </span>{" "}
-                      · Owner:{" "}
-                      {selectedClient.drop_off_by || selectedClient.last_name}
-                    </p>
-
-                    {selectedClient.drop_off_by && (
-                      <p className="text-sm text-slate-600 font-bold">
-                        Emergency Contact:{" "}
-                      </p>
-                    )}
+                <div className="flex items-center gap-4">
+                  {selectedClient.photo_data ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={selectedClient.photo_data}
+                      alt={`${selectedClient.dog_name}'s photo`}
+                      className="h-16 w-16 shrink-0 rounded-xl object-cover print:h-20 print:w-20"
+                    />
+                  ) : (
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-2xl text-slate-300 print:hidden">
+                      🐕
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-lg font-semibold text-slate-900">{selectedClient.dog_name}</p>
                     <p className="text-sm text-slate-600">
-                      {selectedClient.drop_off_by}{" "}
+                      {selectedClient.last_name} · {selectedClient.phone}
                     </p>
-                    <p className="text-sm text-slate-600">
-                      {selectedClient.phone}
-                    </p>
-                    <p className="mt-1 text-[10px] text-slate-400 print:hidden">
-                      This photo shows on the kiosk sign-in/out page — parents
-                      can see it but can&apos;t change it.
-                    </p>
+                    {selectedClient.id && (
+                      <Link
+                        href={dogHref(selectedClient.id)}
+                        className="text-xs font-medium text-accent-600 hover:underline print:hidden"
+                      >
+                        Full profile, vaccines &amp; history →
+                      </Link>
+                    )}
                   </div>
                 </div>
               </section>
@@ -548,7 +591,7 @@ export default function ReportPage() {
                             { length: selectedBoarding.walks_per_day ?? 1 },
                             (_, i) => (
                               <th key={i} className="py-1.5 px-2 font-medium">
-                                Walk {i + 1} (in / out)
+                                Walk {i + 1} — out / back / by
                               </th>
                             ),
                           )}
@@ -559,30 +602,49 @@ export default function ReportPage() {
                           <tr
                             key={day}
                             className="border-b border-slate-100 text-slate-700">
-                            <td className="py-1.5 pr-2">
+                            <td className="py-1.5 pr-2 whitespace-nowrap">
                               {prettyDateKey(day)}
                             </td>
                             {Array.from(
                               { length: selectedBoarding.walks_per_day ?? 1 },
-                              (_, i) => (
-                                <td key={i} className="py-1.5 px-2">
-                                  <span className="inline-block w-14 border-b border-dotted border-slate-300">
-                                    &nbsp;
-                                  </span>
-                                  {" / "}
-                                  <span className="inline-block w-14 border-b border-dotted border-slate-300">
-                                    &nbsp;
-                                  </span>
-                                </td>
-                              ),
+                              (_, i) => {
+                                const entry = walkLogs.find(
+                                  (w) => w.date === day && w.walk_index === i,
+                                );
+                                return (
+                                  <td key={i} className="py-1.5 px-2">
+                                    <div className="flex items-center gap-1">
+                                      <WalkInput
+                                        entryKey={`${day}-${i}-out`}
+                                        value={entry?.walk_out ?? ""}
+                                        placeholder="out"
+                                        onSave={(v) => saveWalkField(day, i, "walk_out", v)}
+                                      />
+                                      <WalkInput
+                                        entryKey={`${day}-${i}-in`}
+                                        value={entry?.walk_in ?? ""}
+                                        placeholder="back"
+                                        onSave={(v) => saveWalkField(day, i, "walk_in", v)}
+                                      />
+                                      <WalkInput
+                                        entryKey={`${day}-${i}-by`}
+                                        value={entry?.staff_initials ?? ""}
+                                        placeholder="by"
+                                        width="w-10"
+                                        onSave={(v) => saveWalkField(day, i, "staff_initials", v)}
+                                      />
+                                    </div>
+                                  </td>
+                                );
+                              },
                             )}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                     <p className="mt-2 text-[10px] text-slate-400 print:hidden">
-                      Blank for staff to fill in by hand while walking, unless
-                      logged on the records page.
+                      Saves as you type. Anything left blank prints as a line to
+                      fill in by hand.
                     </p>
                   </section>
                 )}
@@ -733,5 +795,34 @@ export default function ReportPage() {
         </>
       )}
     </div>
+  );
+}
+
+// Uncontrolled so typing never fights a re-render, saving on blur. The
+// `key` the caller passes resets it when the stay changes. In print it
+// collapses to a dotted line so a half-filled log is still writable by hand.
+function WalkInput({
+  entryKey,
+  value,
+  placeholder,
+  width = "w-14",
+  onSave,
+}: {
+  entryKey: string;
+  value: string;
+  placeholder: string;
+  width?: string;
+  onSave: (value: string) => void;
+}) {
+  return (
+    <input
+      key={entryKey}
+      defaultValue={value}
+      placeholder={placeholder}
+      onBlur={(e) => {
+        if (e.target.value.trim() !== value.trim()) onSave(e.target.value);
+      }}
+      className={`${width} rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:border-accent-500 print:w-12 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
+    />
   );
 }

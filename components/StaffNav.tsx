@@ -2,14 +2,18 @@
 
 import Link from "next/link";
 
+// Dog and owner profiles are deliberately absent — they're reached by
+// clicking a dog's name anywhere in the app, not from the nav.
 const LINKS: { href: string; label: string }[] = [
-  { href: "/records", label: "📋 Records" },
+  { href: "/dashboard", label: "🏠 Dashboard" },
+  { href: "/records", label: "📋 In House" },
   { href: "/boardings", label: "🛏️ Boardings" },
-  { href: "/report", label: "🐾 Dog report" },
   { href: "/packages", label: "📦 Packages" },
+  { href: "/daily", label: "📊 Reports" },
+  { href: "/settings", label: "⚙️ Settings" },
 ];
 
-// Shown at the top of every staff page so records can act as the hub
+// Shown at the top of every staff page so /dashboard acts as the hub
 // staff navigate the rest of the site from, instead of each page being a
 // dead end only reachable by a bookmark.
 export default function StaffNav({ current }: { current: string }) {
