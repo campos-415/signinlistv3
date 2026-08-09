@@ -22,6 +22,12 @@ export interface SignInRecord {
   client_id?: string | null;
   price?: number | null; // charge for this visit when no package covers it — set at pick-up, staff-editable after (e.g. to add bath charges)
   signature_data: string; // base64 PNG, may be empty if the client's waiver is on file from signup
+  // Daycare walk log — filled in on /records for a drop-off with the
+  // "walk" add-on, free-text rather than a strict time so staff can jot
+  // down whatever's fastest ("2:15pm", "~2pm", etc).
+  walk_out?: string | null;
+  walk_in?: string | null;
+  walk_staff_initials?: string | null;
   created_at?: string;
 }
 
@@ -44,6 +50,7 @@ export interface Client {
   last_name: string;
   drop_off_by: string;
   signature_data: string; // base64 PNG, the signed waiver
+  photo_data?: string | null; // base64 JPEG data URL, resized client-side — shown at kiosk sign-in/out
   created_at?: string;
 }
 
@@ -58,3 +65,72 @@ export const ADDONS: { key: AddonKey; label: string; icon: string }[] = [
   { key: "walk", label: "Walk", icon: "🚶" },
   { key: "nail_trim", label: "Nail trim", icon: "💅" },
 ];
+
+// Add-ons selectable on a boarding reservation (separate list from the
+// daycare walk-in ADDONS above — boarding also offers medications, and
+// "walk" needs a per-day count rather than being a flat one-time thing).
+export type BoardingAddonKey = "walk" | "bath" | "nail_trim" | "medication";
+
+export const BOARDING_ADDONS: { key: BoardingAddonKey; label: string; icon: string }[] = [
+  { key: "walk", label: "Walks", icon: "🚶" },
+  { key: "bath", label: "Bath", icon: "🛁" },
+  { key: "nail_trim", label: "Nail trim", icon: "💅" },
+  { key: "medication", label: "Medication", icon: "💊" },
+];
+
+// A staff-created advance boarding reservation. The kiosk checks this
+// before allowing a boarding drop-off — see components/KioskForm.tsx.
+export interface Boarding {
+  id?: string;
+  dog_name: string;
+  last_name: string;
+  phone: string;
+  client_id?: string | null;
+  start_date: string; // "YYYY-MM-DD"
+  end_date: string; // "YYYY-MM-DD"
+  feeding_instructions?: string;
+  notes?: string;
+  addons?: BoardingAddonKey[];
+  walks_per_day?: number | null; // only meaningful when addons includes "walk"
+  bath_size?: BathSize | null; // only meaningful when addons includes "bath"
+  medication_instructions?: string | null; // only meaningful when addons includes "medication"
+  photo_data?: string | null; // base64 JPEG data URL, resized client-side — printed on /report
+  created_at?: string;
+}
+
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+
+// One meal-log entry for a given boarding reservation/day, logged by
+// staff on the /report page and included on the printed PDF.
+export interface MealLog {
+  id?: string;
+  boarding_id: string;
+  date: string; // "YYYY-MM-DD"
+  meal_type: MealType;
+  fed: boolean;
+  fed_by?: string | null; // staff name who fed the dog
+  notes?: string;
+  created_at?: string;
+}
+
+export const MEAL_TYPES: { key: MealType; label: string }[] = [
+  { key: "breakfast", label: "Breakfast" },
+  { key: "lunch", label: "Lunch" },
+  { key: "dinner", label: "Dinner" },
+  { key: "snack", label: "Snack" },
+];
+
+// One walk entry for a boarding stay, per day and per walk slot. A
+// daycare walk is stored on the sign-in row itself (see the walk_* fields
+// on SignInRecord) — a boarding stay can't be, since one reservation
+// spans many days and can have several walks a day.
+export interface WalkLog {
+  id?: string;
+  boarding_id: string;
+  date: string; // "YYYY-MM-DD"
+  walk_index: number; // 0-based slot within that day, for walks_per_day > 1
+  walk_out?: string | null;
+  walk_in?: string | null;
+  staff_initials?: string | null;
+  created_at?: string;
+}

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { Package } from "@/types";
+import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
+import StaffNav from "@/components/StaffNav";
 
 const PASSCODE = process.env.NEXT_PUBLIC_RECORDS_PASSCODE;
 
@@ -24,6 +26,10 @@ export default function PackagesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTotal, setEditTotal] = useState(0);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isStaffUnlocked()) setUnlocked(true);
+  }, []);
 
   useEffect(() => {
     if (unlocked) load();
@@ -49,6 +55,7 @@ export default function PackagesPage() {
 
   function checkPasscode() {
     if (entered === PASSCODE) {
+      markStaffUnlocked();
       setUnlocked(true);
       setError("");
     } else {
@@ -171,6 +178,7 @@ export default function PackagesPage() {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
+      <StaffNav current="/packages" />
       <h1 className="font-display mb-6 text-xl font-semibold text-slate-900">Daycare packages</h1>
 
       <div className="mb-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">

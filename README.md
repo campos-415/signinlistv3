@@ -54,6 +54,9 @@ alter table signins add column if not exists client_id uuid;
 alter table signins add column if not exists pick_up_by text;
 alter table signins add column if not exists price numeric;
 alter table signins add column if not exists bath_size text;
+alter table signins add column if not exists walk_out text;
+alter table signins add column if not exists walk_in text;
+alter table signins add column if not exists walk_staff_initials text;
 ```
 
 Then add the `clients` table — this is the one-time signup/waiver profile, looked up by phone at check-in:
@@ -70,6 +73,54 @@ create table clients (
 );
 alter table clients enable row level security;
 create policy "allow all" on clients for all using (true) with check (true);
+```
+
+If you already have a `clients` table from an earlier version, add the photo column instead of recreating it:
+
+```sql
+alter table clients add column if not exists photo_data text;
+```
+
+Then add the `boardings` table (staff-created advance boarding reservations) and `meal_logs` (the per-day meal chart on `/report`):
+
+```sql
+create table boardings (
+  id uuid primary key default gen_random_uuid(),
+  dog_name text not null,
+  last_name text not null,
+  phone text not null,
+  client_id uuid,
+  start_date date not null,
+  end_date date not null,
+  feeding_instructions text,
+  notes text,
+  created_at timestamptz default now()
+);
+alter table boardings enable row level security;
+create policy "allow all" on boardings for all using (true) with check (true);
+
+create table meal_logs (
+  id uuid primary key default gen_random_uuid(),
+  boarding_id uuid references boardings(id) on delete cascade,
+  date date not null,
+  meal_type text not null,
+  fed boolean not null default false,
+  notes text,
+  created_at timestamptz default now(),
+  unique (boarding_id, date, meal_type)
+);
+alter table meal_logs enable row level security;
+create policy "allow all" on meal_logs for all using (true) with check (true);
+```
+
+If you already have a `boardings` table from an earlier version, add the add-on columns (walk/bath/nail trim/medication) and the reservation photo column instead of recreating it:
+
+```sql
+alter table boardings add column if not exists addons text[] default '{}';
+alter table boardings add column if not exists walks_per_day integer;
+alter table boardings add column if not exists bath_size text;
+alter table boardings add column if not exists medication_instructions text;
+alter table boardings add column if not exists photo_data text;
 ```
 
 Grab your **Project URL** and **anon public key** from Settings → API.
@@ -91,7 +142,7 @@ Fill in `.env.local`:
 npm run dev
 ```
 
-Open http://localhost:3000 for the kiosk form, http://localhost:3000/signup for the one-time client signup/waiver, http://localhost:3000/records for saved sign-ins, and http://localhost:3000/packages to add or review client daycare packages (same passcode as records).
+Open http://localhost:3000 for the kiosk form, http://localhost:3000/signup for the one-time client signup/waiver, http://localhost:3000/records for saved sign-ins, http://localhost:3000/packages to add or review client daycare packages, http://localhost:3000/boardings to add/edit/delete boarding reservations and see the upcoming-reservations calendar, and http://localhost:3000/report to search a dog and print its PDF report (same passcode as records for all four staff pages).
 
 ## How pre-registration works
 
@@ -140,7 +191,7 @@ Until then, the route no-ops and returns `{ skipped: true }` — the kiosk's own
 - **A dog that's already signed in can't be dropped off again** — this is a hard block: the kiosk checks every selected dog against who's currently signed in before submitting, and refuses with a clear message (listing which dog(s)) until they're picked up first. The Sign In button itself disables and relabels to "Already signed in" the moment a duplicate is selected.
 - **Pricing, defined in `lib/pricing.ts`:**
   - Daycare: **$70 full day**, or **$50 half day** if 4 hours or less between drop-off and pick-up.
-  - Boarding: **$90/night** (partial nights round up to a full night), **+$50** if picked up at or after 12:00 PM (an extra half-day daycare fee for the late checkout).
+  - Boarding: **$90/night** (partial nights round up to a full night), **+$50** if picked up at or after 12:00 PM (an extra half-day daycare fee for the late checkout). This is a **last-day charge only** — it's applied once, against the actual pick-up, so a running mid-stay estimate on `/records` never adds it just because the clock passed noon on an earlier day of the stay.
   - **Walk (+$30) and nail trim (+$25)** are added automatically the moment those add-ons are picked at drop-off.
   - **Bath is priced separately**, by size — S ($60) / M ($80) / L ($100) — assigned on `/records`, not at the kiosk, since bath has no one fixed price. Once a size is set, it's included everywhere: the kiosk's pick-up screen picks it up automatically (bath size can be assigned any time, even mid-visit, and doesn't require staff to be on the records page at the moment of pick-up), and it shows in the price breakdown on both the kiosk and `/records`.
   - Meet & greet has no defined price.
@@ -148,12 +199,39 @@ Until then, the route no-ops and returns `{ skipped: true }` — the kiosk's own
 - **`/records` shows a live estimate before pick-up too**, not just after. A dog still signed in shows its running total (marked "(est.)") using the current time as a stand-in pick-up, recalculated on load — so staff can see roughly what's owed without waiting for the dog to actually leave. Once picked up, the number becomes final (and freely editable for adjustments); the printed report never shows this column either way.
 - **Deleting an entry fully clears "signed in" status** — the kiosk's signed-in/locked-service lookup always reads live from the `signins` table with no caching, so once every row for a dog's visit is deleted (or once a normal pick-up is logged), that phone number stops showing the dog as signed in on the very next kiosk lookup.
 
+## Boarding reservations
+
+- `/boardings` (staff, same passcode as `/records`) is where advance boarding stays are created. Add a reservation with the dog's name, owner last name, phone, drop-off/pick-up dates, optional feeding instructions, and optional notes. Reservations can be edited or deleted any time from the same page.
+- The page also shows a **month calendar** with every day's reservations as small pills (color-coded per stay) — click a day to see exactly who's booked that day. Below the calendar, an **upcoming & current** list (and a collapsed **past** list) gives the same info without needing to click through the calendar.
+- **The kiosk checks this before allowing a boarding drop-off.** When a phone number is looked up and "Boarding" is selected as the service, each selected dog is checked against `boardings` for a reservation whose date range covers today. A dog with no matching reservation shows **"No reservation found"** on its card, and the Sign In button disables and relabels the same way it does for an already-signed-in dog — staff need to add the reservation on `/boardings` first. Daycare and meet & greet drop-offs are unaffected; only boarding requires a reservation on file.
+- **Add-ons at the kiosk are chosen per dog**, not once for the whole sign-in — when two dogs from the same family drop off together, each gets its own bath/walk/nail-trim selection instead of both getting whatever was picked once.
+- **A dog with a reservation covering today can only sign in as boarding.** The stay is already booked, so that dog's service is forced to Boarding regardless of the service selector — it can't be checked in as a daycare visit. Reserved dogs show a "🛏️ Boarding · reserved" badge.
+- **Mixed sign-ins work**: one dog boarding on a reservation and another coming in for daycare can check in together. The service selector only governs the dogs *without* a reservation — when there's a mix it's labelled with their names ("Service for Max"), and the reserved dogs are called out separately above it. The "no reservation found" block only fires for a dog with nothing booked that's explicitly being signed in as boarding, so it never gets in the way of the mixed case.
+- **A dog with a reservation covering today gets its add-ons pre-selected at the kiosk** from what staff booked, so the parent doesn't re-pick what was already agreed. They stay editable — tapping any chip changes that dog's selection and the change sticks. Only add-ons the kiosk offers are pre-filled; `medication` is staff-handled and never appears as a kiosk chip.
+- **Looking up a phone number shows any reservation on file** for each selected dog — the stay's dates with the pick-up date called out, the add-ons booked (walks/day and bath size included), and the feeding instructions. A stay running today shows as "Boarding reservation on file"; if there's none today but one is booked ahead, the soonest future stay shows as "Upcoming boarding reservation" (information only — it doesn't pre-fill add-ons, since it isn't today's visit).
+- Reservations can carry an optional **photo** (resized client-side before upload, stored the same way the signed waiver is) — it shows in the **Stay** section of that dog's `/report`. This is separate from the kiosk sign-in photo (see "Dog report" below) — one's tied to this specific stay, the other to the dog's profile.
+
+## Dog report (printable PDF)
+
+- `/report` (staff, same passcode) looks up a dog by phone number, then shows a single printable page with: the dog's name and owner contact info, a **meal log chart** (checkboxes per day/meal — breakfast, lunch, dinner, snack — tap to mark fed, saved immediately), sign-in/out dates and times, feeding instructions and notes from the boarding reservation, add-ons used (including bath size), and the **total for the stay**.
+- If the dog has more than one boarding reservation on file, a dropdown picks which stay to report on; the meal chart, sign-in history, and total are all scoped to that stay's date range. A dog with no boarding reservation (daycare/meet & greet only) still gets a report — it just skips the stay-specific sections and totals every charge on file for that dog instead.
+- **The total always includes the nightly boarding rate**, not just add-ons — it's computed from the reservation itself (`estimateBoardingTotal`), so it's correct even mid-stay, before a pick-up has recorded a final price.
+- **This is also where staff add the dog's kiosk photo** — "+ Add photo" under the dog's name in the "Dog & contact info" section (resized client-side, then saved to that client's profile). Once set, it shows on the kiosk sign-in/out card for every future drop-off/pick-up so parents can recognize their dog's card at a glance; parents can see it there but can't change it — only staff can, from here.
+- If the dog has a boarding reservation with its own photo (added on `/boardings`, tied to that specific stay), it shows in the **Stay** section instead — separate from the kiosk photo above, since a dog can have different stay photos over time but only one current kiosk photo.
+- **Print / Save as PDF** opens the browser's print dialog, same as `/records`.
+
 ## Records and daily PDF
 
 - `/records` shows one row per dog per day, with separate drop-off and pick-up time columns — unchanged from before. The only related update: since packages can now be tied to a specific dog, the package column matches a dog-specific package first and falls back to a shared one, instead of just picking the newest package for that phone number regardless of which dog it was for.
 - **Grouped by service**: rows are sorted into Daycare, then Boarding, then Meet & greet sections (each with a small header row), instead of one flat list sorted purely by time. This applies on-screen and on the printed report.
 - Each row has **Edit** (last name, drop-off-by, picked-up-by, service, add-ons, and the actual drop-off/pick-up times) and **Delete**. Delete removes every underlying record for that dog/day — including any duplicate sign-ins from before the kiosk's "already signed in" warning existed, not just the most recent drop-off/pick-up pair.
 - Pick a date with the date picker (defaults to today), then **Print / Save as PDF** opens your browser's print dialog — unchanged. Choose "Save as PDF" as the destination to get a PDF formatted like the on-screen list.
+- A **🚶 Walk log** toggle switches the page to a printable list of daycare dogs (not boarding) with the walk add-on for the selected date. Walk out/in time and staff initials are editable right on the page — each field saves to that dog's sign-in row on blur — so staff can fill it in digitally instead of by hand; it still prints cleanly either way (a dotted line shows for anything left blank).
+
+## Staff navigation & passcode timeout
+
+- `/records`, `/boardings`, `/report`, and `/packages` share a nav bar at the top of each page — `/records` is the hub staff land on, with links to jump to the other three (and back to the kiosk).
+- The passcode unlock is now **shared across all four staff pages** for 30 minutes at a time (`NEXT_PUBLIC_STAFF_UNLOCK_MINUTES` env var to change it) — unlocking once and navigating between pages doesn't re-prompt, but it locks again automatically after that long without a staff page being open.
 
 ## 3. Deploy to Vercel
 
@@ -175,4 +253,4 @@ Open the Vercel URL in Safari → Share → **Add to Home Screen**. Then:
 ## Notes
 
 - Signatures are stored as base64 PNG images directly in the database row. Fine at this volume; if the daycare gets very high traffic, moving signatures to Supabase Storage instead of the table is the next optimization.
-- `/records` isn't linked from the kiosk page — bookmark it separately on a staff device.
+- `/records`, `/boardings`, `/report`, and `/packages` aren't linked from the kiosk page — bookmark one of them separately on a staff device (they're all linked to each other via the staff nav bar once unlocked, so any one bookmark is enough).

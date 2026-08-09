@@ -4,6 +4,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { BATH_PRICES, estimatePrice, isFullDayVisit, PriceEstimate } from "@/lib/pricing";
 import { AddonKey, ADDONS, BathSize, Package, ServiceType, SERVICE_TYPES, SignInRecord } from "@/types";
+import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
+import StaffNav from "@/components/StaffNav";
 
 const PASSCODE = process.env.NEXT_PUBLIC_RECORDS_PASSCODE;
 const BATH_SIZES: BathSize[] = ["S", "M", "L"];
@@ -25,6 +27,9 @@ interface MergedRow {
   addons?: string[];
   bath_size?: BathSize | null;
   price?: number | null;
+  walk_out?: string | null;
+  walk_in?: string | null;
+  walk_staff_initials?: string | null;
 }
 
 interface EditState {
@@ -75,6 +80,9 @@ function mergeRecords(records: SignInRecord[]): MergedRow[] {
       row.service_type = r.service_type;
       row.addons = r.addons;
       row.bath_size = r.bath_size ?? row.bath_size;
+      row.walk_out = r.walk_out ?? row.walk_out;
+      row.walk_in = r.walk_in ?? row.walk_in;
+      row.walk_staff_initials = r.walk_staff_initials ?? row.walk_staff_initials;
     } else {
       row.pick_up_id = r.id;
       row.pick_up_time = r.created_at;
@@ -124,6 +132,11 @@ export default function RecordsPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [breakdownOpenKey, setBreakdownOpenKey] = useState<string | null>(null);
+  const [view, setView] = useState<"signins" | "walklog">("signins");
+
+  useEffect(() => {
+    if (isStaffUnlocked()) setUnlocked(true);
+  }, []);
 
   useEffect(() => {
     if (unlocked) loadAll();
@@ -177,6 +190,7 @@ export default function RecordsPage() {
 
   function checkPasscode() {
     if (entered === PASSCODE) {
+      markStaffUnlocked();
       setUnlocked(true);
       setError("");
     } else {
@@ -192,9 +206,21 @@ export default function RecordsPage() {
   function computeEstimate(r: MergedRow, pkg: Package | null): PriceEstimate | null {
     if (!r.drop_off_time || !r.service_type) return null;
     const dropOff = new Date(r.drop_off_time);
-    const pickUp = r.pick_up_time ? new Date(r.pick_up_time) : new Date();
+    // No pick-up row yet means the dog is still here, so "now" is only a
+    // stand-in — a boarding stay mid-run hasn't earned the last-day
+    // late-pickup fee just because it's past noon today.
+    const pickedUp = !!r.pick_up_time;
+    const pickUp = pickedUp ? new Date(r.pick_up_time as string) : new Date();
     const usingPackage = !!pkg && r.service_type === "daycare" && isFullDayVisit(dropOff, pickUp);
-    return estimatePrice(r.service_type, dropOff, pickUp, r.addons ?? [], usingPackage, r.bath_size ?? null);
+    return estimatePrice(
+      r.service_type,
+      dropOff,
+      pickUp,
+      r.addons ?? [],
+      usingPackage,
+      r.bath_size ?? null,
+      pickedUp
+    );
   }
 
   const merged = useMemo(() => mergeRecords(records), [records]);
@@ -209,6 +235,14 @@ export default function RecordsPage() {
         return 0; // stable sort keeps merged's existing recency order within the group
       });
   }, [merged, selectedDate]);
+
+  // Daycare dogs (not boarding) with the walk add-on, for the printable
+  // walk log — a separate thing from the per-stay walk chart on /report,
+  // which only covers boarding.
+  const walkLogDogs = useMemo(
+    () => filtered.filter((r) => r.service_type === "daycare" && r.addons?.includes("walk")),
+    [filtered]
+  );
 
   const prettyDate = useMemo(() => {
     const [y, m, d] = selectedDate.split("-").map(Number);
@@ -319,6 +353,25 @@ export default function RecordsPage() {
     }
   }
 
+  // Saves one walk-log field straight to the drop-off row as staff type it
+  // in — no separate edit/save step, since this is meant for quick entry
+  // while walking dogs throughout the day.
+  async function saveWalkField(row: MergedRow, field: "walk_out" | "walk_in" | "walk_staff_initials", value: string) {
+    if (!row.drop_off_id) return;
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase
+        .from("signins")
+        .update({ [field]: value.trim() || null })
+        .eq("id", row.drop_off_id);
+      if (err) throw err;
+      setRecords((prev) => prev.map((r) => (r.id === row.drop_off_id ? { ...r, [field]: value.trim() || null } : r)));
+    } catch (e) {
+      console.error("Saving walk log failed:", e);
+      setError("Could not save the walk log.");
+    }
+  }
+
   async function deleteRow(row: MergedRow) {
     const label = `${row.dog_name}'s visit on ${row.dateKey}`;
     const extra = row.allIds.length > 2 ? " (including some duplicate sign-ins found for this day)" : "";
@@ -398,9 +451,11 @@ export default function RecordsPage() {
         }
       `}</style>
 
+      <StaffNav current="/records" />
+
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <h1 className="font-display text-xl font-semibold text-slate-900">
-          Sign-in records
+          {view === "signins" ? "Sign-in records" : "Walk log"}
         </h1>
         <div className="flex items-center gap-2">
           <input
@@ -409,6 +464,11 @@ export default function RecordsPage() {
             onChange={(e) => setSelectedDate(e.target.value)}
             className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
           />
+          <button
+            onClick={() => setView(view === "signins" ? "walklog" : "signins")}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:border-slate-300">
+            {view === "signins" ? "🚶 Walk log" : "📋 Sign-in list"}
+          </button>
           <button
             onClick={() => window.print()}
             className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600">
@@ -430,12 +490,14 @@ export default function RecordsPage() {
               🐾 Lombard Doggy Daycare
             </h2>
             <p className="text-base font-medium text-white/90">
-              Sign-in list — {prettyDate}
+              {view === "signins" ? "Sign-in list" : "Daycare walk log"} — {prettyDate}
             </p>
           </div>
           <div className="rounded-2xl bg-white/20 px-4 py-2 text-right text-xs font-medium text-white">
             <p>
-              {filtered.length} dog{filtered.length === 1 ? "" : "s"} today
+              {view === "signins"
+                ? `${filtered.length} dog${filtered.length === 1 ? "" : "s"} today`
+                : `${walkLogDogs.length} walk${walkLogDogs.length === 1 ? "" : "s"} today`}
             </p>
             <p className="text-white/80">Printed {printedAt}</p>
           </div>
@@ -451,6 +513,7 @@ export default function RecordsPage() {
         </p>
       )}
 
+      {view === "signins" && (
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-card print:overflow-visible print:rounded-2xl print:border print:border-amber-200 print:shadow-none">
         <table className="w-full text-left text-sm print:border-collapse">
           <thead>
@@ -714,14 +777,15 @@ export default function RecordsPage() {
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
                       {r.addons && r.addons.length
                         ? r.addons
-                            .map((a) =>
+                          .map((a) =>
+                              
                               a === "bath" && r.bath_size
                                 ? `Bath (${r.bath_size})`
-                                : a === "bath"
-                                  ? "Bath"
-                                  : a,
+                                : a === "bath" ? "Bath"
+                                : a === "nail_trim" ? "Nail trim"
+                                : a === "walk" ? "Walk" : a
                             )
-                            .join(", ")
+                          .join(", ")
                         : "—"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
@@ -807,6 +871,82 @@ export default function RecordsPage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {view === "walklog" && (
+        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-card print:overflow-visible print:rounded-2xl print:border print:border-amber-200 print:shadow-none">
+          <table className="w-full text-left text-sm print:border-collapse">
+            <thead>
+              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400 print:border-b-2 print:border-amber-300 print:bg-amber-100 print:text-amber-900">
+                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                  🐕 Dog
+                </th>
+                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                  Drop off by
+                </th>
+                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                  Walk out
+                </th>
+                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                  Walk in
+                </th>
+                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                  Staff initials
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {walkLogDogs.map((r) => (
+                <tr key={r.key} className="border-b border-slate-50 last:border-0 print:border-b-0">
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    {r.dog_name}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    {r.drop_off_by || "—"}
+                  </td>
+                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <input
+                      key={`${r.key}-walk-out`}
+                      defaultValue={r.walk_out ?? ""}
+                      onBlur={(e) => saveWalkField(r, "walk_out", e.target.value)}
+                      placeholder="e.g. 2:15pm"
+                      className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-20 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
+                    />
+                  </td>
+                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <input
+                      key={`${r.key}-walk-in`}
+                      defaultValue={r.walk_in ?? ""}
+                      onBlur={(e) => saveWalkField(r, "walk_in", e.target.value)}
+                      placeholder="e.g. 2:45pm"
+                      className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-20 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
+                    />
+                  </td>
+                  <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <input
+                      key={`${r.key}-walk-initials`}
+                      defaultValue={r.walk_staff_initials ?? ""}
+                      onBlur={(e) => saveWalkField(r, "walk_staff_initials", e.target.value)}
+                      placeholder="e.g. JS"
+                      maxLength={8}
+                      className="w-16 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:w-14 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent"
+                    />
+                  </td>
+                </tr>
+              ))}
+              {walkLogDogs.length === 0 && !loading && (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-6 text-center text-sm text-slate-400 print:border print:border-amber-100">
+                    No daycare dogs with a walk add-on for this date.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <p className="print-footer hidden print:block">
         🐾 Thanks for a pawsome day! 🐾

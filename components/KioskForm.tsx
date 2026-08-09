@@ -5,7 +5,19 @@ import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { estimatePrice, isFullDayVisit } from "@/lib/pricing";
-import { ADDONS, AddonKey, BathSize, Client, Package, SERVICE_TYPES, ServiceType, SignAction } from "@/types";
+import { prettyDateKey, todayKey } from "@/lib/dates";
+import {
+  ADDONS,
+  AddonKey,
+  BathSize,
+  Boarding,
+  BOARDING_ADDONS,
+  Client,
+  Package,
+  SERVICE_TYPES,
+  ServiceType,
+  SignAction,
+} from "@/types";
 import lombardlogo from "@/public/lombardlogo.avif";
 import Image from "next/image";
 
@@ -27,7 +39,10 @@ export default function KioskForm() {
   const [phone, setPhone] = useState("");
   const [dropOffBy, setDropOffBy] = useState("");
   const [service, setService] = useState<ServiceType>("daycare");
-  const [addons, setAddons] = useState<AddonKey[]>([]);
+  // Add-ons are picked per dog, not shared across the whole sign-in — a
+  // family dropping off two dogs together might only want a walk for one
+  // of them. Keyed by client id.
+  const [addonsByDog, setAddonsByDog] = useState<Record<string, AddonKey[]>>({});
   const [submitting, setSubmitting] = useState(false);
   const [confirmed, setConfirmed] = useState<ConfirmedDog[] | null>(null);
   const [error, setError] = useState("");
@@ -37,6 +52,11 @@ export default function KioskForm() {
   // treated as shared across every dog on that number.
   const [packages, setPackages] = useState<Package[]>([]);
   const [pkgLoading, setPkgLoading] = useState(false);
+
+  // Advance boarding reservations on file for the entered phone number —
+  // a boarding drop-off is only allowed for a dog with a reservation
+  // covering today (see activeBoardingFor below).
+  const [boardings, setBoardings] = useState<Boarding[]>([]);
 
   // All dogs (clients) on file for the entered phone number.
   const [matches, setMatches] = useState<Client[]>([]);
@@ -58,6 +78,11 @@ export default function KioskForm() {
 
   const lookupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Dogs whose add-ons have already been pre-filled from their boarding
+  // reservation. Tracked so the prefill happens once per selection and
+  // never overwrites a change the parent made afterwards.
+  const seededFromBoarding = useRef<Set<string>>(new Set());
+
   const selectedDogs: Client[] = matches.filter((m) => m.id && selectedIds.includes(m.id));
 
   function packageFor(dogName: string): Package | null {
@@ -71,15 +96,56 @@ export default function KioskForm() {
     return shared[0] ?? null;
   }
 
+  // A boarding reservation for this dog that covers today — staff add
+  // these in advance on /boardings. A boarding drop-off with no such
+  // reservation is blocked (see handleSubmit) rather than silently
+  // creating an unplanned stay.
+  function activeBoardingFor(dog: Client): Boarding | null {
+    const today = todayKey();
+    const forDog = boardings.filter(
+      (b) => b.dog_name.trim().toLowerCase() === dog.dog_name.trim().toLowerCase()
+    );
+    return forDog.find((b) => b.start_date <= today && b.end_date >= today) ?? null;
+  }
+
+  // The soonest reservation still ahead of this dog — shown for
+  // information only when there's no stay running today, so a parent
+  // checking in for daycare still sees their upcoming boarding dates.
+  function upcomingBoardingFor(dog: Client): Boarding | null {
+    const today = todayKey();
+    return (
+      boardings
+        .filter(
+          (b) =>
+            b.dog_name.trim().toLowerCase() === dog.dog_name.trim().toLowerCase() &&
+            b.start_date > today
+        )
+        .sort((a, b) => a.start_date.localeCompare(b.start_date))[0] ?? null
+    );
+  }
+
+  // The reservation's add-ons, narrowed to the ones the kiosk actually
+  // offers — a boarding reservation can also carry "medication", which
+  // isn't a kiosk add-on and is handled by staff, not chosen at the door.
+  function kioskAddonsFromBoarding(b: Boarding): AddonKey[] {
+    const offered = ADDONS.map((a) => a.key);
+    return ((b.addons ?? []) as string[]).filter((a): a is AddonKey =>
+      offered.includes(a as AddonKey)
+    );
+  }
+
   // The service type that actually applies for this dog's current
-  // action — at drop-off, whatever's selected; at pick-up, locked to
-  // whatever they were dropped off under (falls back to the selector if
-  // no open visit is on file, e.g. a manual correction).
+  // action. At pick-up it's locked to whatever they were dropped off
+  // under. At drop-off, a dog whose reservation covers today is always
+  // boarding — the stay is already booked, so it can't be signed in as a
+  // daycare visit — otherwise it's whatever the selector says. Decided
+  // per dog, so one dog boarding doesn't force its housemate to.
   function effectiveService(dog: Client): ServiceType {
     if (action === "pick_up" && dog.id) {
       const open = openVisits.get(dog.id);
       if (open) return open.serviceType;
     }
+    if (action === "drop_off" && activeBoardingFor(dog)) return "boarding";
     return service;
   }
 
@@ -100,6 +166,7 @@ export default function KioskForm() {
       setMatches([]);
       setSelectedIds([]);
       setOpenVisits(new Map());
+      setBoardings([]);
       setClientChecked(false);
       return;
     }
@@ -109,7 +176,7 @@ export default function KioskForm() {
       setClientChecked(false);
       try {
         const supabase = getSupabase();
-        const [pkgRes, clientRes, historyRes] = await Promise.all([
+        const [pkgRes, clientRes, historyRes, boardingRes] = await Promise.all([
           supabase.from("packages").select("*").eq("phone", phone.trim()),
           supabase.from("clients").select("*").eq("phone", phone.trim()).order("created_at", { ascending: true }),
           // Not date-limited: a boarding stay's drop-off can be several
@@ -120,12 +187,15 @@ export default function KioskForm() {
             .eq("phone", phone.trim())
             .order("created_at", { ascending: true })
             .limit(300),
+          supabase.from("boardings").select("*").eq("phone", phone.trim()),
         ]);
         if (pkgRes.error) throw pkgRes.error;
         if (clientRes.error) throw clientRes.error;
         if (historyRes.error) throw historyRes.error;
+        if (boardingRes.error) throw boardingRes.error;
 
         setPackages((pkgRes.data as Package[]) ?? []);
+        setBoardings((boardingRes.data as Boarding[]) ?? []);
         const found = (clientRes.data as Client[]) ?? [];
         setMatches(found);
 
@@ -192,13 +262,49 @@ export default function KioskForm() {
     }, 500);
   }, [phone]);
 
+  // Pre-fill each selected dog's add-ons from its boarding reservation —
+  // staff already agreed these with the client when the stay was booked,
+  // so the parent shouldn't have to re-pick them at the door. Runs once
+  // per dog per selection; toggling any chip afterwards sticks, and
+  // deselecting the dog lets it seed fresh next time.
+  useEffect(() => {
+    if (action !== "drop_off") return;
+    for (const dog of selectedDogs) {
+      if (!dog.id || seededFromBoarding.current.has(dog.id)) continue;
+      const reservation = activeBoardingFor(dog);
+      if (!reservation) continue;
+      seededFromBoarding.current.add(dog.id);
+      const preset = kioskAddonsFromBoarding(reservation);
+      if (preset.length) {
+        setAddonsByDog((prev) => ({ ...prev, [dog.id as string]: preset }));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, boardings, action]);
+
+  // A dog that's been deselected should seed again if it's picked back up.
+  useEffect(() => {
+    for (const id of Array.from(seededFromBoarding.current)) {
+      if (!selectedIds.includes(id)) seededFromBoarding.current.delete(id);
+    }
+  }, [selectedIds]);
+
   function selectAction(next: SignAction) {
     setAction(next);
-    if (next === "pick_up") setAddons([]);
+    if (next === "pick_up") {
+      setAddonsByDog({});
+      seededFromBoarding.current.clear();
+    }
   }
 
-  function toggleAddon(key: AddonKey) {
-    setAddons((prev) => (prev.includes(key) ? prev.filter((a) => a !== key) : [...prev, key]));
+  function toggleAddon(dogId: string, key: AddonKey) {
+    setAddonsByDog((prev) => {
+      const current = prev[dogId] ?? [];
+      return {
+        ...prev,
+        [dogId]: current.includes(key) ? current.filter((a) => a !== key) : [...current, key],
+      };
+    });
   }
 
   function toggleDog(id: string | undefined) {
@@ -210,12 +316,14 @@ export default function KioskForm() {
     setPhone("");
     setDropOffBy("");
     setService("daycare");
-    setAddons([]);
+    setAddonsByDog({});
+    seededFromBoarding.current.clear();
     setAction("drop_off");
     setPackages([]);
     setMatches([]);
     setSelectedIds([]);
     setOpenVisits(new Map());
+    setBoardings([]);
     setClientChecked(false);
     setBreakdownOpenFor(null);
   }
@@ -239,6 +347,20 @@ export default function KioskForm() {
           } already signed in — pick them up before dropping off again.`
         );
         return;
+      }
+      // Dogs with a reservation are boarding regardless of the selector,
+      // so only the others can trip this — picking Boarding for a dog
+      // with nothing booked is the case being blocked.
+      if (service === "boarding") {
+        const noReservation = selectedDogs.filter((d) => !activeBoardingFor(d));
+        if (noReservation.length) {
+          setError(
+            `No reservation found for ${noReservation
+              .map((d) => d.dog_name)
+              .join(", ")}. Pick a different service, or ask staff to add a boarding reservation first.`
+          );
+          return;
+        }
       }
     }
     setSubmitting(true);
@@ -278,6 +400,7 @@ export default function KioskForm() {
           priceDue = estimate?.amount ?? null;
         }
 
+        const dogAddons = dog.id ? (addonsByDog[dog.id] ?? []) : [];
         const { error: err } = await supabase.from("signins").insert({
           dog_name: dog.dog_name,
           phone: phone.trim(),
@@ -286,7 +409,7 @@ export default function KioskForm() {
           last_name: dog.last_name,
           action,
           service_type: effService,
-          addons,
+          addons: dogAddons,
           package_id: pkg?.id ?? null,
           client_id: dog.id,
           price: priceDue,
@@ -357,6 +480,20 @@ export default function KioskForm() {
   const now = new Date();
   const hasDuplicateDropOff =
     action === "drop_off" && selectedDogs.some((d) => d.id && openVisits.has(d.id));
+  // Dogs whose stay covers today — they sign in as boarding no matter
+  // what the service selector says (see effectiveService). The rest fall
+  // to the selector, so a reserved dog and a daycare dog can check in
+  // together on one sign-in.
+  const reservedDogs =
+    action === "drop_off" ? selectedDogs.filter((d) => !!activeBoardingFor(d)) : [];
+  const unreservedDogs =
+    action === "drop_off" ? selectedDogs.filter((d) => !activeBoardingFor(d)) : [];
+  // Only a dog with no reservation can be missing one — asking to board
+  // it explicitly via the selector is what's blocked here.
+  const hasMissingBoardingReservation =
+    action === "drop_off" &&
+    service === "boarding" &&
+    unreservedDogs.some((d) => !d.id || !openVisits.has(d.id));
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-10 sm:px-8">
@@ -498,12 +635,33 @@ export default function KioskForm() {
                       )
                     : null;
                 const showBreakdown = breakdownOpenFor === dog.id;
+                const reservation = activeBoardingFor(dog);
+                // Only today's stay drives the add-on prefill; an upcoming
+                // one is shown purely so the parent can see it's booked.
+                const upcoming = reservation ? null : upcomingBoardingFor(dog);
+                const shownReservation = reservation ?? upcoming;
                 return (
                   <div
                     key={dog.id}
                     className="rounded-2xl border border-accent-100 bg-accent-50 px-4 py-3 text-sm text-accent-800">
+                  <div className="flex items-start gap-3">
+                    <div className="shrink-0">
+                      {dog.photo_data ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={dog.photo_data}
+                          alt={`${dog.dog_name}'s photo`}
+                          className="h-14 w-14 rounded-full object-cover ring-2 ring-white"
+                        />
+                      ) : (
+                        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-xl ring-2 ring-white">
+                          🐕
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
                     <p className="flex flex-wrap items-center gap-2 font-medium">
-                      🐕 {dog.dog_name} · {dog.last_name}
+                      {dog.dog_name} · {dog.last_name}
                       {isIn && (
                         <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
                           🟢 Signed in
@@ -512,6 +670,11 @@ export default function KioskForm() {
                       {action === "pick_up" && open && (
                         <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-accent-700">
                           {serviceLabel?.icon} {serviceLabel?.label}
+                        </span>
+                      )}
+                      {action === "drop_off" && !isIn && reservation && (
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-accent-700">
+                          🛏️ Boarding · reserved
                         </span>
                       )}
                     </p>
@@ -532,6 +695,70 @@ export default function KioskForm() {
                       <p className="mt-1 text-xs text-accent-600">
                         No package on file for {dog.dog_name}
                       </p>
+                    )}
+                    {shownReservation && (
+                      <div className="mt-2 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                        <p className="font-medium text-accent-800">
+                          🛏️ {upcoming ? "Upcoming boarding reservation" : "Boarding reservation on file"}
+                        </p>
+                        <p className="mt-0.5">
+                          {prettyDateKey(shownReservation.start_date)} →{" "}
+                          {prettyDateKey(shownReservation.end_date)}
+                          <span className="text-slate-400">
+                            {" "}
+                            · pick up {prettyDateKey(shownReservation.end_date)}
+                          </span>
+                        </p>
+                        {(shownReservation.addons ?? []).length > 0 && (
+                          <p className="mt-0.5">
+                            Add-ons booked:{" "}
+                            {(shownReservation.addons ?? [])
+                              .map((a) => {
+                                const label = BOARDING_ADDONS.find((x) => x.key === a)?.label ?? a;
+                                if (a === "walk" && shownReservation.walks_per_day) {
+                                  return `${label} (${shownReservation.walks_per_day}/day)`;
+                                }
+                                if (a === "bath" && shownReservation.bath_size) {
+                                  return `${label} (${shownReservation.bath_size})`;
+                                }
+                                return label;
+                              })
+                              .join(", ")}
+                          </p>
+                        )}
+                        {/* {shownReservation.feeding_instructions && (
+                          <p className="mt-0.5 text-slate-500">🍽️ {shownReservation.feeding_instructions}</p>
+                        )} */}
+                      </div>
+                    )}
+                    {action === "drop_off" && !isIn && (
+                      <div className="mt-2">
+                        <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent-500">
+                          Add-ons for {dog.dog_name} (optional)
+                          {reservation && (
+                            <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">
+                              — pre-filled from the reservation, tap to change
+                            </span>
+                          )}
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ADDONS.map((a) => {
+                            const active = !!dog.id && (addonsByDog[dog.id] ?? []).includes(a.key);
+                            return (
+                              <button
+                                key={a.key}
+                                onClick={() => dog.id && toggleAddon(dog.id, a.key)}
+                                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                                  active
+                                    ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                }`}>
+                                {a.icon} {a.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )}
                     {priceEstimate && (
                       <div className="mt-1.5">
@@ -582,6 +809,17 @@ export default function KioskForm() {
                         before dropping off again.
                       </p>
                     )}
+                    {!isIn &&
+                      action === "drop_off" &&
+                      service === "boarding" &&
+                      !activeBoardingFor(dog) && (
+                        <p className="mt-2 rounded-lg bg-rose-100 px-2.5 py-1.5 text-xs font-medium text-rose-700">
+                          🛏️ No reservation found for {dog.dog_name} — ask
+                          staff to add a boarding reservation before drop-off.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                   </div>
                 );
               })}
@@ -619,41 +857,42 @@ export default function KioskForm() {
                   fallback for a dog with no open drop-off on file. */}
               {action === "drop_off" ? (
                 <>
-                  <label className="mb-1.5 block text-xs font-medium text-slate-500">
-                    Service
-                  </label>
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    {SERVICE_TYPES.map((s) => (
-                      <button
-                        key={s.key}
-                        onClick={() => setService(s.key)}
-                        className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
-                          service === s.key
-                            ? "border-accent-500 bg-accent-50 text-accent-700"
-                            : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
-                        }`}>
-                        {s.icon} {s.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <label className="mb-1.5 block text-xs font-medium text-slate-500">
-                    Add-ons (optional)
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {ADDONS.map((a) => (
-                      <button
-                        key={a.key}
-                        onClick={() => toggleAddon(a.key)}
-                        className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
-                          addons.includes(a.key)
-                            ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                            : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
-                        }`}>
-                        {a.icon} {a.label}
-                      </button>
-                    ))}
-                  </div>
+                  {/* Reserved dogs are already boarding, so this selector
+                      only governs the dogs without a reservation — that's
+                      what lets one dog board while another does daycare
+                      in the same sign-in. */}
+                  {reservedDogs.length > 0 && (
+                    <p className="mb-2 rounded-lg bg-accent-50 px-2.5 py-1.5 text-xs text-accent-700">
+                      🛏️ {reservedDogs.map((d) => d.dog_name).join(", ")}{" "}
+                      {reservedDogs.length > 1 ? "are" : "is"} boarding today — set by the reservation.
+                    </p>
+                  )}
+                  {unreservedDogs.length > 0 && (
+                    <>
+                      <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                        Service
+                        {reservedDogs.length > 0 && (
+                          <span className="ml-1 font-normal text-slate-400">
+                            for {unreservedDogs.map((d) => d.dog_name).join(", ")}
+                          </span>
+                        )}
+                      </label>
+                      <div className="mb-4 flex flex-wrap gap-2">
+                        {SERVICE_TYPES.map((s) => (
+                          <button
+                            key={s.key}
+                            onClick={() => setService(s.key)}
+                            className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
+                              service === s.key
+                                ? "border-accent-500 bg-accent-50 text-accent-700"
+                                : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                            }`}>
+                            {s.icon} {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </>
               ) : (
                 selectedDogs.some((d) => !d.id || !openVisits.has(d.id)) && (
@@ -690,7 +929,10 @@ export default function KioskForm() {
           <button
             onClick={handleSubmit}
             disabled={
-              submitting || selectedDogs.length === 0 || hasDuplicateDropOff
+              submitting ||
+              selectedDogs.length === 0 ||
+              hasDuplicateDropOff ||
+              hasMissingBoardingReservation
             }
             className="rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-white shadow-card transition hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50">
             {submitting
@@ -699,7 +941,9 @@ export default function KioskForm() {
                 : "Signing out…"
               : hasDuplicateDropOff
                 ? "Already signed in"
-                : action === "drop_off"
+                : hasMissingBoardingReservation
+                  ? "No reservation found"
+                  : action === "drop_off"
                   ? selectedDogs.length > 1
                     ? `Sign in ${selectedDogs.length} dogs`
                     : "Sign in"

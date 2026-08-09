@@ -1,0 +1,9 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dog-daycare-kiosk",
+      "url": "http://localhost:3000"
+    }
+  ]
+}
