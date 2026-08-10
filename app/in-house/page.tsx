@@ -1,9 +1,10 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { prettyDateKey } from "@/lib/dates";
 import { getSupabase } from "@/lib/supabase";
+import { fileToResizedDataUrl } from "@/lib/image";
 import {
   BATH_PRICES,
   estimateBoardingTotal,
@@ -23,6 +24,9 @@ import {
   ServiceType,
   SERVICE_TYPES,
   PackageKind,
+  MeetGreetResult,
+  MealKey,
+  MEALS,
   PackageUse,
   SignInRecord,
   WalkLog,
@@ -38,7 +42,10 @@ import {
   packagesBoughtOn,
 } from "@/lib/dogs";
 import StaffNav from "@/components/StaffNav";
-import { StaffSelect, TimeSelect } from "@/components/WalkFields";
+import Money from "@/components/Money";
+import { useUnpaid } from "@/components/useUnpaid";
+import { signinChargeKey } from "@/lib/billing";
+import { StaffSelect, TimeSelect, WalkSelect } from "@/components/WalkFields";
 import StaffGate from "@/components/StaffGate";
 import DateField from "@/components/DateField";
 import { useSettings } from "@/components/SettingsProvider";
@@ -169,6 +176,11 @@ interface MergedRow {
   walk_in?: string | null;
   walk_staff_initials?: string | null;
   pickup_window?: string | null;
+  meet_greet_result?: MeetGreetResult | null;
+  staff_note?: string | null;
+  package_opt_out?: boolean | null;
+  meals?: MealKey[];
+  meals_given?: MealKey[];
   // Set when the pick-up landed on a different day from the drop-off, so a
   // multi-day boarding stay still appears on the day the dog went home.
   pickUpDateKey?: string;
@@ -245,8 +257,13 @@ function mergeRecords(records: SignInRecord[]): MergedRow[] {
         open.bath_size = r.bath_size ?? null;
         open.walk_out = r.walk_out ?? null;
         open.walk_in = r.walk_in ?? null;
+        open.meet_greet_result = r.meet_greet_result ?? null;
         open.walk_staff_initials = r.walk_staff_initials ?? null;
         open.pickup_window = r.pickup_window ?? null;
+        open.staff_note = r.staff_note ?? null;
+        open.meals = r.meals ?? [];
+        open.meals_given = r.meals_given ?? [];
+        open.package_opt_out = r.package_opt_out ?? null;
       } else {
         // A pick-up with no open drop-off is a manual correction; it still
         // gets a row so its price is visible.
@@ -281,6 +298,7 @@ function SortableTh({
   sort,
   onSort,
   width,
+  align = "left",
 }: {
   label: string;
   sortKey: SortKey;
@@ -288,13 +306,15 @@ function SortableTh({
   onSort: (key: SortKey) => void;
   /** Reserved width, for columns whose editor is wider than their text. */
   width?: string;
+  /** Money reads right-aligned, so the figures stack by decimal point. */
+  align?: "left" | "right";
 }) {
   const active = sort?.key === sortKey;
   return (
     <th
       className={`px-3 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5 ${
-        width ?? ""
-      }`}
+        align === "right" ? "text-right" : ""
+      } ${width ?? ""}`}
     >
       <button
         onClick={() => onSort(sortKey)}
@@ -362,6 +382,13 @@ function RecordsInner() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [breakdownOpenKey, setBreakdownOpenKey] = useState<string | null>(null);
   const [view, setView] = useState<"signins" | "boarding" | "walklog">("signins");
+  // Whether each visit has actually been paid for. Loaded across the whole
+  // book, because payments settle oldest first — see lib/unpaid.ts.
+  const { stateFor } = useUnpaid();
+  // Which row has its note open, and what is being typed into it.
+  const [noteKey, setNoteKey] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
   // Null means the default grouped-by-service view; a key takes over from it.
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" } | null>(null);
   // Staff front-desk panel, collapsed until needed.
@@ -795,6 +822,19 @@ function RecordsInner() {
       );
   }, [boardings, selectedDate, merged, dogs]);
 
+  const boardingOnSite = useMemo(
+    () => boardingRows.filter((r) => r.onSite).length,
+    [boardingRows]
+  );
+  const boardingToArrive = useMemo(
+    () => boardingRows.filter((r) => r.notArrived).length,
+    [boardingRows]
+  );
+  const boardingGone = useMemo(
+    () => boardingRows.filter((r) => r.departed).length,
+    [boardingRows]
+  );
+
   // "in 3 days" reads faster than a date when the question is when the dog
   // goes home.
   function untilLabel(day: string): string {
@@ -998,8 +1038,173 @@ function RecordsInner() {
     }
   }
 
+  // A meet & greet ends in a verdict, and a pass ends with a photo.
+  //
+  // The photo requirement is the point of the feature, not decoration: a dog
+  // cleared for daycare is a dog staff will have to recognise at the door,
+  // and the meet & greet is the one moment everybody is standing still. So a
+  // pass cannot be recorded without one — the file picker opens first, and
+  // the verdict is only written once the photo has saved.
+  const [mgBusyKey, setMgBusyKey] = useState<string | null>(null);
+  const mgPhotoInput = useRef<HTMLInputElement | null>(null);
+  const mgPendingRow = useRef<MergedRow | null>(null);
+
+  async function writeMeetGreetResult(row: MergedRow, result: MeetGreetResult) {
+    if (!row.drop_off_id) return;
+    setMgBusyKey(row.key);
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase
+        .from("signins")
+        .update({ meet_greet_result: result })
+        .eq("id", row.drop_off_id);
+      if (err) throw err;
+      setRecords((prev) =>
+        prev.map((r) => (r.id === row.drop_off_id ? { ...r, meet_greet_result: result } : r))
+      );
+    } catch (e) {
+      console.error("Saving the meet & greet result failed:", e);
+      setError(
+        "Could not save that result — if this is the first time, run meet-greet-result-migration.sql."
+      );
+    } finally {
+      setMgBusyKey(null);
+    }
+  }
+
+  async function setMeetGreetResult(row: MergedRow, result: MeetGreetResult) {
+    if (result === "fail") {
+      await writeMeetGreetResult(row, "fail");
+      return;
+    }
+    const dog = findDog(dogs, { dogName: row.dog_name, phone: row.phone });
+    if (dog?.photo_data) {
+      await writeMeetGreetResult(row, "pass");
+      return;
+    }
+    // No photo yet — collect one, then record the pass in the handler below.
+    mgPendingRow.current = row;
+    mgPhotoInput.current?.click();
+  }
+
+  async function onMeetGreetPhoto(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const row = mgPendingRow.current;
+    mgPendingRow.current = null;
+    if (!file || !row) return;
+
+    const dog = findDog(dogs, { dogName: row.dog_name, phone: row.phone });
+    if (!dog?.id) {
+      setError(`No profile on file for ${row.dog_name}, so the photo has nowhere to go.`);
+      return;
+    }
+    setMgBusyKey(row.key);
+    try {
+      const dataUrl = await fileToResizedDataUrl(file);
+      const supabase = getSupabase();
+      const { error: err } = await supabase
+        .from("dogs")
+        .update({ photo_data: dataUrl })
+        .eq("id", dog.id);
+      if (err) throw err;
+      setDogs((prev) => prev.map((d) => (d.id === dog.id ? { ...d, photo_data: dataUrl } : d)));
+    } catch (err) {
+      console.error("Saving the meet & greet photo failed:", err);
+      setError("Could not save that photo, so the pass was not recorded. Try again.");
+      setMgBusyKey(null);
+      return;
+    }
+    setMgBusyKey(null);
+    // Only now is the dog on file properly, so the verdict can stand.
+    await writeMeetGreetResult(row, "pass");
+  }
+
+  // A note about one dog, for today.
+  //
+  // Kept off the row itself: a note is occasional, often a sentence or two,
+  // and giving it a column would cost every row width for something most of
+  // them never have. So the row grows a marker, and the note opens under it.
+  // Meals live beside the note for the same reason the note is not a column:
+  // most dogs eat at home, so a permanent Meals column would cost every row
+  // width to say "none" all day. The row shows a chip only once a meal is
+  // set, and the detail opens underneath.
+  async function saveMeals(row: MergedRow, meals: MealKey[], given: MealKey[]) {
+    if (!row.drop_off_id) return;
+    setNoteBusy(true);
+    try {
+      const { error: err } = await getSupabase()
+        .from("signins")
+        // A meal cannot be given if it is no longer due — unticking breakfast
+        // must not leave it counted as fed.
+        .update({ meals, meals_given: given.filter((g) => meals.includes(g)) })
+        .eq("id", row.drop_off_id);
+      if (err) throw err;
+      loadAll();
+    } catch (e) {
+      console.error("Saving meals failed:", e);
+      setError("Could not save that — if this is a new install, run signin-meals-migration.sql.");
+    } finally {
+      setNoteBusy(false);
+    }
+  }
+
+  function toggleMealDue(row: MergedRow, key: MealKey) {
+    const due = row.meals ?? [];
+    const next = due.includes(key) ? due.filter((m) => m !== key) : [...due, key];
+    saveMeals(row, next, row.meals_given ?? []);
+  }
+
+  function toggleMealGiven(row: MergedRow, key: MealKey) {
+    const given = row.meals_given ?? [];
+    const next = given.includes(key) ? given.filter((m) => m !== key) : [...given, key];
+    saveMeals(row, row.meals ?? [], next);
+  }
+
+  async function saveStaffNote(row: MergedRow, text: string) {
+    if (!row.drop_off_id) return;
+    setNoteBusy(true);
+    try {
+      const { error: err } = await getSupabase()
+        .from("signins")
+        .update({ staff_note: text.trim() || null })
+        .eq("id", row.drop_off_id);
+      if (err) throw err;
+      setNoteKey(null);
+      loadAll();
+    } catch (e) {
+      console.error("Saving the note failed:", e);
+      setError(
+        "Could not save that note — if this is a new install, run signin-notes-migration.sql."
+      );
+    } finally {
+      setNoteBusy(false);
+    }
+  }
+
   async function setPackageInline(row: MergedRow, packageId: string, kind: PackageKind) {
     try {
+      // A daycare visit past four hours shows the block it is *going* to
+      // spend at pick-up, which is not stored anywhere. So choosing No day
+      // used asked reassignPackage to change nothing into nothing, it
+      // returned early, and the projection painted the block straight back —
+      // the choice looked ignored because it was. Record the decision on the
+      // visit itself so it survives a reload and reaches checkout.
+      if (kind === "daycare" && row.drop_off_id) {
+        const optOut = packageId === "";
+        if ((row.package_opt_out ?? null) !== optOut) {
+          const { error: err } = await getSupabase()
+            .from("signins")
+            .update({ package_opt_out: optOut })
+            .eq("id", row.drop_off_id);
+          // Deliberately not fatal. Until signin-notes-migration.sql has
+          // run there is no such column, and failing here would take the
+          // whole picker down with it — worse than the bug being fixed.
+          // Everything below still works; only the No day used override on
+          // a dog that is still here needs the column.
+          if (err) console.error("Recording the package decision failed:", err);
+        }
+      }
       await reassignPackage(row, packageId, kind);
       loadAll();
     } catch (e) {
@@ -1135,21 +1340,54 @@ function RecordsInner() {
 
       <StaffNav current="/in-house" />
 
+      {/* Opened by the Pass button when the dog has no photo yet. capture
+          prefers the rear camera on a tablet, which is what the desk has in
+          its hand at that moment. */}
+      <input
+        ref={mgPhotoInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={onMeetGreetPhoto}
+        className="hidden"
+      />
+
       {/* The heading changes with the view — and grows a badge — so it has to
           take the slack rather than push the controls. It was sized by its
           text before, which walked the whole toolbar sideways on every tab
           change. */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <h1 className="min-w-0 flex-1 font-display text-xl font-semibold text-ink">
-          {view === "signins" ? "Daycare & meet + greet" : view === "boarding" ? "Boarding" : "Walk log"}
-          {view === "signins" && stillInCount > 0 && (
+          {view === "signins" ? "Daycare" : view === "boarding" ? "Boarding" : "Walk log"}
+          {/* A bare count answers half the question. "3 still here" out of how
+              many? And for boarding, how many of today's stays have actually
+              turned up? Both now carry their denominator. */}
+          {view === "signins" && filtered.length > 0 && (
             <span className="ml-2.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
-              🟢 {stillInCount} still here
+              🟢 {stillInCount} of {filtered.length} still here
             </span>
           )}
           {view === "boarding" && boardingRows.length > 0 && (
-            <span className="ml-2.5 rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">
-              🛏️ {boardingRows.length} staying
+            <span className="ml-2.5 inline-flex flex-wrap items-center gap-1.5 align-middle">
+              <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">
+                🛏️ {boardingRows.length} staying
+              </span>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                🟢 {boardingOnSite} in
+              </span>
+              {boardingToArrive > 0 && (
+                <span
+                  title="Booked for today, but no drop-off recorded yet"
+                  className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800"
+                >
+                  ⏳ {boardingToArrive} to arrive
+                </span>
+              )}
+              {boardingGone > 0 && (
+                <span className="rounded-full bg-surface-3 px-2.5 py-1 text-xs font-semibold text-ink-3">
+                  ✓ {boardingGone} gone home
+                </span>
+              )}
             </span>
           )}
         </h1>
@@ -1394,7 +1632,7 @@ function RecordsInner() {
               <th className="px-3 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                 Package
               </th>
-              <SortableTh label="Price" sortKey="price" sort={sort} onSort={toggleSort} />
+              <SortableTh label="Price" sortKey="price" sort={sort} onSort={toggleSort} align="right" />
             </tr>
           </thead>
           <tbody>
@@ -1628,8 +1866,12 @@ function RecordsInner() {
                   {groupHeader}
                   {/* A left edge and faint tint make the dogs still on site
                       scannable without reading the times column. */}
+                  {/* align-top on the row, not on one cell. The price cell
+                      was top-aligned while everything else centred, so a row
+                      that grew — a bath size, a second package dropdown —
+                      pulled its neighbours out of line with the row above. */}
                   <tr
-                    className={`border-b border-line-soft last:border-0 print:border-b-0 ${
+                    className={`border-b border-line-soft align-top last:border-0 print:border-b-0 ${
                       stillIn
                         ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 dark:bg-emerald-400/10 print:bg-transparent"
                         : "border-l-4 border-l-transparent"
@@ -1644,13 +1886,62 @@ function RecordsInner() {
                       />
                     </td>
                     <td className="whitespace-nowrap px-3 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
-                      <DogLink
-                        dog={findDog(dogs, { dogName: r.dog_name, phone: r.phone })}
-                        name={r.dog_name}
-                        badges={{ packageDaysLeft: left }}
-                        className="font-medium text-ink"
-                        avatar
-                      />
+                      <span className="inline-flex items-center gap-1.5">
+                        <DogLink
+                          dog={findDog(dogs, { dogName: r.dog_name, phone: r.phone })}
+                          name={r.dog_name}
+                          badges={{ packageDaysLeft: left }}
+                          className="font-medium text-ink"
+                          avatar
+                        />
+                        {r.drop_off_id && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const opening = noteKey !== r.key;
+                              setNoteKey(opening ? r.key : null);
+                              setNoteDraft(opening ? (r.staff_note ?? "") : "");
+                            }}
+                            aria-label={
+                              r.staff_note ? `Note for ${r.dog_name}` : `Add a note for ${r.dog_name}`
+                            }
+                            aria-expanded={noteKey === r.key}
+                            title={r.staff_note || "Add a note for today"}
+                            className={`rounded px-1 text-[11px] leading-none transition print:hidden ${
+                              r.staff_note
+                                ? "text-amber-600 hover:text-amber-700"
+                                : "text-ink-3/40 hover:text-ink-3"
+                            }`}>
+                            {r.staff_note ? "📝" : "✏️"}
+                          </button>
+                        )}
+                        {/* Only appears once a meal is due, so the vast
+                            majority of rows are unchanged. Amber until every
+                            meal is given, then it stops asking for attention. */}
+                        {(r.meals?.length ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const opening = noteKey !== r.key;
+                              setNoteKey(opening ? r.key : null);
+                              setNoteDraft(opening ? (r.staff_note ?? "") : "");
+                            }}
+                            aria-label={`Meals for ${r.dog_name}`}
+                            title={MEALS.filter((m) => r.meals?.includes(m.key))
+                              .map(
+                                (m) =>
+                                  `${m.label}: ${r.meals_given?.includes(m.key) ? "given" : "due"}`
+                              )
+                              .join(" · ")}
+                            className={`rounded px-1 text-[10px] font-semibold leading-none tabular-nums transition ${
+                              (r.meals_given?.length ?? 0) >= (r.meals?.length ?? 0)
+                                ? "text-emerald-600"
+                                : "text-amber-600"
+                            }`}>
+                            🍽 {r.meals_given?.length ?? 0}/{r.meals?.length ?? 0}
+                          </button>
+                        )}
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {stillIn ? (
@@ -1685,6 +1976,12 @@ function RecordsInner() {
                             <span className="block text-[11px] text-ink-3">by {r.pick_up_by}</span>
                           )}
                         </>
+                      ) : r.pickup_window ? (
+                        // The window the client asked for. It belongs here,
+                        // under the question this column already asks — when
+                        // is the dog going home — rather than crowding the
+                        // add-ons it was booked alongside.
+                        <span className="text-[11px] text-sky-700">🕑 {r.pickup_window}</span>
                       ) : (
                         <span className="text-ink-3">—</span>
                       )}
@@ -1700,6 +1997,44 @@ function RecordsInner() {
 
                           Printed sheets get the plain list either way — a row
                           of buttons on paper is noise. */}
+                      {/* A meet & greet has no add-ons to sell — it has a
+                          verdict. The column carries that instead. */}
+                      {r.service_type === "meet_greet" ? (
+                        <div className="flex flex-wrap items-center gap-1 print:hidden">
+                          {r.meet_greet_result === "pass" ? (
+                            <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                              ✓ Passed
+                            </span>
+                          ) : r.meet_greet_result === "fail" ? (
+                            <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                              ✕ Not passed
+                            </span>
+                          ) : stillIn ? (
+                            <>
+                              <button
+                                onClick={() => setMeetGreetResult(r, "pass")}
+                                disabled={mgBusyKey === r.key}
+                                title="Cleared for daycare — a photo of the dog is required"
+                                className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 transition hover:bg-emerald-200 disabled:opacity-50"
+                              >
+                                {mgBusyKey === r.key ? "Saving…" : "✓ Pass"}
+                              </button>
+                              <button
+                                onClick={() => setMeetGreetResult(r, "fail")}
+                                disabled={mgBusyKey === r.key}
+                                className="rounded-md bg-surface-3 px-2 py-0.5 text-[11px] font-semibold text-ink-3 transition hover:text-rose-600 disabled:opacity-50"
+                              >
+                                ✕ No
+                              </button>
+                              <span className="block w-full text-[10px] text-ink-3">
+                                A pass needs a photo
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-[11px] text-ink-3">Not assessed</span>
+                          )}
+                        </div>
+                      ) : (
                       <div className="flex flex-wrap items-center gap-1 print:hidden">
                         {stillIn
                           ? ADDONS.map((a) => {
@@ -1740,7 +2075,35 @@ function RecordsInner() {
                                 </span>
                               ));
                             })()}
+                      {stillIn && r.addons?.includes("bath") && (
+                          <span
+                            className={`ml-1 inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 print:hidden ${
+                              r.bath_size ? "bg-surface-3" : "bg-amber-100"
+                            }`}
+                            title={
+                              r.bath_size
+                                ? `Bath size ${r.bath_size}`
+                                : "This bath has no size yet, so it is not being charged"
+                            }
+                          >
+                            {BATH_SIZES.map((sz) => (
+                              <button
+                                key={sz}
+                                onClick={() => setBathSizeInline(r, r.bath_size === sz ? null : sz)}
+                                title={`Bath size ${sz} — $${BATH_PRICES[sz].toFixed(2)}`}
+                                className={`rounded px-1 py-0 text-[10px] font-bold transition ${
+                                  r.bath_size === sz
+                                    ? "bg-accent-500 text-accent-ink"
+                                    : "text-ink-3 hover:text-ink-2"
+                                }`}
+                              >
+                                {sz}
+                              </button>
+                            ))}
+                          </span>
+                        )}
                       </div>
+                      )}
                       <span className="hidden print:inline">
                         {r.addons && r.addons.length
                           ? r.addons
@@ -1758,45 +2121,12 @@ function RecordsInner() {
                               .join(", ")
                           : "—"}
                       </span>
-                      {/* A bath has no price until it has a size, so an
-                          unsized one silently undercharges. The sizes sit
-                          right here rather than behind an edit form. */}
-                      {stillIn && r.addons?.includes("bath") && (
-                        <div className="mt-1 flex items-center gap-1 print:hidden">
-                          <span
-                            className={`text-[10px] font-semibold ${
-                              r.bath_size ? "text-ink-3" : "text-amber-700"
-                            }`}
-                          >
-                            {r.bath_size ? "Bath" : "⚠️ Size"}
-                          </span>
-                          {BATH_SIZES.map((s) => (
-                            <button
-                              key={s}
-                              onClick={() => setBathSizeInline(r, r.bath_size === s ? null : s)}
-                              title={`Bath size ${s} — $${BATH_PRICES[s].toFixed(2)}`}
-                              className={`rounded px-1.5 py-0.5 text-[11px] font-semibold transition ${
-                                r.bath_size === s
-                                  ? "bg-accent-500 text-accent-ink"
-                                  : "bg-surface-3 text-ink-3 hover:text-ink-2"
-                              }`}
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                       {/* A bath that left without a size was never priced. It
                           is too late to fix from here, but staff should still
                           see that it happened. */}
                       {!stillIn && r.addons?.includes("bath") && !r.bath_size && (
                         <span className="mt-0.5 block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 print:hidden">
                           ⚠️ Left with no bath size — unbilled
-                        </span>
-                      )}
-                      {r.pickup_window && (
-                        <span className="block text-[10px] text-sky-700">
-                          🕑 Pick up {r.pickup_window}
                         </span>
                       )}
                     </td>
@@ -1858,7 +2188,11 @@ function RecordsInner() {
                         // another. Nothing is written until pick-up, or until
                         // staff pick a different block here.
                         const projectedDay =
-                          !dayCurrent && r.service_type === "daycare" && r.drop_off_time
+                          !dayCurrent &&
+                          // Staff have said no. Their answer outranks the rule.
+                          r.package_opt_out !== true &&
+                          r.service_type === "daycare" &&
+                          r.drop_off_time
                             ? isFullDayVisit(new Date(r.drop_off_time), new Date())
                               ? findPackageFor(packages, r.phone, r.dog_name, "daycare")
                               : null
@@ -1917,7 +2251,7 @@ function RecordsInner() {
                         );
                       })()}
                     </td>
-                    <td className="px-4 py-3 font-medium text-emerald-700 print:border print:border-paper-line print:px-2 print:py-1.5 align-top">
+                    <td className="px-4 py-3 text-right align-top font-medium print:border print:border-paper-line print:px-2 print:py-1.5">
                       {(() => {
                         const estimate = computeEstimate(r, pkg);
                         if (!estimate)
@@ -1934,15 +2268,22 @@ function RecordsInner() {
                                   showBreakdown ? null : r.key,
                                 )
                               }
-                              className="inline-flex items-center gap-1 hover:underline ">
-                              ${finalAmount.toFixed(2)}
-                              {!isFinal && (
-                                <span className="text-[10px] font-normal text-ink-3 print:hidden">
-                                  (est.)
-                                </span>
-                              )}
+                              title={isFinal ? "Final price" : "Running estimate"}
+                              className="inline-flex w-full items-baseline justify-end gap-1 hover:underline">
+                              {/* A running estimate is not a debt, so it stays
+                                  neutral until the dog is signed out and the
+                                  visit becomes a real charge. */}
+                              <Money
+                                amount={finalAmount}
+                                state={isFinal ? stateFor(signinChargeKey(r.pick_up_id ?? "")) : "estimate"}
+                              />
                               <span className="text-ink-3 print:hidden">🧾</span>
                             </button>
+                            {!isFinal && (
+                              <span className="block text-right text-[10px] font-normal text-ink-3 print:hidden">
+                                estimate
+                              </span>
+                            )}
                             {showBreakdown && (
                               <ul className="mt-1 space-y-0.5 text-[10px] font-normal text-ink-3">
                                 {estimate.breakdown.map((item, i) => (
@@ -1967,6 +2308,101 @@ function RecordsInner() {
                       })()}
                     </td>
                   </tr>
+
+                  {/* The note, under the dog it belongs to. Never printed:
+                      the day sheets go to owners, and this is a handover
+                      note between shifts. */}
+                  {noteKey === r.key && (
+                    <tr className="print:hidden">
+                      <td colSpan={10} className="bg-surface-2 px-4 pb-3 pt-1">
+                        <p className="mb-1 text-[11px] font-medium text-ink-3">
+                          Meals for {r.dog_name} today
+                        </p>
+                        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                          {MEALS.map((m) => {
+                            const due = r.meals?.includes(m.key) ?? false;
+                            const given = r.meals_given?.includes(m.key) ?? false;
+                            return (
+                              <span key={m.key} className="inline-flex overflow-hidden rounded-lg">
+                                <button
+                                  onClick={() => toggleMealDue(r, m.key)}
+                                  disabled={noteBusy}
+                                  title={due ? `${m.label} is due — tap to remove` : `Add ${m.label}`}
+                                  className={`border px-2.5 py-1 text-xs font-medium transition disabled:opacity-60 ${
+                                    due
+                                      ? "border-amber-300 bg-amber-50 text-amber-800"
+                                      : "border-line bg-surface text-ink-3 hover:border-accent-400"
+                                  } ${due ? "rounded-l-lg" : "rounded-lg"}`}>
+                                  {m.icon} {m.label}
+                                </button>
+                                {/* Marking one given is the action staff take
+                                    ten times a day, so it is one tap and it
+                                    only exists once the meal is actually due. */}
+                                {due && (
+                                  <button
+                                    onClick={() => toggleMealGiven(r, m.key)}
+                                    disabled={noteBusy}
+                                    title={given ? "Given — tap to undo" : `Mark ${m.label} given`}
+                                    className={`rounded-r-lg border border-l-0 px-2.5 py-1 text-xs font-semibold transition disabled:opacity-60 ${
+                                      given
+                                        ? "border-emerald-300 bg-emerald-100 text-emerald-800"
+                                        : "border-line bg-surface text-ink-3 hover:border-emerald-300"
+                                    }`}>
+                                    {given ? "✓ given" : "mark given"}
+                                  </button>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
+
+                        <label
+                          htmlFor={`note-${r.key}`}
+                          className="mb-1 block text-[11px] font-medium text-ink-3">
+                          Note for {r.dog_name} today — staff only, not printed
+                        </label>
+                        <textarea
+                          id={`note-${r.key}`}
+                          autoFocus
+                          value={noteDraft}
+                          onChange={(e) => setNoteDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setNoteKey(null);
+                            // Enter saves; Shift+Enter is a new line. A note
+                            // is usually one sentence typed one-handed.
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              saveStaffNote(r, noteDraft);
+                            }
+                          }}
+                          rows={2}
+                          placeholder="Picking up early, no treats, owner bringing medication at 3…"
+                          className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+                        />
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <button
+                            onClick={() => saveStaffNote(r, noteDraft)}
+                            disabled={noteBusy}
+                            className="rounded-lg bg-accent-500 px-3 py-1 text-xs font-medium text-accent-ink hover:bg-accent-600 disabled:opacity-60">
+                            {noteBusy ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            onClick={() => setNoteKey(null)}
+                            className="rounded-lg border border-line px-3 py-1 text-xs text-ink-2 hover:border-accent-400">
+                            Cancel
+                          </button>
+                          {r.staff_note && (
+                            <button
+                              onClick={() => saveStaffNote(r, "")}
+                              disabled={noteBusy}
+                              className="ml-auto text-xs text-ink-3 hover:text-rose-500 disabled:opacity-60">
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               );
             })}
@@ -2332,20 +2768,21 @@ function RecordsInner() {
                               return <span className="text-xs text-ink-3">—</span>;
                             const current = useForRow(r.row!, "walk")?.package_id ?? "";
                             return (
-                              <select
+                              <WalkSelect
+                                ariaLabel={`${r.dogName} walk package`}
                                 value={current}
-                                onChange={async (e) => {
-                                  await reassignPackage(r.row!, e.target.value, "walk");
+                                width="w-52"
+                                onSave={async (v) => {
+                                  await reassignPackage(r.row!, v, "walk");
                                   loadAll();
-                                }}
-                                className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500">
+                                }}>
                                 <option value="">No walk package</option>
                                 {options.map((p) => (
                                   <option key={p.id} value={p.id ?? ""}>
                                     {packageLabel(p)}
                                   </option>
                                 ))}
-                              </select>
+                              </WalkSelect>
                             );
                           })()
                         ) : (

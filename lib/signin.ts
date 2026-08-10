@@ -23,6 +23,9 @@ export interface OpenVisit {
   dropOffTime: Date;
   addons: string[];
   bathSize: BathSize | null;
+  // Staff said this visit must not spend a package day, overriding the
+  // past-four-hours rule. Undefined means nobody decided.
+  packageOptOut?: boolean;
 }
 
 export interface PhoneContext {
@@ -87,6 +90,7 @@ export function buildOpenVisits(
         dropOffTime: new Date(r.created_at),
         addons: r.addons ?? [],
         bathSize: r.bath_size ?? null,
+        packageOptOut: r.package_opt_out ?? undefined,
       });
     } else {
       lastPickUp.set(r.dog_id, new Date(r.created_at));
@@ -120,7 +124,13 @@ export function packageApplies(
   if (!pkg || !open) return false;
   if (serviceType !== "daycare") return false;
   if (pkg.total_days - pkg.days_used <= 0) return false;
-  return explicit || isFullDayVisit(open.dropOffTime, now);
+  // Three rules, most deliberate first. An explicit pick — someone tapping
+  // a specific block right now — wins outright. Failing that, staff having
+  // said No day used on the sign-in list beats the automatic rule. Only when
+  // nobody has said anything does the length of the visit decide.
+  if (explicit) return true;
+  if (open.packageOptOut) return false;
+  return isFullDayVisit(open.dropOffTime, now);
 }
 
 // A walk package covers the walk add-on on a daycare visit. Unlike a

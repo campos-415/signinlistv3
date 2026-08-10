@@ -135,13 +135,14 @@ export default function KioskForm() {
 
   // A package bought today is money owed on today's visit. One bought
   // earlier isn't — its days are already paid for.
-  function soldToday(dog: Dog): { days: number; price: number; unit: string }[] {
+  function soldToday(dog: Dog): { id?: string; days: number; price: number; unit: string }[] {
     const pricedPickUps = history.filter((h) => h.action === "pick_up" && h.price != null);
     return packagesBoughtOn(packages, phone.trim(), dog.dog_name, todayKey())
       // The pick-up about to be written hasn't happened yet, so a sale that
       // some earlier pick-up already claimed isn't owed again on this visit.
       .filter((p) => packageBillingPickUp(p, pricedPickUps) === null)
       .map((p) => ({
+      id: p.id,
       days: p.total_days,
       price: p.price ?? 0,
       unit: packageKind(p) === "walk" ? "walks" : "days",
@@ -402,9 +403,15 @@ export default function KioskForm() {
     try {
       const results: ConfirmedDog[] = [];
       const now = new Date();
+      // Same exclusion as the figure on screen. This is the number the
+      // receipt says was owed beforehand, so if it counted a package sale
+      // that today's total is also folding in, the receipt would disagree
+      // with itself.
       setPriorDueAtSubmit(
         action === "pick_up" && balance
-          ? unpaidCharges(balance).reduce((sum, c) => sum + c.remaining, 0)
+          ? unpaidCharges(balance)
+              .filter((c) => !foldedPackageKeys.has(c.key))
+              .reduce((sum, c) => sum + c.remaining, 0)
           : 0
       );
 
@@ -565,9 +572,30 @@ export default function KioskForm() {
     })
     .filter((x): x is { key: string; dogName: string; label: string; amount: number } => !!x);
 
-  // Still owed from before. Today's pick-up is NOT in here — a visit is only
-  // priced when the dog is signed out — so adding the two cannot double up.
-  const previousDue = action === "pick_up" && balance ? unpaidCharges(balance) : [];
+  // Still owed from before. Today's visit is not in here — a visit is only
+  // priced when the dog is signed out — so the two cannot double up on the
+  // visit itself.
+  //
+  // A package sale is different, and this is where it went wrong. A sale is a
+  // charge from the moment it is made, so it is already sitting on the
+  // balance; computeBalance only drops it once a priced pick-up has absorbed
+  // it. Today's estimate asks the same question, gets the same answer, and
+  // folds the sale in as well — so a client who bought a package and is now
+  // collecting their dog was asked for it twice, once as an outstanding
+  // charge and once as part of today.
+  //
+  // Whatever the estimate is about to fold in comes out of the balance side.
+  // The estimate is the right place for it: it is what the pick-up will
+  // actually be saved with.
+  const foldedPackageKeys = new Set(
+    selectedDogs.flatMap((dog) =>
+      soldToday(dog).map((sold) => `pkg-${sold.id}`)
+    )
+  );
+  const previousDue =
+    action === "pick_up" && balance
+      ? unpaidCharges(balance).filter((c) => !foldedPackageKeys.has(c.key))
+      : [];
 
   const amountDue =
     dueTodayItems.reduce((sum, i) => sum + i.amount, 0) +

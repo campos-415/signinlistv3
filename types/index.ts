@@ -24,6 +24,16 @@ export type AddonKey = "bath" | "walk" | "nail_trim";
 // day into a single displayed line — see mergeRecords() in app/records/page.tsx.
 export type BathSize = "S" | "M" | "L";
 
+export type MealKey = "breakfast" | "lunch" | "dinner";
+
+// Short labels on purpose: these render as three letters inside a table cell
+// that already carries a name, a status pill and a price.
+export const MEALS: { key: MealKey; label: string; short: string; icon: string }[] = [
+  { key: "breakfast", label: "Breakfast", short: "B", icon: "🌅" },
+  { key: "lunch", label: "Lunch", short: "L", icon: "☀️" },
+  { key: "dinner", label: "Dinner", short: "D", icon: "🌙" },
+];
+
 export interface SignInRecord {
   id?: string;
   dog_name: string;
@@ -46,9 +56,28 @@ export interface SignInRecord {
   walk_in?: string | null;
   walk_staff_initials?: string | null;
   pickup_window?: string | null; // chosen at drop-off when a bath is booked — see PICKUP_WINDOWS
+  // Meals due today and which have been given. Per visit, not per dog:
+  // a dog that skips lunch today still eats lunch tomorrow.
+  // See signin-meals-migration.sql.
+  meals?: MealKey[] | null;
+  meals_given?: MealKey[] | null;
+  // A handover note for this visit — special requests, what the owner said
+  // at drop-off. Internal: never printed on the day sheets clients get.
+  staff_note?: string | null;
+  // Staff have said this visit must not spend a package day, overriding the
+  // automatic past-four-hours rule. Null means nobody has decided, which is
+  // not the same as false. See signin-notes-migration.sql.
+  package_opt_out?: boolean | null;
   by_staff?: boolean | null; // recorded by staff on the client's behalf, not at the lobby kiosk
+  // How a meet & greet went. Recorded against the assessment itself rather
+  // than the dog, so a dog brought back for a second try keeps both verdicts.
+  meet_greet_result?: MeetGreetResult | null;
+  meet_greet_note?: string | null;
   created_at?: string;
 }
+
+/** A meet & greet either clears the dog for daycare or it does not. */
+export type MeetGreetResult = "pass" | "fail";
 
 // Pick-up time windows offered at the kiosk when a bath is added, so
 // grooming knows when the dog is expected back at the front.

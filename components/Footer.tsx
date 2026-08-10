@@ -3,31 +3,44 @@
 import Link from "next/link";
 import { NAV_LINKS } from "@/lib/business";
 import { useBusiness } from "@/components/useBusiness";
+import { useSettings } from "@/components/SettingsProvider";
 import Image from "next/image";
 import lombardlogo from "../public/lombardlogo.avif";
 
 
 export default function Footer() {
   const BUSINESS = useBusiness();
+  // Both used to be hardcoded: the bundled logo regardless of what was
+  // uploaded, and a sentence naming Lombard Street in the middle of a
+  // paragraph on every page of every deployment.
+  const { business, content } = useSettings().settings;
+  const logoData = business.logoData;
   return (
     <footer className="border-t border-slate-100 bg-slate-50">
       <div className="mx-auto grid max-w-6xl gap-10 px-5 py-14 sm:px-8 md:grid-cols-4">
         <div className="md:col-span-2">
           <div className="mb-3 flex items-center gap-2.5">
-            <span className="flex  items-center justify-center rounded-2xl  text-xl text-white shadow-card">
-              <Image
-                src={lombardlogo}
-                alt={"Logo"}
-                width={100}
-                height={100}
-                objectFit=""
-                className="object-cover"
-              />
+            <span className="flex items-center justify-center">
+              {logoData ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoData}
+                  alt={BUSINESS.name}
+                  className="h-[52px] w-auto max-w-[180px] object-contain"
+                />
+              ) : (
+                <Image
+                  src={lombardlogo}
+                  alt={BUSINESS.name}
+                  width={100}
+                  height={100}
+                  className="h-[52px] w-auto object-contain"
+                />
+              )}
             </span>
           </div>
           <p className="max-w-sm text-sm leading-relaxed text-slate-500">
-            {BUSINESS.tagline} Daycare, cage-free boarding, bathing, and walking
-            — all in one pack-loving spot on Lombard Street.
+            {BUSINESS.tagline} {content.footerBlurb}
           </p>
           <a
             href={BUSINESS.instagram}

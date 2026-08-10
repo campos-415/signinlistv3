@@ -39,7 +39,8 @@ export function getBusiness(): BusinessInfo {
     shortName: b.name,
     // The kiosk tagline ("Sign your pup in or out") is an instruction, not a
     // slogan, so the website keeps its own line rather than borrowing it.
-    tagline: SITE_TAGLINE,
+    // Edited under Settings → Content.
+    tagline: getSettings().content.tagline,
     phone: b.phone,
     phoneHref: telHref(b.phone),
     email: b.email,
@@ -50,8 +51,6 @@ export function getBusiness(): BusinessInfo {
     domain: b.domain,
   };
 }
-
-const SITE_TAGLINE = "The home away from home for your furry best friend.";
 
 /**
  * Snapshot for module scope and server components, where the settings row

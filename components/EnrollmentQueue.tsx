@@ -17,6 +17,8 @@ import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
 import RecordPreview from "@/components/RecordPreview";
 import { Enrollment, EnrollmentStatus, VACCINES } from "@/types";
+import { reviewChecks } from "@/lib/enrollmentReview";
+import { todayKey } from "@/lib/dates";
 
 const TABS: { key: EnrollmentStatus; label: string }[] = [
   { key: "pending", label: "Pending" },
@@ -408,30 +410,38 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                   </span>
                 )}
 
-                {row.status === "approved" && (
-                  <Link
-                    href={ownerHref(row.phone)}
-                    className="text-xs font-medium text-accent-600 hover:underline"
-                  >
-                    Profile →
-                  </Link>
-                )}
-
-                <button
-                  onClick={() => removeRow(row)}
-                  disabled={busyId === row.id}
-                  title="Delete this submission"
-                  className="text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
-                >
-                  🗑 Delete
-                </button>
               </div>
 
               {openId === row.id && (
                 <div className="border-t border-line-soft p-4">
-                  {row.data ? <Review draft={row.data as EnrollmentDraft & { signature?: string }} /> : (
+                  {row.data ? (
+                    <Review draft={row.data as EnrollmentDraft & { signature?: string }} />
+                  ) : (
                     <p className="text-sm text-ink-3">Loading submission…</p>
                   )}
+
+                  {/* Housekeeping lives down here rather than beside Approve.
+                      Deleting a submission is not part of reviewing one, and a
+                      button that discards the paperwork does not belong a
+                      thumb's width from the one that accepts it. */}
+                  <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
+                    {row.status === "approved" && (
+                      <Link
+                        href={ownerHref(row.phone)}
+                        className="text-xs font-medium text-accent-600 hover:underline"
+                      >
+                        Open the client profile →
+                      </Link>
+                    )}
+                    <button
+                      onClick={() => removeRow(row)}
+                      disabled={busyId === row.id}
+                      title="Delete this submission"
+                      className="ml-auto text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
+                    >
+                      🗑 Delete this submission
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -457,8 +467,12 @@ function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) 
       </p>
     );
   }
+  const summary = reviewChecks(draft, todayKey());
+
   return (
     <div className="space-y-5 text-sm">
+      <ReviewVerdict summary={summary} />
+
       <Block title="Owner">
         <Row label="Name" value={`${o.owner_name} ${o.last_name}`} />
         <Row label="Phone" value={o.phone} />
@@ -599,6 +613,65 @@ function DogReview({ dog }: { dog: DogDraft }) {
 
 const inputClass =
   "w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+
+// The answer to the only question a reviewer actually has, put where they
+// look first instead of spread across four hundred pixels of form.
+function ReviewVerdict({ summary }: { summary: ReturnType<typeof reviewChecks> }) {
+  const { checks, blockers, warnings } = summary;
+
+  if (checks.length === 0) {
+    return (
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+        <p className="text-sm font-medium text-emerald-800">
+          ✓ Nothing outstanding — signed, agreed, and every dog vaccinated with a record on file.
+        </p>
+      </div>
+    );
+  }
+
+  const headline = [
+    blockers > 0 && `${blockers} to fix`,
+    warnings > 0 && `${warnings} to know about`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-3 ${
+        blockers > 0 ? "border-rose-200 bg-rose-50" : "border-amber-200 bg-amber-50"
+      }`}>
+      <p
+        className={`text-sm font-medium ${blockers > 0 ? "text-rose-800" : "text-amber-900"}`}>
+        {blockers > 0 ? "⚠️" : "•"} {headline}
+      </p>
+      <ul className="mt-2 space-y-1">
+        {checks.map((c, i) => (
+          <li key={i} className="flex gap-2 text-xs">
+            <span
+              className={`shrink-0 font-semibold ${
+                c.level === "blocker" ? "text-rose-600" : "text-amber-700"
+              }`}>
+              {c.level === "blocker" ? "✕" : "!"}
+            </span>
+            <span className={c.level === "blocker" ? "text-rose-900" : "text-amber-900"}>
+              {c.scope && <span className="font-medium">{c.scope}: </span>}
+              {c.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {blockers > 0 && (
+        // Staff regularly have the certificate in their hand while the client
+        // stands there. Refusing the approval would only push them to enter it
+        // by hand somewhere the queue cannot see.
+        <p className="mt-2 text-[11px] text-ink-3">
+          You can still approve — this is a checklist to follow up on, not a lock.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (

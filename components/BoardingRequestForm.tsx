@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import DateField from "@/components/DateField";
 import { Field, YesNo, inputClass } from "@/components/FormBits";
 import { formatPhoneInput } from "@/lib/phone";
 import { useSettings } from "@/components/SettingsProvider";
+import EnrollmentForm, { EnrollmentFormHandle } from "@/components/EnrollmentForm";
 import { prettyDateKey } from "@/lib/dates";
 import {
   BATH_PRICES,
@@ -71,11 +72,20 @@ export default function BoardingRequestForm({
     setError("");
     setSubmitting(true);
     try {
+      // One button, two submissions. The enrollment goes first: if it fails
+      // validation there is no point filing a stay for a dog with no profile,
+      // and the enrollment form shows its own reason inline.
+      if (enrollingHere) {
+        const ok = await enrollmentRef.current?.submit();
+        if (!ok) {
+          setError("Please finish the enrollment form above, then send again.");
+          return;
+        }
+      }
       await submitBoardingRequest(draft, source);
       await sendBoardingAcknowledgement(draft);
       await notifyStaffOfBoarding(draft);
       setDone(true);
-      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) {
       console.error("Boarding request failed:", e);
       setError("Couldn't send that — check your connection and try again.");
@@ -87,6 +97,30 @@ export default function BoardingRequestForm({
   const nights = nightsFor(draft);
   const dogs = cleanDogNames(draft);
   const notEnrolled = draft.alreadyEnrolled === false;
+  const [showEnrollment, setShowEnrollment] = useState(false);
+  const [enrollmentSent, setEnrollmentSent] = useState(false);
+  const enrollmentRef = useRef<EnrollmentFormHandle>(null);
+  // True while the embedded enrollment is on screen and unsent — that is when
+  // it owns the dog names and the single submit covers both forms.
+  const enrollingHere = notEnrolled && showEnrollment && !enrollmentSent;
+  // The embedded enrollment reuses these four rather than asking again, so
+  // they have to exist before it can open.
+  const contactReady =
+    !!draft.owner_name.trim() &&
+    !!draft.last_name.trim() &&
+    draft.phone.replace(/\D/g, "").length >= 7 &&
+    /^\S+@\S+\.\S+$/.test(draft.email.trim());
+
+  // Scrolled after the confirmation has rendered, and instantly.
+  //
+  // It used to smooth-scroll from inside the submit handler, while the tall
+  // form was still on screen. The document then collapsed to a short
+  // confirmation mid-animation, leaving the viewport parked far below the
+  // new end of the page — a blank white screen until something (a click)
+  // made the browser clamp the scroll back.
+  useEffect(() => {
+    if (done) window.scrollTo(0, 0);
+  }, [done]);
 
   if (done) {
     return (
@@ -218,40 +252,99 @@ export default function BoardingRequestForm({
               onChange={(v) => set("alreadyEnrolled", v)}
             />
           </Field>
-          {/* A hard stop, not a warning. Boarding is only offered to
-              enrolled dogs, and letting the request through would just
-              create one staff have to decline. */}
+          {/* Not a dead end any more.
+              Sending someone away to another form lost everything they had
+              already typed and lost the booking with it. The enrollment form
+              opens here instead, carrying their details across, and the dates
+              below stay open — both can be sent in one sitting and staff
+              approve the enrollment and the stay together. */}
           {draft.alreadyEnrolled === false && (
-            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
               <p className="text-sm font-medium text-amber-900">
-                Please complete enrollment first.
+                {enrollmentSent
+                  ? "✓ Enrollment sent — now finish your dates below."
+                  : "Let's get them enrolled at the same time."}
               </p>
               <p className="mt-1 text-xs text-amber-800">
-                Every boarding dog needs an enrollment form and a meet &amp; greet on file before we
-                can take a stay. It only takes a few minutes, and you won&apos;t need to do it
-                again.
+                {enrollmentSent
+                  ? "We'll review the profile and your requested dates together."
+                  : "Every boarding dog needs an enrollment form and a meet & greet on file. " +
+                    "Fill it in here — we've carried over what you have already typed — and " +
+                    "request your dates below. You can send both now; we'll confirm the stay " +
+                    "once the enrollment is approved."}
               </p>
-              <Link
-                href="/enroll"
-                className="mt-3 inline-block rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-amber-700"
-              >
-                Go to the enrollment form →
-              </Link>
-              <p className="mt-2 text-[11px] text-amber-800">
-                Once we&apos;ve approved it, come back and request your dates.
-              </p>
+              {!enrollmentSent &&
+                (contactReady ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowEnrollment((v) => !v)}
+                    className="mt-3 inline-block rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-amber-700"
+                  >
+                    {showEnrollment ? "Hide the enrollment form" : "Open the enrollment form"}
+                  </button>
+                ) : (
+                  // The enrollment reuses the details above rather than
+                  // asking twice, so it cannot open until they are there —
+                  // otherwise it would fail validation on fields the person
+                  // can no longer see.
+                  <p className="mt-3 text-xs font-medium text-amber-900">
+                    Fill in your name, phone and email above, then the enrollment form opens here.
+                  </p>
+                ))}
+            </div>
+          )}
+
+          {draft.alreadyEnrolled === false && showEnrollment && !enrollmentSent && (
+            <div className="mt-3 overflow-hidden rounded-2xl border border-line bg-surface">
+              <EnrollmentForm
+                ref={enrollmentRef}
+                source="web"
+                embed
+                lockContact
+                hideSubmit
+                onDogNamesChange={(names) =>
+                  setDraft((d) => ({ ...d, dogNames: names.length ? names : [""] }))
+                }
+                prefill={{
+                  owner_name: draft.owner_name,
+                  last_name: draft.last_name,
+                  phone: draft.phone,
+                  email: draft.email,
+                  dogNames: draft.dogNames,
+                }}
+                onSubmitted={() => {
+                  setEnrollmentSent(true);
+                  setShowEnrollment(false);
+                }}
+              />
             </div>
           )}
         </div>
       </Section>
 
-      {/* Everything past this point is hidden while enrollment is
-          outstanding — there is no point collecting dates for a stay that
-          cannot be booked yet. */}
-      {notEnrolled ? null : (
-        <>
+      {/* The rest of the form stays open whether or not the dog is enrolled.
+          A request from a new client is worth having: staff can see the dates
+          they want while they review the enrollment, rather than losing the
+          booking to a redirect. */}
+      <>
       {/* Dogs and dates */}
       <Section title="Dogs and dates" step={3}>
+        {enrollingHere ? (
+          // The enrollment above already named them, and naming them twice is
+          // how the two submissions end up disagreeing about who is coming.
+          <div className="rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
+              Dogs from your enrollment
+            </p>
+            <p className="mt-1 text-sm text-ink-2">
+              {cleanDogNames(draft).join(" · ") || "Add your dog in the enrollment form above"}
+            </p>
+            <p className="mt-1 text-[11px] text-ink-3">
+              Add another dog up there and it appears here too.
+            </p>
+          </div>
+        ) : (
+          <>
         <div className="space-y-2">
           {draft.dogNames.map((name, i) => (
             <div key={i} className="flex items-end gap-2">
@@ -285,6 +378,8 @@ export default function BoardingRequestForm({
         >
           + Add another dog
         </button>
+          </>
+        )}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field label="Drop-off date" required>
@@ -418,7 +513,11 @@ export default function BoardingRequestForm({
           disabled={submitting}
           className="rounded-xl bg-accent-500 px-6 py-3 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
         >
-          {submitting ? "Sending…" : "Request these dates"}
+          {submitting
+            ? "Sending…"
+            : enrollingHere
+              ? "Send enrollment & request dates"
+              : "Request these dates"}
         </button>
         <p className="text-xs text-ink-3">
           We&apos;ll email you to confirm — nothing is held until then.
@@ -429,8 +528,7 @@ export default function BoardingRequestForm({
           </Link>
         )}
       </div>
-        </>
-      )}
+      </>
     </div>
   );
 }

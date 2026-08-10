@@ -25,8 +25,45 @@ export function walkTimeOptions(startHour: number, endHour: number, step: number
   return out;
 }
 
+// The dropdown used across both walk logs.
+//
+// The native control chrome and the chevron are handled once for the whole
+// app in globals.css, so what is left here is the sizing that suits a dense
+// table row, plus the focus ring every other input in the app has and these
+// were missing.
 const selectClass =
-  "rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500 print:border-0 print:bg-transparent print:px-0";
+  "w-full rounded-lg border border-line bg-surface-2 py-1.5 pl-2.5 text-xs font-medium text-ink outline-none transition " +
+  "hover:border-accent-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-100 " +
+  // On paper it is a value, not a control.
+  "print:border-0 print:bg-transparent print:py-0 print:pl-0 print:font-normal print:text-paper-ink";
+
+export function WalkSelect({
+  value,
+  onSave,
+  ariaLabel,
+  title,
+  width,
+  children,
+}: {
+  value: string;
+  onSave: (v: string) => void;
+  ariaLabel: string;
+  title?: string;
+  width: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <select
+      aria-label={ariaLabel}
+      title={title}
+      value={value}
+      onChange={(e) => onSave(e.target.value)}
+      className={`${selectClass} ${width}`}
+    >
+      {children}
+    </select>
+  );
+}
 
 export function TimeSelect({
   value,
@@ -48,12 +85,7 @@ export function TimeSelect({
   const extra = value && !options.includes(value) ? value : null;
 
   return (
-    <select
-      aria-label={ariaLabel}
-      value={value}
-      onChange={(e) => onSave(e.target.value)}
-      className={`${selectClass} ${width}`}
-    >
+    <WalkSelect value={value} onSave={onSave} ariaLabel={ariaLabel} width={width}>
       <option value="">—</option>
       {extra && <option value={extra}>{extra}</option>}
       {options.map((t) => (
@@ -61,7 +93,7 @@ export function TimeSelect({
           {t}
         </option>
       ))}
-    </select>
+    </WalkSelect>
   );
 }
 
@@ -81,12 +113,12 @@ export function StaffSelect({
   const extra = value && !names.includes(value) ? value : null;
 
   return (
-    <select
-      aria-label={ariaLabel}
+    <WalkSelect
       value={value}
-      onChange={(e) => onSave(e.target.value)}
+      onSave={onSave}
+      ariaLabel={ariaLabel}
+      width={width}
       title={names.length ? undefined : "Add staff names under Settings → Brand"}
-      className={`${selectClass} ${width}`}
     >
       <option value="">—</option>
       {extra && <option value={extra}>{extra}</option>}
@@ -95,6 +127,6 @@ export function StaffSelect({
           {n}
         </option>
       ))}
-    </select>
+    </WalkSelect>
   );
 }

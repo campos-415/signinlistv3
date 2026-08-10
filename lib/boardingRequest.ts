@@ -90,12 +90,14 @@ export function validateBoardingRequest(draft: BoardingRequestDraft): string {
   if (!/^\S+@\S+\.\S+$/.test(draft.email.trim())) return "Enter a valid email address.";
   if (draft.alreadyEnrolled === null)
     return "Let us know whether your dog is already enrolled with us.";
-  // Boarding is only offered to enrolled dogs. Taken on trust rather than
-  // looked up: this form is public, and probing it with phone numbers
-  // should not reveal who is a client. Staff still see a real check
-  // against the database when they review the request.
-  if (draft.alreadyEnrolled === false)
-    return "Every boarding dog needs to complete enrollment first — use the enrollment form below.";
+  // A dog that is not enrolled yet no longer blocks the request. The form
+  // offers the enrollment alongside it, and both arrive together for staff to
+  // approve in one go — turning a new client away at this point lost the
+  // booking as well as the enrollment.
+  //
+  // The answer is still taken on trust rather than looked up: this form is
+  // public, and probing it with phone numbers should not reveal who is a
+  // client. Staff see the real check against the database when they review.
 
   const dogs = cleanDogNames(draft);
   if (!dogs.length) return "Enter your dog's name.";

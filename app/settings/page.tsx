@@ -24,10 +24,11 @@ import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import GalleryEditor from "@/components/GalleryEditor";
-import { SinglePhotoEditor, TeamEditor } from "@/components/SitePhotoEditors";
+import { SinglePhotoEditor } from "@/components/SitePhotoEditors";
 import ReportsSection from "@/components/ReportsSection";
+import ContentEditor from "@/components/ContentEditor";
 
-type Tab = "brand" | "pricing" | "website" | "messaging" | "reports";
+type Tab = "brand" | "pricing" | "website" | "content" | "messaging" | "reports";
 
 // Thirteen sections on one page was a scroll, and the important ones (money)
 // sat below a wall of photo uploaders. Grouped by what someone came here to
@@ -36,6 +37,7 @@ const TABS: { key: Tab; label: string; blurb: string }[] = [
   { key: "brand", label: "🎨 Brand", blurb: "Name, logo and colours" },
   { key: "pricing", label: "💵 Pricing", blurb: "Rates, add-ons and packages" },
   { key: "website", label: "🌐 Website", blurb: "Public site, contact details and photos" },
+  { key: "content", label: "📝 Content", blurb: "The words on every public page" },
   { key: "messaging", label: "✉️ Messaging", blurb: "Client email and staff alerts" },
   { key: "reports", label: "📊 Reports", blurb: "Print, export and money owed" },
 ];
@@ -50,6 +52,27 @@ export default function SettingsPage() {
 
 function Settings() {
   const [origin, setOrigin] = useState("");
+
+  function setReview(index: number, patch: Partial<AppSettings["reviews"]["items"][number]>) {
+    setDraft((d) => ({
+      ...d,
+      reviews: {
+        ...d.reviews,
+        items: d.reviews.items.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+      },
+    }));
+  }
+
+  // Reordering matters: the first two are what most visitors read.
+  function moveReview(index: number, delta: number) {
+    setDraft((d) => {
+      const items = [...d.reviews.items];
+      const to = index + delta;
+      if (to < 0 || to >= items.length) return d;
+      [items[index], items[to]] = [items[to], items[index]];
+      return { ...d, reviews: { ...d.reviews, items } };
+    });
+  }
   const [clearing, setClearing] = useState(false);
   const [cleared, setCleared] = useState("");
 
@@ -878,18 +901,153 @@ function Settings() {
         </div>
 
         <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
-          Team
-        </p>
-        <div className="mt-1">
-          <TeamEditor />
-        </div>
-
-        <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
           Gallery
         </p>
         <div className="mt-1">
           <GalleryEditor />
         </div>
+      </Section>
+
+      {/* Reviews — shown on the home page and the reviews section */}
+      <Section
+        title="Reviews"
+        blurb="Quotes shown on the website. Copy them from your real listing — do not write new ones.">
+        <label className="mb-3 flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.reviews.enabled}
+            onChange={(e) =>
+              setDraft({ ...draft, reviews: { ...draft.reviews, enabled: e.target.checked } })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Show reviews on the website
+            <span className="block text-[11px] text-ink-3">
+              Turn this off, or delete them all, and the reviews section disappears entirely.
+            </span>
+          </span>
+        </label>
+
+        <div className="mb-3 max-w-xs">
+          <Field label="Where they came from">
+            <input
+              value={draft.reviews.source}
+              onChange={(e) =>
+                setDraft({ ...draft, reviews: { ...draft.reviews, source: e.target.value } })
+              }
+              placeholder="Yelp"
+              className={inputClass}
+            />
+            <p className="mt-1 text-[11px] text-ink-3">
+              Shown as &ldquo;based on 4 Yelp reviews&rdquo;.
+            </p>
+          </Field>
+        </div>
+
+        <div className="space-y-3">
+          {draft.reviews.items.map((review, i) => (
+            <div key={i} className="rounded-2xl border border-line-soft bg-surface-2 p-3.5">
+              <div className="grid gap-3 sm:grid-cols-[1fr,1fr,auto]">
+                <Field label="Name">
+                  <input
+                    value={review.name}
+                    onChange={(e) => setReview(i, { name: e.target.value })}
+                    placeholder="Rowena W."
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="When">
+                  <input
+                    value={review.date}
+                    onChange={(e) => setReview(i, { date: e.target.value })}
+                    placeholder="October 2025"
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Stars">
+                  <select
+                    value={review.rating}
+                    onChange={(e) => setReview(i, { rating: Number(e.target.value) })}
+                    className={inputClass}
+                  >
+                    {[5, 4, 3, 2, 1].map((n) => (
+                      <option key={n} value={n}>
+                        {"★".repeat(n)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div className="mt-2">
+                <Field label="Quote">
+                  <textarea
+                    value={review.quote}
+                    onChange={(e) => setReview(i, { quote: e.target.value })}
+                    rows={2}
+                    className={`${inputClass} leading-relaxed`}
+                  />
+                </Field>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  onClick={() => moveReview(i, -1)}
+                  disabled={i === 0}
+                  title="Move up"
+                  className="rounded-lg border border-line px-2 py-1 text-xs text-ink-3 transition hover:border-accent-300 disabled:opacity-40"
+                >
+                  ↑
+                </button>
+                <button
+                  onClick={() => moveReview(i, 1)}
+                  disabled={i === draft.reviews.items.length - 1}
+                  title="Move down"
+                  className="rounded-lg border border-line px-2 py-1 text-xs text-ink-3 transition hover:border-accent-300 disabled:opacity-40"
+                >
+                  ↓
+                </button>
+                <button
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      reviews: {
+                        ...draft.reviews,
+                        items: draft.reviews.items.filter((_, x) => x !== i),
+                      },
+                    })
+                  }
+                  className="ml-auto rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-500 transition hover:border-rose-300"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button
+          onClick={() =>
+            setDraft({
+              ...draft,
+              reviews: {
+                ...draft.reviews,
+                items: [
+                  ...draft.reviews.items,
+                  { name: "", date: "", rating: 5, quote: "" },
+                ],
+              },
+            })
+          }
+          className="mt-3 w-full rounded-xl border border-dashed border-line px-3 py-2 text-xs font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
+        >
+          + Add a review
+        </button>
+
+        <p className="mt-3 rounded-xl bg-amber-50 px-3.5 py-2.5 text-[11px] leading-relaxed text-amber-900">
+          ⚠️ Only publish reviews people actually left you. Copy them from your Google or Yelp
+          listing word for word. Writing your own is against those platforms&apos; terms and, in the
+          US, against FTC rules on endorsements.
+        </p>
       </Section>
 
       {/* Contact details — shown across the public website */}
@@ -1070,6 +1228,8 @@ function Settings() {
       </Section>
         </>
       )}
+
+      {tab === "content" && <ContentEditor draft={draft} setDraft={setDraft} />}
 
       {tab === "reports" && <ReportsSection />}
 

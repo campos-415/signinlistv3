@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import SignaturePad, { SignaturePadHandle } from "@/components/SignaturePad";
 import DateField from "@/components/DateField";
 import { CheckGrid, ChoiceWithOther, Field, YesNo, YesNoDetail, inputClass } from "@/components/FormBits";
@@ -44,9 +44,28 @@ import {
 // they are, so this is the ceiling on what a submission can weigh.
 const MAX_DOC_BYTES = 4 * 1024 * 1024;
 
-export default function EnrollmentForm({
+export interface EnrollmentPrefill {
+  owner_name?: string;
+  last_name?: string;
+  phone?: string;
+  email?: string;
+  /** One dog card is seeded per name. */
+  dogNames?: string[];
+}
+
+export interface EnrollmentFormHandle {
+  /** Validates and sends. Resolves true only when it was filed. */
+  submit: () => Promise<boolean>;
+}
+
+function EnrollmentFormInner({
   source,
   embed = false,
+  prefill,
+  lockContact = false,
+  hideSubmit = false,
+  onDogNamesChange,
+  onSubmitted,
 }: {
   // Where the submission came from, so staff reviewing the queue know
   // whether someone stood at the front desk or filled it in at home.
@@ -54,16 +73,78 @@ export default function EnrollmentForm({
   // Drops the logo, heading and navigation, for embedding in an iframe on
   // the business's own website where that chrome is already on the page.
   embed?: boolean;
-}) {
+  // Details the person has already typed somewhere else — the booking form
+  // asks for the same name, phone and dogs, and asking twice on one page is
+  // how a form gets abandoned.
+  prefill?: EnrollmentPrefill;
+  // Hides the four contact fields the host form already collected, and keeps
+  // them following whatever the host has. Only meaningful with `prefill`.
+  lockContact?: boolean;
+  // Hides this form's own submit. The host drives it through the ref
+  // instead, so one button sends both forms.
+  hideSubmit?: boolean;
+  // Reports the dog names as they are typed, so a host form that also needs
+  // them does not have to ask a second time.
+  onDogNamesChange?: (names: string[]) => void;
+  // Lets a host page react to a successful submission and keep its own
+  // chrome, instead of this form taking over with its confirmation screen.
+  onSubmitted?: () => void;
+}, ref: React.Ref<EnrollmentFormHandle>) {
   const { settings } = useSettings();
   // The kiosk sends people back to the sign-in screen; the website sends
   // them back to the website.
   const homeHref = source === "kiosk" ? "/kiosk" : "/";
-  const [draft, setDraft] = useState<EnrollmentDraft>(emptyEnrollment());
+  const [draft, setDraft] = useState<EnrollmentDraft>(() => {
+    const base = emptyEnrollment();
+    if (!prefill) return base;
+    const names = (prefill.dogNames ?? []).map((n) => n.trim()).filter(Boolean);
+    return {
+      ...base,
+      owner: {
+        ...base.owner,
+        owner_name: prefill.owner_name ?? base.owner.owner_name,
+        last_name: prefill.last_name ?? base.owner.last_name,
+        phone: prefill.phone ?? base.owner.phone,
+        email: prefill.email ?? base.owner.email,
+      },
+      // One card per dog already named, so the questionnaire is the only
+      // thing left to fill in.
+      dogs: names.length
+        ? names.map((n) => ({ ...emptyDog(), dog_name: n }))
+        : base.dogs,
+    };
+  });
+  const lockedName = prefill?.owner_name ?? "";
+  const lockedLast = prefill?.last_name ?? "";
+  const lockedPhone = prefill?.phone ?? "";
+  const lockedEmail = prefill?.email ?? "";
+  useEffect(() => {
+    if (!lockContact) return;
+    setDraft((d) => ({
+      ...d,
+      owner: {
+        ...d.owner,
+        owner_name: lockedName,
+        last_name: lockedLast,
+        phone: lockedPhone,
+        email: lockedEmail,
+      },
+    }));
+  }, [lockContact, lockedName, lockedLast, lockedPhone, lockedEmail]);
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const sigRef = useRef<SignaturePadHandle>(null);
+
+  useImperativeHandle(ref, () => ({ submit: handleSubmit }));
+
+  // Mirror the dog names outward whenever they change.
+  const dogNamesKey = draft.dogs.map((d) => d.dog_name).join("\u0000");
+  useEffect(() => {
+    onDogNamesChange?.(draft.dogs.map((d) => d.dog_name));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dogNamesKey]);
 
   function setOwner<K extends keyof EnrollmentDraft["owner"]>(
     key: K,
@@ -120,15 +201,15 @@ export default function EnrollmentForm({
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(): Promise<boolean> {
     const problem = validateEnrollment(draft);
     if (problem) {
       setError(problem);
-      return;
+      return false;
     }
     if (sigRef.current?.isEmpty()) {
       setError("Please sign at the bottom of the form.");
-      return;
+      return false;
     }
     setError("");
     setSubmitting(true);
@@ -140,16 +221,23 @@ export default function EnrollmentForm({
       await sendAcknowledgement(draft);
       await notifyStaffOfEnrollment(draft);
       setDone(true);
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      onSubmitted?.();
+      return true;
     } catch (e) {
       console.error("Enrollment submit failed:", e);
       setError("Couldn't send that — check your connection and try again.");
+      return false;
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (done) {
+  // Same fix as the booking form, and only when this form owns the page.
+  useEffect(() => {
+    if (done && !hideSubmit) window.scrollTo(0, 0);
+  }, [done, hideSubmit]);
+
+  if (done && !hideSubmit) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-6 py-20 text-center">
         <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-500 text-3xl text-accent-ink shadow-card">
@@ -212,6 +300,30 @@ export default function EnrollmentForm({
       {/* Owner */}
       <Section title="Owner information" step={2}>
         <div className="grid gap-3 sm:grid-cols-2">
+          {/* When this form is embedded in another that already asked for
+              them, these four are shown back rather than asked again. Typing
+              a name and a phone number twice on one page is the fastest way
+              to make someone abandon it — and to end up with two spellings of
+              the same client. */}
+          {lockContact ? (
+            <div className="sm:col-span-2 rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
+                Using the details you entered above
+              </p>
+              <p className="mt-1 text-sm text-ink-2">
+                {[draft.owner.owner_name, draft.owner.last_name].filter(Boolean).join(" ") ||
+                  "Your name"}
+                <span className="text-ink-3">
+                  {draft.owner.phone ? ` · ${draft.owner.phone}` : ""}
+                  {draft.owner.email ? ` · ${draft.owner.email}` : ""}
+                </span>
+              </p>
+              <p className="mt-1 text-[11px] text-ink-3">
+                Change them at the top of the page and they update here.
+              </p>
+            </div>
+          ) : (
+            <>
           <Field label="First name" required>
             <input
               value={draft.owner.owner_name}
@@ -248,6 +360,8 @@ export default function EnrollmentForm({
               className={inputClass}
             />
           </Field>
+            </>
+          )}
           <div className="sm:col-span-2">
             <Field label="Street address" required>
               <input
@@ -451,6 +565,7 @@ export default function EnrollmentForm({
         </p>
       )}
 
+      {!hideSubmit && (
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
@@ -469,6 +584,7 @@ export default function EnrollmentForm({
           </Link>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -905,3 +1021,6 @@ function ContractText({ business }: { business: string }) {
     </div>
   );
 }
+
+const EnrollmentForm = forwardRef(EnrollmentFormInner);
+export default EnrollmentForm;

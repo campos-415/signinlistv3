@@ -13,10 +13,13 @@ html {
 :root {
   --accent-50: 238 244 255;
   --accent-100: 219 230 254;
+  --accent-200: 204 216 251;
+  --accent-300: 170 189 247;
   --accent-400: 122 156 247;
   --accent-500: 74 114 239;
   --accent-600: 52 87 221;
   --accent-700: 42 68 179;
+  --accent-800: 38 59 124;
 
   --accent-ink: 255 255 255;
 
@@ -61,6 +64,43 @@ html {
 html,
 body {
   @apply bg-surface-2 text-ink;
+}
+
+/* Dropdowns.
+
+   Every select in the app carried our border, background and font but not
+   `appearance: none`, so the browser drew its own control inside them —
+   system chevron, system inset shadow, system font metrics. Against our own
+   inputs and pills that reads as unstyled, and it differs on every platform.
+
+   Done here as one element rule rather than a class on nineteen selects, so
+   the next one somebody writes is right without being told. `:not([multiple])`
+   is not decoration: it lifts the specificity to 0,1,1 so this beats the
+   Tailwind padding utilities the selects already carry, which is what
+   guarantees room for the chevron instead of text running underneath it.
+   A list box is left alone — it has no chevron and needs no room. */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  /* Inline SVG, because a background image cannot take `currentColor`. The
+     dark variant below is the same chevron in a lighter ink. */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%2364748B' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 0.85rem;
+  padding-right: 1.9rem;
+}
+
+.dark select:not([multiple]) {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%2394A3B8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+}
+
+/* On paper a dropdown is a value, not a control. */
+@media print {
+  select:not([multiple]) {
+    background-image: none;
+    padding-right: 0;
+  }
 }
 
 .sig-canvas {

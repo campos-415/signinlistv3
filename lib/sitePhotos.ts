@@ -72,28 +72,6 @@ export const PLACEHOLDER_HERO =
 export const PLACEHOLDER_ABOUT =
   "https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=1200&q=80";
 
-/** The team as the site shipped — real people, so these are real files. */
-export const DEFAULT_TEAM: { name: string; role: string; bio: string; data: string }[] = [
-  {
-    name: "Luis",
-    role: "Animal Care",
-    bio: "Brings veterinary medicine expertise to the daycare floor, focusing on animal health standards and personalized care for every dog.",
-    data: "/Luis.avif",
-  },
-  {
-    name: "Roberto",
-    role: "Operations",
-    bio: "A background in business management shapes how the facility runs day to day — safe, organized, and genuinely engaging for the dogs in it.",
-    data: "/Roberto.avif",
-  },
-  {
-    name: "Meshal",
-    role: "Growth & Marketing",
-    bio: "A lifelong dog owner with experience scaling and marketing small businesses, helping more dogs find their way to the pack.",
-    data: "/Meshal.avif",
-  },
-];
-
 export async function loadSitePhotos(kind = "gallery"): Promise<SitePhoto[]> {
   try {
     const supabase = getSupabase();

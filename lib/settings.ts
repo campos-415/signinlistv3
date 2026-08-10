@@ -8,6 +8,7 @@
 // synchronous — nothing had to become async to support this.
 
 import { getSupabase } from "@/lib/supabase";
+import { DEFAULT_CONTENT, SiteContent } from "@/lib/siteContent";
 
 export interface PricingSettings {
   daycareFullDay: number;
@@ -122,6 +123,23 @@ export interface EmailSettings {
 //
 // Either way /enroll and /book stay available, because those are the pieces
 // an existing website needs to link to or iframe.
+/** One customer review shown on the marketing site. */
+export interface ReviewItem {
+  name: string;
+  /** Free text, e.g. "October 2025" — reviews rarely need a real date. */
+  date: string;
+  /** 1-5. */
+  rating: number;
+  quote: string;
+}
+
+export interface ReviewsSettings {
+  enabled: boolean;
+  /** Where they came from, shown as "from Yelp" under the average. */
+  source: string;
+  items: ReviewItem[];
+}
+
 export interface SiteSettings {
   enabled: boolean;
   // Where "home" points when the built-in site is off — normally their own
@@ -162,6 +180,9 @@ export interface StaffSettings {
 
 export interface AppSettings {
   site: SiteSettings;
+  // Every word the marketing pages say. See lib/siteContent.ts.
+  content: SiteContent;
+  reviews: ReviewsSettings;
   business: BusinessSettings;
   pricing: PricingSettings;
   addons: CatalogItem[];
@@ -177,6 +198,35 @@ export interface AppSettings {
 // baseline a fresh install starts from.
 export const DEFAULT_SETTINGS: AppSettings = {
   site: { enabled: true, externalUrl: "" },
+  content: DEFAULT_CONTENT,
+  reviews: {
+    enabled: true,
+    source: "Yelp",
+    items: [
+      {
+        name: "Rowena W.",
+        date: "October 2025",
+        rating: 5,
+        quote:
+          "One of the cleanest doggy daycares — spacious, light and airy, with dependable, attentive staff.",
+      },
+      {
+        name: "Carmen E.",
+        date: "August 2024",
+        rating: 5,
+        quote:
+          "Never experienced a doggie daycare as pristine clean as this! The place is immaculate.",
+      },
+      {
+        name: "Catrina L.",
+        date: "June 2024",
+        rating: 5,
+        quote:
+          "My dog loves going so much that all I have to do is say daycare in the morning and he runs to the front door.",
+      },
+      { name: "Sara B.", date: "June 2024", rating: 5, quote: "The facility is clean and bright." },
+    ],
+  },
   business: {
     name: "Lombard Doggy Daycare",
     tagline: "Sign your pup in or out",
@@ -312,8 +362,40 @@ export function getSettings(): AppSettings {
   return cache;
 }
 
+/** The website's copy. Shorthand for the many callers that want only this. */
+export function getContent(): SiteContent {
+  return cache.content;
+}
+
 export function settingsLoaded(): boolean {
   return loaded;
+}
+
+// Recursive merge, driven by the shape of the default rather than by what is
+// stored. Website copy is deeply nested and mostly optional, so spelling out
+// every level by hand the way the sections below do would be unreadable and
+// would silently drop a field the day someone adds one.
+//
+// Walking the DEFAULT's keys is the important part: a row written by an older
+// version gains any field added since, and junk left in the JSON by a
+// half-finished experiment is dropped rather than reaching a page.
+//
+// `undefined` means absent, so the default fills in. Anything else stored
+// wins — including an empty string and an empty array, which are how staff
+// say "I want nothing here". Treating those as absent is what makes a
+// deleted paragraph reappear on the next reload.
+function deepMerge<T>(base: T, over: unknown): T {
+  if (over === undefined || over === null) return base;
+  if (Array.isArray(base)) return (Array.isArray(over) ? over : base) as T;
+  if (typeof base === "object" && base !== null && typeof over === "object") {
+    const src = over as Record<string, unknown>;
+    const out = { ...(base as Record<string, unknown>) };
+    for (const key of Object.keys(out)) out[key] = deepMerge(out[key], src[key]);
+    return out as T;
+  }
+  // A stored value of the wrong type (a number where a headline belongs)
+  // would render as garbage; fall back rather than trust it.
+  return typeof over === typeof base ? (over as T) : base;
 }
 
 // Merges a stored row over the defaults, so a settings row written by an
@@ -345,6 +427,14 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
     square: { ...DEFAULT_SETTINGS.square, ...(stored.square ?? {}) },
     staff: { ...DEFAULT_SETTINGS.staff, ...(stored.staff ?? {}) },
     site: { ...DEFAULT_SETTINGS.site, ...(stored.site ?? {}) },
+    content: deepMerge(DEFAULT_CONTENT, stored.content),
+    reviews: {
+      ...DEFAULT_SETTINGS.reviews,
+      ...(stored.reviews ?? {}),
+      // A business with no reviews yet is a legitimate state, so an empty
+      // list must not resurrect the shipped ones.
+      items: stored.reviews?.items ?? DEFAULT_SETTINGS.reviews.items,
+    },
   };
 }
 

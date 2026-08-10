@@ -1,37 +1,46 @@
-// Real customer reviews, pulled from the business's public Yelp listing
-// (via its Yahoo Local aggregation). Keep these genuine — swap in newer
-// ones as they come in rather than inventing quotes.
-export const REVIEWS = [
-  {
-    name: "Rowena W.",
-    date: "October 2025",
-    rating: 5,
-    quote:
-      "One of the cleanest doggy daycares — spacious, light and airy, with dependable, attentive staff.",
+// Customer reviews shown on the marketing site.
+//
+// These used to be a hardcoded array here, which meant a redeploy to change
+// a quote. They now live in the settings row alongside prices and opening
+// hours, so staff edit them under Settings → Website.
+//
+// Keep them genuine — copy them from the business's real listing rather than
+// writing new ones. Invented reviews are a legal problem in the US, and an
+// editable box makes them easy to invent by accident.
+
+import { getSettings } from "@/lib/settings";
+import type { ReviewItem } from "@/lib/settings";
+
+export type { ReviewItem };
+
+/**
+ * Read through getters, the same way PRICING is, so call sites keep working
+ * and every read picks up whatever settings currently hold.
+ *
+ * On the server this returns the shipped defaults — settings are loaded in
+ * the browser. Anything that must show the saved values renders on the
+ * client; see components/Reviews.tsx.
+ */
+export const REVIEWS: ReviewItem[] = new Proxy([] as ReviewItem[], {
+  get(_t, prop, receiver) {
+    return Reflect.get(getSettings().reviews.items, prop, receiver);
   },
-  {
-    name: "Carmen E.",
-    date: "August 2024",
-    rating: 5,
-    quote: "Never experienced a doggie daycare as pristine clean as this! The place is immaculate.",
-  },
-  {
-    name: "Catrina L.",
-    date: "June 2024",
-    rating: 5,
-    quote:
-      "My dog loves going so much that all I have to do is say “daycare” in the morning and he runs to the front door.",
-  },
-  {
-    name: "Sara B.",
-    date: "June 2024",
-    rating: 5,
-    quote: "The facility is clean and bright.",
-  },
-];
+  has: (_t, prop) => prop in getSettings().reviews.items,
+  ownKeys: () => Reflect.ownKeys(getSettings().reviews.items),
+  getOwnPropertyDescriptor: (_t, prop) =>
+    Reflect.getOwnPropertyDescriptor(getSettings().reviews.items, prop),
+});
 
 export const REVIEW_SUMMARY = {
-  average: 5.0,
-  count: REVIEWS.length,
-  source: "Yelp",
+  get average() {
+    const items = getSettings().reviews.items;
+    if (!items.length) return 0;
+    return items.reduce((sum, r) => sum + (r.rating || 0), 0) / items.length;
+  },
+  get count() {
+    return getSettings().reviews.items.length;
+  },
+  get source() {
+    return getSettings().reviews.source;
+  },
 };

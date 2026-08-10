@@ -7,9 +7,21 @@ import { formatPhoneInput } from "@/lib/phone";
 import { dateKey, parseDateKey, prettyDateKey, todayKey } from "@/lib/dates";
 import { estimateBoardingTotal } from "@/lib/pricing";
 import { nightsBetweenKeys } from "@/lib/pricing";
-import { BathSize, Boarding, BOARDING_ADDONS, BoardingAddonKey, Dog, Package } from "@/types";
+import {
+  BathSize,
+  Boarding,
+  BOARDING_ADDONS,
+  BoardingAddonKey,
+  Dog,
+  Package,
+  SignInRecord,
+} from "@/types";
 import { dogHref, findDog } from "@/lib/dogs";
+import MonthGrid, { MonthEntry } from "@/components/MonthGrid";
 import DogLink from "@/components/DogLink";
+import Money, { PayState } from "@/components/Money";
+import { signinChargeKey } from "@/lib/billing";
+import { useUnpaid } from "@/components/useUnpaid";
 import { fileToResizedDataUrl } from "@/lib/image";
 import StaffNav from "@/components/StaffNav";
 import StaffGate from "@/components/StaffGate";
@@ -87,14 +99,35 @@ const CAL_VIEWS: { key: CalView; label: string }[] = [
   { key: "meets", label: "✨ Meet & greets" },
 ];
 
-const PILL_COLORS = [
-  "bg-accent-100 text-accent-800 border-accent-200",
-  "bg-emerald-100 text-emerald-800 border-emerald-200",
-  "bg-amber-100 text-amber-800 border-amber-200",
-  "bg-rose-100 text-rose-800 border-rose-200",
-  "bg-violet-100 text-violet-800 border-violet-200",
-  "bg-sky-100 text-sky-800 border-sky-200",
+// A colour per reservation, cycled, so the same stay is recognisable as the
+// same stay wherever it appears.
+//
+// Both classes are written out in full on purpose. The bar colour used to be
+// the only one stored, and the ring under the dog's photo was derived from it
+// at runtime with a string replace — which produced class names that appear
+// nowhere in the source, so Tailwind stripped them and every ring in the list
+// below came out colourless. Anything Tailwind must generate has to be
+// literal somewhere it can read.
+const RESERVATION_COLORS: { bar: string; ring: string }[] = [
+  // accent-200/300/800 are not on the ramp in tailwind.config.ts, so they
+  // generate nothing. Only the six stops that exist are used here.
+  { bar: "bg-accent-100 text-accent-700", ring: "ring-accent-400" },
+  { bar: "bg-emerald-100 text-emerald-800", ring: "ring-emerald-300" },
+  { bar: "bg-amber-100 text-amber-800", ring: "ring-amber-300" },
+  { bar: "bg-rose-100 text-rose-800", ring: "ring-rose-300" },
+  { bar: "bg-violet-100 text-violet-800", ring: "ring-violet-300" },
+  { bar: "bg-sky-100 text-sky-800", ring: "ring-sky-300" },
 ];
+
+// How many bars a day shows before the rest collapse into a "+n". Four fits
+// a busy week without the month becoming a scroll; a quiet daycare can turn
+// it up and see everything at once.
+const DENSITIES: { rows: number; label: string }[] = [
+  { rows: 3, label: "Compact" },
+  { rows: 5, label: "Roomy" },
+  { rows: 99, label: "Everything" },
+];
+
 
 export default function BoardingsPage() {
   return (
@@ -140,7 +173,15 @@ function BoardingsInner() {
   const [packages, setPackages] = useState<Package[]>([]);
   // Every dog, so a name anywhere on this page can open its profile card.
   const [allDogs, setAllDogs] = useState<Dog[]>([]);
+  // Priced pick-ups and payments, so an amount on this page can say whether
+  // it has been paid. Without them every figure here was the same green
+  // whether it was settled or three weeks overdue.
+  const [signins, setSignins] = useState<SignInRecord[]>([]);
+  const { stateFor } = useUnpaid();
   const [calView, setCalView] = useState<CalView>("all");
+  // Roomy by default: five bars covers all but the busiest days outright,
+  // and the whole point of the redesign was to stop hiding bookings.
+  const [rowsPerDay, setRowsPerDay] = useState(5);
 
   useEffect(() => {
     if (unlocked) load();
@@ -227,6 +268,16 @@ function BoardingsInner() {
       const { data: pkgData, error: pkgErr } = await supabase.from("packages").select("*");
       if (pkgErr) throw pkgErr;
       setPackages((pkgData as Package[]) ?? []);
+
+      // Priced pick-ups only, to match a stay to the charge it became.
+      // Whether that charge is paid is the shared hook's job.
+      const { data: signinData, error: signinErr } = await supabase
+        .from("signins")
+        .select("id, dog_name, dog_id, phone, action, service_type, price, created_at")
+        .eq("action", "pick_up")
+        .not("price", "is", null);
+      if (signinErr) throw signinErr;
+      setSignins((signinData as SignInRecord[]) ?? []);
 
       // Enough of each dog for the hover card. Deliberately not select("*") —
       // this page shows every dog on the books and the enrollment answers
@@ -463,26 +514,53 @@ function BoardingsInner() {
     }, 0);
   }, [form.start_date, form.end_date, selectedDogs, configByDog]);
 
-  const upcoming = useMemo(() => {
-    const today = todayKey();
-    return boardings
-      .filter((b) => b.end_date >= today)
-      .sort((a, b) => a.start_date.localeCompare(b.start_date));
-  }, [boardings]);
+  // The month on the grid is what the lists below describe.
+  //
+  // They used to be "everything from today onwards" and "everything before",
+  // so paging the calendar to September changed the grid and left the lists
+  // still talking about today — one screen giving two answers to the same
+  // question. Scoping them to the shown month also means the month arrows are
+  // how you reach history, which is what they looked like they did anyway.
+  const monthRange = useMemo(() => {
+    const from = dateKey(new Date(calMonth.getFullYear(), calMonth.getMonth(), 1));
+    const to = dateKey(new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0));
+    return { from, to };
+  }, [calMonth]);
 
-  const past = useMemo(() => {
-    const today = todayKey();
-    return boardings
-      .filter((b) => b.end_date < today)
-      .sort((a, b) => b.start_date.localeCompare(a.start_date));
-  }, [boardings]);
+  // A stay counts as being in the month if any night of it falls inside —
+  // an August list that hid a stay running 30 July to 3 August would be
+  // hiding a dog who is here for most of the first week.
+  const monthBoardings = useMemo(
+    () =>
+      boardings
+        .filter((b) => b.start_date <= monthRange.to && b.end_date >= monthRange.from)
+        .sort((a, b) => a.start_date.localeCompare(b.start_date)),
+    [boardings, monthRange]
+  );
 
-  // Stable color per reservation id so the same stay keeps its color
+  // A reservation is only a charge once the dog has been signed out — that is
+  // the pick-up row that carries the price. Until then the figure on screen
+  // is an estimate of a stay that has not happened, and nothing is owed.
+  function stayPayState(b: Boarding): PayState {
+    const match = signins.find(
+      (r) =>
+        r.phone?.replace(/\D/g, "") === b.phone.replace(/\D/g, "") &&
+        (b.dog_id && r.dog_id
+          ? r.dog_id === b.dog_id
+          : r.dog_name?.trim().toLowerCase() === b.dog_name.trim().toLowerCase()) &&
+        !!r.created_at &&
+        dateKey(new Date(r.created_at)) === b.end_date
+    );
+    if (!match?.id) return "estimate";
+    return stateFor(signinChargeKey(match.id));
+  }
+
+  // Stable colour per reservation id so the same stay keeps its colour
   // across the month grid and the list below.
   const colorFor = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, (typeof RESERVATION_COLORS)[number]>();
     boardings.forEach((b, i) => {
-      if (b.id) map.set(b.id, PILL_COLORS[i % PILL_COLORS.length]);
+      if (b.id) map.set(b.id, RESERVATION_COLORS[i % RESERVATION_COLORS.length]);
     });
     return map;
   }, [boardings]);
@@ -501,6 +579,74 @@ function BoardingsInner() {
     });
   }, [calMonth]);
 
+  // The grid is drawn a week at a time, because a bar can only span days that
+  // sit on the same row.
+  const weeks = useMemo(() => {
+    const out: Date[][] = [];
+    for (let i = 0; i < calendarDays.length; i += 7) out.push(calendarDays.slice(i, i + 7));
+    return out;
+  }, [calendarDays]);
+
+  // Flattened into what the grid draws: a name, a colour and a span. Doing
+  // the mapping here keeps the grid ignorant of what a boarding is.
+  const calEntries = useMemo<MonthEntry[]>(() => {
+    const out: MonthEntry[] = [];
+    if (calView !== "meets") {
+      boardings.forEach((b) => {
+        if (!b.id) return;
+        out.push({
+          id: `b${b.id}`,
+          kind: "stay",
+          start: b.start_date,
+          end: b.end_date,
+          name: b.dog_name,
+          detail: `${b.dog_name} (${b.last_name}) · ${prettyDateKey(
+            b.start_date
+          )} → ${prettyDateKey(b.end_date)}`,
+          dog: dogForBoarding(b),
+          color: colorFor.get(b.id)?.bar ?? "",
+        });
+      });
+    }
+    if (calView !== "boardings") {
+      meets.forEach((m) =>
+        out.push({
+          id: `m${m.id}`,
+          kind: "meet",
+          start: m.meet_greet_on,
+          end: m.meet_greet_on,
+          name: m.dog_name,
+          detail: `Meet & greet · ${m.dog_name} (${m.last_name})${
+            m.meet_greet_window ? ` · ${m.meet_greet_window}` : ""
+          }`,
+          dog: meetAsDog(m),
+          color: "bg-violet-100 text-violet-800",
+          icon: "✨",
+        })
+      );
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardings, meets, calView, colorFor, allDogs]);
+
+  // The headline numbers for the month on screen. Reading a total off a grid
+  // by counting bars is exactly the thing a grid is bad at, and the busiest
+  // day is the number that decides whether another booking fits.
+  const monthStats = useMemo(() => {
+    const from = dateKey(new Date(calMonth.getFullYear(), calMonth.getMonth(), 1));
+    const to = dateKey(new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0));
+    const stays = boardings.filter((b) => b.start_date <= to && b.end_date >= from);
+    const monthMeets = meets.filter((m) => m.meet_greet_on >= from && m.meet_greet_on <= to);
+
+    let peak = 0;
+    for (const d of calendarDays) {
+      const key = dateKey(d);
+      if (key < from || key > to) continue;
+      peak = Math.max(peak, stays.filter((b) => b.start_date <= key && b.end_date >= key).length);
+    }
+    return { stays: stays.length, meets: monthMeets.length, peak };
+  }, [boardings, meets, calMonth, calendarDays]);
+
   function boardingsOn(day: string): Boarding[] {
     if (calView === "meets") return [];
     return boardings.filter((b) => b.start_date <= day && b.end_date >= day);
@@ -516,19 +662,13 @@ function BoardingsInner() {
     return meets.filter((m) => m.meet_greet_on === day);
   }
 
-  const upcomingMeets = useMemo(() => {
-    const today = todayKey();
-    return meets
-      .filter((m) => m.meet_greet_on >= today)
-      .sort((a, b) => a.meet_greet_on.localeCompare(b.meet_greet_on));
-  }, [meets]);
-
-  const pastMeets = useMemo(() => {
-    const today = todayKey();
-    return meets
-      .filter((m) => m.meet_greet_on < today)
-      .sort((a, b) => b.meet_greet_on.localeCompare(a.meet_greet_on));
-  }, [meets]);
+  const monthMeets = useMemo(
+    () =>
+      meets
+        .filter((m) => m.meet_greet_on >= monthRange.from && m.meet_greet_on <= monthRange.to)
+        .sort((a, b) => a.meet_greet_on.localeCompare(b.meet_greet_on)),
+    [meets, monthRange]
+  );
 
   const monthLabel = calMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const today = todayKey();
@@ -831,20 +971,53 @@ function BoardingsInner() {
               {v.label}
             </button>
           ))}
-          {meets.length > 0 && calView !== "boardings" && (
-            <span className="ml-auto text-[11px] text-ink-3">
-              {meets.length} meet &amp; greet{meets.length === 1 ? "" : "s"} booked
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-1">
+            <span className="mr-1 text-[11px] text-ink-3">Rows per day</span>
+            {DENSITIES.map((d) => (
+              <button
+                key={d.rows}
+                onClick={() => setRowsPerDay(d.rows)}
+                title={
+                  d.rows === 99
+                    ? "Show every booking, however tall the month gets"
+                    : `Show ${d.rows} per day, then a count`
+                }
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+                  rowsPerDay === d.rows
+                    ? "bg-accent-500 text-accent-ink"
+                    : "border border-line bg-surface text-ink-2 hover:border-accent-300"
+                }`}>
+                {d.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between">
           <button
             onClick={() => setCalMonth(new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1))}
             className="rounded-lg border border-line px-2.5 py-1 text-sm text-ink-3 hover:border-line"
           >
             ←
           </button>
-          <p className="text-sm font-medium text-ink-2">{monthLabel}</p>
+          <div className="text-center">
+            <p className="text-sm font-medium text-ink-2">{monthLabel}</p>
+            {/* The totals a month grid cannot show: you cannot count bars
+                that run across rows, and the busiest day is the number that
+                decides whether one more booking fits. */}
+            <p className="text-[11px] text-ink-3">
+              {monthStats.stays === 0 && monthStats.meets === 0
+                ? "Nothing booked"
+                : [
+                    monthStats.stays > 0 &&
+                      `${monthStats.stays} stay${monthStats.stays === 1 ? "" : "s"}`,
+                    monthStats.meets > 0 &&
+                      `${monthStats.meets} meet & greet${monthStats.meets === 1 ? "" : "s"}`,
+                    monthStats.peak > 0 && `busiest day ${monthStats.peak}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+            </p>
+          </div>
           <button
             onClick={() => setCalMonth(new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1))}
             className="rounded-lg border border-line px-2.5 py-1 text-sm text-ink-3 hover:border-line"
@@ -852,78 +1025,15 @@ function BoardingsInner() {
             →
           </button>
         </div>
-        <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-medium uppercase tracking-wide text-ink-3">
-          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-            <div key={d} className="py-1">
-              {d}
-            </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-7 gap-1">
-          {calendarDays.map((d) => {
-            const key = dateKey(d);
-            const inMonth = d.getMonth() === calMonth.getMonth();
-            const dayBoardings = boardingsOn(key);
-            const dayMeets = meetsOn(key);
-            return (
-              <div
-                key={key}
-                role="button"
-                tabIndex={0}
-                aria-pressed={key === selectedDay}
-                onClick={() => setSelectedDay(key === selectedDay ? null : key)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setSelectedDay(key === selectedDay ? null : key);
-                  }
-                }}
-                className={`min-h-[64px] cursor-pointer rounded-lg border p-1 text-left align-top text-[11px] transition ${
-                  key === today ? "border-accent-400" : "border-line-soft"
-                } ${key === selectedDay ? "ring-2 ring-accent-300" : ""} ${
-                  inMonth ? "bg-surface" : "bg-surface-2 text-ink-3"
-                }`}
-              >
-                <span className={`font-medium ${key === today ? "text-accent-600" : ""}`}>{d.getDate()}</span>
-                <div className="mt-0.5 space-y-0.5">
-                  {/* Meet & greets first — they are appointments at a set
-                      time, where a boarding pill just means "staying". */}
-                  {dayMeets.slice(0, 2).map((m) => (
-                    <div
-                      key={m.id}
-                      className="truncate rounded border border-violet-200 bg-violet-50 px-1 py-0.5 text-violet-800"
-                      title={`Meet & greet · ${m.dog_name} (${m.last_name})${
-                        m.meet_greet_window ? ` · ${m.meet_greet_window}` : ""
-                      }`}
-                    >
-                      ✨{" "}
-                      <span onClick={(e) => e.stopPropagation()}>
-                        <DogLink dog={meetAsDog(m)} name={m.dog_name} />
-                      </span>
-                    </div>
-                  ))}
-                  {dayMeets.length > 2 && (
-                    <div className="text-violet-700">+{dayMeets.length - 2} more</div>
-                  )}
-                  {dayBoardings.slice(0, 3).map((b) => (
-                    <div
-                      key={b.id}
-                      className={`truncate rounded border px-1 py-0.5 ${b.id ? colorFor.get(b.id) : ""}`}
-                      title={`${b.dog_name} · ${b.start_date} → ${b.end_date}`}
-                    >
-                      <span onClick={(e) => e.stopPropagation()}>
-                        <DogLink dog={dogForBoarding(b)} name={b.dog_name} />
-                      </span>
-                    </div>
-                  ))}
-                  {dayBoardings.length > 3 && (
-                    <div className="text-ink-3">+{dayBoardings.length - 3} more</div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <MonthGrid
+          month={calMonth}
+          weeks={weeks}
+          entries={calEntries}
+          rowsPerDay={rowsPerDay}
+          today={today}
+          selectedDay={selectedDay}
+          onSelectDay={setSelectedDay}
+        />
 
         {selectedDay && (
           <div className="mt-4 rounded-xl border border-line-soft bg-surface-2 px-4 py-3">
@@ -952,69 +1062,79 @@ function BoardingsInner() {
         )}
       </div>
 
-      {/* List */}
+      {/* List. Both sections describe the month shown on the grid above, so
+          paging the calendar moves them with it. */}
       {loading ? (
         <p className="text-sm text-ink-3">Loading…</p>
       ) : (
         <>
-          <p className="mb-3 text-sm font-medium text-ink-2">Upcoming &amp; current reservations</p>
-          <div className="mb-8 space-y-2">
-            {upcoming.map((b) => (
+          {/* The view pills above choose which of these is on screen, so the
+              filter that decides what the grid shows decides what the list
+              shows too — picking Boardings and still being handed a page of
+              meet and greets was the grid and the list disagreeing again. */}
+          {calView !== "meets" && (
+          <details open className="group mb-8">
+            <summary className="mb-3 flex cursor-pointer list-none flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm font-medium text-ink-2">
+                <span className="mr-1 inline-block text-[10px] text-ink-3 transition group-open:rotate-90">
+                  ▶
+                </span>
+                Reservations in {monthLabel}
+              </span>
+              {monthBoardings.length > 0 && (
+                <span className="text-[11px] text-ink-3">
+                  {monthBoardings.length} stay{monthBoardings.length === 1 ? "" : "s"}
+                </span>
+              )}
+            </summary>
+          <div className="space-y-2">
+            {monthBoardings.map((b) => (
               <BoardingRow
                 key={b.id}
                 b={b}
                 dog={dogForBoarding(b)}
                 packages={packages}
                 color={b.id ? colorFor.get(b.id) : undefined}
+                payState={stayPayState(b)}
               />
             ))}
-            {upcoming.length === 0 && <p className="text-sm text-ink-3">No upcoming reservations.</p>}
+            {monthBoardings.length === 0 && (
+              <p className="rounded-2xl border border-line bg-surface px-4 py-6 text-center text-sm text-ink-3">
+                No reservations in {monthLabel}.
+              </p>
+            )}
           </div>
+          </details>
+          )}
 
           {/* Meet & greets, listed like the reservations above. They are a
               date on the dog rather than a reservation row, so the row links
               to the profile — where the date and window are edited — instead
               of an edit form here. */}
-          <p className="mb-3 text-sm font-medium text-ink-2">Upcoming meet &amp; greets</p>
-          <div className="mb-8 space-y-2">
-            {upcomingMeets.map((m) => (
+          {calView !== "boardings" && (
+          <details open className="group mb-8">
+            <summary className="mb-3 flex cursor-pointer list-none flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm font-medium text-ink-2">
+                <span className="mr-1 inline-block text-[10px] text-ink-3 transition group-open:rotate-90">
+                  ▶
+                </span>
+                Meet &amp; greets in {monthLabel}
+              </span>
+              {monthMeets.length > 0 && (
+                <span className="text-[11px] text-ink-3">{monthMeets.length} booked</span>
+              )}
+            </summary>
+          <div className="space-y-2">
+            {monthMeets.map((m) => (
               <MeetGreetRow key={m.id} m={m} />
             ))}
-            {upcomingMeets.length === 0 && (
-              <p className="text-sm text-ink-3">No meet &amp; greets booked.</p>
+            {monthMeets.length === 0 && (
+              <p className="rounded-2xl border border-line bg-surface px-4 py-6 text-center text-sm text-ink-3">
+                No meet &amp; greets in {monthLabel}.
+              </p>
             )}
           </div>
-
-          {past.length > 0 && (
-            <details>
-              <summary className="mb-3 cursor-pointer text-sm font-medium text-ink-3">
-                Past reservations ({past.length})
-              </summary>
-              <div className="space-y-2">
-                {past.map((b) => (
-                  <BoardingRow
-                    key={b.id}
-                    b={b}
-                dog={dogForBoarding(b)}
-                packages={packages}
-                    color={b.id ? colorFor.get(b.id) : undefined}
-                  />
-                ))}
-              </div>
-            </details>
-          )}
-
-          {pastMeets.length > 0 && (
-            <details className="mt-4">
-              <summary className="mb-3 cursor-pointer text-sm font-medium text-ink-3">
-                Past meet &amp; greets ({pastMeets.length})
-              </summary>
-              <div className="space-y-2">
-                {pastMeets.map((m) => (
-                  <MeetGreetRow key={m.id} m={m} />
-                ))}
-              </div>
-            </details>
+          </details>
           )}
         </>
       )}
@@ -1058,7 +1178,7 @@ function ScheduleRow({
   accent: string;
   when: string;
   detail?: string | null;
-  amount?: string | null;
+  amount?: React.ReactNode;
   extras?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
@@ -1087,9 +1207,7 @@ function ScheduleRow({
       <div className="shrink-0 text-right">
         <p className="whitespace-nowrap text-sm font-medium text-ink-2">{when}</p>
         {detail && <p className="whitespace-nowrap text-xs text-ink-3">{detail}</p>}
-        {amount && (
-          <p className="whitespace-nowrap text-xs font-medium text-emerald-700">{amount}</p>
-        )}
+        {amount && <p className="whitespace-nowrap text-xs font-medium">{amount}</p>}
       </div>
 
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
@@ -1129,11 +1247,13 @@ function BoardingRow({
   dog,
   color,
   packages,
+  payState,
 }: {
   b: Boarding;
   dog: Dog | null;
-  color?: string;
+  color?: { bar: string; ring: string };
   packages: Package[];
+  payState: PayState;
 }) {
   const total = estimateBoardingTotal(b.start_date, b.end_date, {
     addons: b.addons ?? [],
@@ -1151,12 +1271,12 @@ function BoardingRow({
       name={b.dog_name}
       owner={b.last_name}
       phone={b.phone}
-      accent={color?.split(" ")[0]?.replace("bg-", "ring-") ?? "ring-line"}
+      accent={color?.ring ?? "ring-line"}
       when={`${prettyDateKey(b.start_date)} → ${prettyDateKey(b.end_date)}`}
       detail={`${nightsBetweenKeys(b.start_date, b.end_date)} night${
         nightsBetweenKeys(b.start_date, b.end_date) === 1 ? "" : "s"
       }`}
-      amount={`$${total.toFixed(2)}`}
+      amount={<Money amount={total} state={payState} />}
       extras={
         <>
           {addonLabels && <p className="mt-0.5 truncate text-xs text-ink-3">➕ {addonLabels}</p>}

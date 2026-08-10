@@ -3,13 +3,12 @@
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import {
-  DEFAULT_TEAM,
   PLACEHOLDER_ABOUT,
   PLACEHOLDER_HERO,
   SitePhoto,
   loadSinglePhoto,
-  loadSitePhotos,
 } from "@/lib/sitePhotos";
+import { useSettings } from "@/components/SettingsProvider";
 
 // The single-photo spots and the team grid, filled from /settings.
 //
@@ -60,21 +59,11 @@ export function HeroPhoto({
 }
 
 export function TeamGrid() {
-  const [rows, setRows] = useState<SitePhoto[] | null>(null);
-
-  useEffect(() => {
-    loadSitePhotos("team").then(setRows);
-  }, []);
-
-  const team =
-    rows && rows.length
-      ? rows.map((r) => ({
-          name: r.meta?.name ?? "",
-          role: r.meta?.role ?? "",
-          bio: r.meta?.bio ?? "",
-          data: r.data,
-        }))
-      : DEFAULT_TEAM;
+  // Name, role, bio and headshot all come from the one list under
+  // Settings → Content → About. There used to be a second, competing editor
+  // that stored the same three fields next to an uploaded photo, so whether
+  // an edit showed up depended on which of the two you had used last.
+  const team = useSettings().settings.content.about.team;
 
   return (
     <div className="grid gap-6 sm:grid-cols-3">
@@ -83,8 +72,16 @@ export function TeamGrid() {
           key={`${m.name}-${i}`}
           className="rounded-3xl border border-slate-100 bg-white p-6 text-center shadow-card"
         >
-          <div className="relative mx-auto h-28 w-28 overflow-hidden rounded-full">
-            <Picture src={m.data} alt={`${m.name}, ${m.role}`} />
+          <div className="relative mx-auto flex h-28 w-28 items-center justify-center overflow-hidden rounded-full bg-accent-100">
+            {m.photo ? (
+              <Picture src={m.photo} alt={`${m.name}, ${m.role}`} />
+            ) : (
+              // Somebody added before their headshot was to hand. An initial
+              // beats a broken image.
+              <span className="font-display text-3xl font-semibold text-accent-700">
+                {m.name.trim().charAt(0).toUpperCase()}
+              </span>
+            )}
           </div>
           <h3 className="mt-4 font-display text-lg font-semibold text-slate-900">{m.name}</h3>
           <p className="text-sm font-medium text-accent-600">{m.role}</p>

@@ -13,6 +13,8 @@ import {
   moneySummary,
   outstandingChargeRows,
 } from "@/lib/reports";
+import { packageTotals } from "@/lib/packageMoney";
+import { ADDON_PRICES, PRICING } from "@/lib/pricing";
 
 // Settings -> Reports.
 //
@@ -54,6 +56,21 @@ export default function ReportsSection() {
 
   const accounts = useMemo(() => (data ? accountRows(data) : []), [data]);
   const summary = useMemo(() => moneySummary(accounts), [accounts]);
+
+  // Package money belongs with the rest of the money rather than on the
+  // packages page, which is a front-desk tool — staff there need to know how
+  // many days a dog has left, not what the business is carrying. The report
+  // data already includes packages, so this costs nothing extra.
+  const pkgs = useMemo(
+    () =>
+      data
+        ? packageTotals(data.packages, new Date(), {
+            daycare: PRICING.daycareFullDay,
+            walk: ADDON_PRICES.walk,
+          })
+        : null,
+    [data]
+  );
 
   function save(stem: string, rows: Record<string, unknown>[]) {
     if (!rows.length) {
@@ -161,6 +178,41 @@ export default function ReportsSection() {
               {summary.households.toLocaleString()} households · {owing.length} owing ·{" "}
               {credits.length} in credit · {summary.settled} settled
             </p>
+
+            {pkgs && (
+              <div className="mt-4 border-t border-line-soft pt-3">
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-ink-3">
+                  Packages
+                </p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <Stat label="Sold this month" value={money(pkgs.sold.amount)} />
+                  <Stat label="Sold last month" value={money(pkgs.soldPrev.amount)} />
+                  <Stat label="Unredeemed" value={money(pkgs.unredeemed.amount)} tone="amber" />
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+                  Unredeemed runs the other way from the balances above: it is money already taken
+                  for service not yet given. A package is revenue on the day it is sold, so the
+                  visits it later covers are $0 — until they are taken, the days sit here.
+                  {pkgs.unredeemed.amount > 0 && (
+                    <>
+                      {" "}
+                      {unusedUnits(pkgs)} outstanding, valued at what each client paid. The same
+                      days at walk-in rates would be {money(pkgs.unredeemed.atWalkIn)}, so the
+                      packages discount them by{" "}
+                      {money(pkgs.unredeemed.atWalkIn - pkgs.unredeemed.amount)}.
+                    </>
+                  )}
+                  {pkgs.unredeemed.unpriced > 0 && (
+                    <span className="text-amber-700">
+                      {" "}
+                      {pkgs.unredeemed.unpriced === 1
+                        ? "1 active package predates price recording, so its days are excluded from the figure above."
+                        : `${pkgs.unredeemed.unpriced} active packages predate price recording, so their days are excluded from the figure above.`}
+                    </span>
+                  )}
+                </p>
+              </div>
+            )}
 
             {owing.length > 0 && (
               <div className="mt-3 overflow-x-auto">
@@ -345,6 +397,19 @@ function ReportLink({ href, title, blurb }: { href: string; title: string; blurb
   );
 }
 
+function unusedUnits(t: ReturnType<typeof packageTotals>): string {
+  return (
+    [
+      t.unredeemed.units.daycare > 0 &&
+        `${t.unredeemed.units.daycare} daycare day${t.unredeemed.units.daycare === 1 ? "" : "s"}`,
+      t.unredeemed.units.walk > 0 &&
+        `${t.unredeemed.units.walk} walk${t.unredeemed.units.walk === 1 ? "" : "s"}`,
+    ]
+      .filter(Boolean)
+      .join(" and ") || "Nothing"
+  );
+}
+
 function Stat({
   label,
   value,
@@ -353,11 +418,17 @@ function Stat({
 }: {
   label: string;
   value: string;
-  tone?: "rose" | "emerald";
+  tone?: "rose" | "emerald" | "amber";
   small?: boolean;
 }) {
   const colour =
-    tone === "rose" ? "text-rose-600" : tone === "emerald" ? "text-emerald-700" : "text-ink";
+    tone === "rose"
+      ? "text-rose-600"
+      : tone === "emerald"
+        ? "text-emerald-700"
+        : tone === "amber"
+          ? "text-amber-700"
+          : "text-ink";
   return (
     <div className="rounded-xl border border-line bg-surface-2/60 px-3 py-2">
       <p className="text-[10px] font-medium uppercase tracking-wide text-ink-3">{label}</p>

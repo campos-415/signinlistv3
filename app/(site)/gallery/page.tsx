@@ -2,25 +2,21 @@ import type { Metadata } from "next";
 import Section from "@/components/Section";
 import CTABand from "@/components/CTABand";
 import GalleryGrid from "@/components/GalleryGrid";
+import { loadSettings } from "@/lib/settings";
 
-export const metadata: Metadata = {
-  title: "Gallery",
-  description:
-    "A look inside daycare and boarding at Lombard Doggy Daycare in San Francisco.",
-  alternates: { canonical: "/gallery" },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { seo } = (await loadSettings()).content.gallery;
+  return { title: seo.title, description: seo.description, alternates: { canonical: "/gallery" } };
+}
 
 // The photos themselves are uploaded on /settings and rendered by
 // GalleryGrid, which falls back to stock images until there are any.
-export default function GalleryPage() {
+export default async function GalleryPage() {
+  const c = (await loadSettings()).content.gallery;
+
   return (
     <>
-      <Section
-        eyebrow="Gallery"
-        title="A peek inside the pack"
-        description="A look at daycare, boarding, bath day and everything in between."
-        className="pt-14 sm:pt-20"
-      >
+      <Section {...c.heading} className="pt-14 sm:pt-20">
         <GalleryGrid />
       </Section>
 

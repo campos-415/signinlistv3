@@ -2,22 +2,19 @@ import type { Metadata } from "next";
 import Section from "@/components/Section";
 import PriceTables from "@/components/PriceTables";
 import CTABand from "@/components/CTABand";
+import { loadSettings } from "@/lib/settings";
 
-export const metadata: Metadata = {
-  title: "Prices",
-  description:
-    "See pricing for dog daycare, cage-free boarding, bathing, and dog walking at Lombard Doggy Daycare in San Francisco.",
-  alternates: { canonical: "/prices" },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { seo } = (await loadSettings()).content.prices;
+  return { title: seo.title, description: seo.description, alternates: { canonical: "/prices" } };
+}
 
-export default function PricesPage() {
+export default async function PricesPage() {
+  const c = (await loadSettings()).content.prices;
+
   return (
     <>
-      <Section
-        eyebrow="Prices"
-        title="Simple, transparent pricing"
-        description="No surprise fees — just what's below, plus any add-ons you choose."
-        className="pt-14 sm:pt-20">
+      <Section {...c.heading} className="pt-14 sm:pt-20">
         <PriceTables />
       </Section>
 

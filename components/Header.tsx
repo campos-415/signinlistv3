@@ -5,10 +5,16 @@ import { useState } from "react";
 import Image from "next/image";
 import { NAV_LINKS } from "@/lib/business";
 import { useBusiness } from "@/components/useBusiness";
+import { useSettings } from "@/components/SettingsProvider";
 import lombardlogo from "../public/lombardlogo.avif"
 
 export default function Header() {
   const BUSINESS = useBusiness();
+  // The logo uploaded on /settings, which this used to ignore entirely: the
+  // bundled file was rendered unconditionally, so a business that uploaded
+  // its own saw it on the kiosk and the forms but got the shipped one on
+  // every page of its own website.
+  const { logoData } = useSettings().settings.business;
   const [open, setOpen] = useState(false);
 
   return (
@@ -18,19 +24,25 @@ export default function Header() {
           href="/"
           className="flex items-center gap-2.5"
           onClick={() => setOpen(false)}>
-          <span className="flex  items-center justify-center rounded-2xl  text-xl text-white shadow-card">
-            <Image
-              src={lombardlogo}
-              alt={"Logo"}
-              width={100}
-              height={100}
-              objectFit=""
-              className="object-cover"
-            />
+          <span className="flex items-center justify-center">
+            {logoData ? (
+              // Uploaded logos are data URLs, which next/image cannot optimise.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={logoData}
+                alt={BUSINESS.name}
+                className="h-[52px] w-auto max-w-[180px] object-contain"
+              />
+            ) : (
+              <Image
+                src={lombardlogo}
+                alt={BUSINESS.name}
+                width={100}
+                height={100}
+                className="h-[52px] w-auto object-contain"
+              />
+            )}
           </span>
-          {/* <span className="font-display text-lg font-semibold tracking-tight text-slate-900">
-            {BUSINESS.shortName}
-          </span> */}
         </Link>
 
         <nav className="hidden items-center gap-1 lg:flex">

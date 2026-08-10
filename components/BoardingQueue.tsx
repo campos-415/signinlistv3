@@ -477,21 +477,6 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                     </span>
                   )}
 
-                  <Link
-                    href={ownerHref(row.phone)}
-                    className="text-xs font-medium text-accent-600 hover:underline"
-                  >
-                    Owner →
-                  </Link>
-
-                  <button
-                    onClick={() => removeRow(row)}
-                    disabled={busyId === row.id}
-                    title="Delete this request record"
-                    className="text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
-                  >
-                    🗑 Delete
-                  </button>
                 </div>
 
                 {openId === row.id && (
@@ -504,6 +489,25 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                     ) : (
                       <p className="text-sm text-ink-3">Loading request…</p>
                     )}
+
+                    {/* Same as the enrolment queue: the decision stays on the
+                        card, the housekeeping moves in here, away from it. */}
+                    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
+                      <Link
+                        href={ownerHref(row.phone)}
+                        className="text-xs font-medium text-accent-600 hover:underline"
+                      >
+                        Open the owner profile →
+                      </Link>
+                      <button
+                        onClick={() => removeRow(row)}
+                        disabled={busyId === row.id}
+                        title="Delete this request record"
+                        className="ml-auto text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
+                      >
+                        🗑 Delete this request
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

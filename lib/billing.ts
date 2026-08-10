@@ -52,7 +52,7 @@ export function computeBalance(
   for (const p of pickUps) {
     if (p.price == null) continue;
     charges.push({
-      key: `signin-${p.id}`,
+      key: signinChargeKey(p.id ?? ""),
       date: localDay(p.created_at),
       label: `${p.dog_name} — ${String(p.service_type ?? "visit").replace("_", " ")}`,
       amount: p.price,
@@ -65,7 +65,7 @@ export function computeBalance(
     if (foldedIntoAVisit(pkg, pickUps)) continue;
     const unit = (pkg.kind ?? "daycare") === "walk" ? "walks" : "days";
     charges.push({
-      key: `pkg-${pkg.id}`,
+      key: packageChargeKey(pkg.id ?? ""),
       date: localDay(pkg.created_at),
       label: `${pkg.dog_name || "Shared"} — package (${pkg.total_days} ${unit})`,
       amount: pkg.price,
@@ -99,6 +99,25 @@ export function computeBalance(
 // it settles the account — so they're applied oldest-charge-first. That's
 // the conventional allocation and it means the dates shown as outstanding
 // are the oldest ones, which is what a client expects to be reminded of.
+/** The key a visit's charge is filed under. One definition, so nothing drifts. */
+export const signinChargeKey = (id: string) => `signin-${id}`;
+/** The key a package sale is filed under. */
+export const packageChargeKey = (id: string) => `pkg-${id}`;
+
+/**
+ * How much is still owed on each individual charge, by key.
+ *
+ * Payments settle oldest first, so "is this one paid" is not a property of
+ * the charge on its own — it depends on everything older than it. This runs
+ * that allocation once and hands back the answer per charge, which is what
+ * lets a price on screen be coloured for what it actually is.
+ */
+export function unpaidByKey(balance: Balance): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const c of unpaidCharges(balance)) out.set(c.key, c.remaining);
+  return out;
+}
+
 export function unpaidCharges(balance: Balance): (ChargeLine & { remaining: number })[] {
   let pot = balance.paid;
   const oldestFirst = [...balance.charges].sort((a, b) => a.date.localeCompare(b.date));

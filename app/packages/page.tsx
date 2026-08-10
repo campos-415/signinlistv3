@@ -4,14 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
-import { daysLeft, findDog, packageKind } from "@/lib/dogs";
-import { prettyDateKey, todayKey } from "@/lib/dates";
+import { daysLeft } from "@/lib/dogs";
+import { todayKey } from "@/lib/dates";
+import { packageTotals } from "@/lib/packageMoney";
 import { ADDON_PRICES, PRICING } from "@/lib/pricing";
 import { Dog, Package, PACKAGE_KINDS, PackageKind, PackageUse } from "@/types";
 import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
-import DogLink from "@/components/DogLink";
+import { PackageRow } from "@/components/PackageBits";
+import { useUnpaid } from "@/components/useUnpaid";
+import { packageChargeKey } from "@/lib/billing";
 
 export default function PackagesPage() {
   return (
@@ -28,6 +31,8 @@ function Packages() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  // A package sale is a charge like any other, so it can be outstanding.
+  const { stateFor } = useUnpaid();
 
   // New-package form: look the number up, then pick which dogs it's for.
   const [phone, setPhone] = useState("");
@@ -65,7 +70,6 @@ function Packages() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTotal, setEditTotal] = useState(0);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -284,20 +288,58 @@ function Packages() {
     return map;
   }, [uses]);
 
+  // Phone digits, owner name or dog name. It used to be digits only, which
+  // meant knowing a dog by name was no help in finding their package.
   const filteredPackages = useMemo(() => {
-    const digits = search.replace(/\D/g, "");
-    if (!digits) return packages;
-    return packages.filter((p) => p.phone.replace(/\D/g, "").includes(digits));
+    const q = search.trim().toLowerCase();
+    if (!q) return packages;
+    const digits = q.replace(/\D/g, "");
+    return packages.filter(
+      (p) =>
+        (digits.length > 0 && p.phone.replace(/\D/g, "").includes(digits)) ||
+        p.client_name.toLowerCase().includes(q) ||
+        (p.dog_name ?? "").toLowerCase().includes(q)
+    );
   }, [packages, search]);
 
-  const active = filteredPackages.filter((p) => daysLeft(p) > 0);
+  // The book as a whole, never the search results — the totals describe the
+  // business, and quietly rescoping them to whatever is typed in a filter box
+  // is how a number ends up in a report meaning something it does not mean.
+  const totals = useMemo(
+    () =>
+      packageTotals(packages, new Date(), {
+        daycare: PRICING.daycareFullDay,
+        walk: ADDON_PRICES.walk,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [packages, settings]
+  );
+
+  // One card per phone number. A family with a shared package and a couple of
+  // per-dog ones was three unrelated rows that happened to sort together.
+  const households = useMemo(() => {
+    const byPhone = new Map<string, { phone: string; name: string; packages: Package[] }>();
+    for (const pkg of filteredPackages) {
+      const key = pkg.phone.replace(/\D/g, "") || pkg.phone;
+      const found = byPhone.get(key) ?? { phone: pkg.phone, name: pkg.client_name, packages: [] };
+      found.packages.push(pkg);
+      byPhone.set(key, found);
+    }
+    return [...byPhone.values()];
+  }, [filteredPackages]);
+
+  const activeHouseholds = useMemo(
+    () =>
+      households
+        .map((h) => ({ ...h, packages: h.packages.filter((p) => daysLeft(p) > 0) }))
+        .filter((h) => h.packages.length > 0),
+    [households]
+  );
   const usedUp = filteredPackages.filter((p) => daysLeft(p) <= 0);
 
   const rowProps = {
     allDogs,
     usesByPackage,
-    historyOpenId,
-    setHistoryOpenId,
     editingId,
     setEditingId,
     editTotal,
@@ -311,7 +353,18 @@ function Packages() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
       <StaffNav current="/packages" />
-      <h1 className="font-display mb-6 text-xl font-semibold text-ink">Daycare packages</h1>
+      <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
+        <h1 className="font-display text-xl font-semibold text-ink">Daycare packages</h1>
+        {/* What the front desk needs from a total: how many are live. The
+            money — sold this month, and the value of days bought and not yet
+            taken — is in Settings, Reports, with the rest of the money. It is
+            an owner's number, and on a page used all day it invited questions
+            nobody at the desk should have to field. */}
+        <p className="text-xs text-ink-3">
+          {totals.active.count} active · {totals.active.split.daycare} daycare ·{" "}
+          {totals.active.split.walk} walk
+        </p>
+      </div>
 
       {/* New package */}
       <div className="mb-8 rounded-2xl border border-line bg-surface p-5 shadow-card">
@@ -374,7 +427,7 @@ function Packages() {
                   }`}
                 >
                   <span
-                    className={`block text-sm font-medium ${active ? "text-accent-800" : "text-ink-2"}`}
+                    className={`block text-sm font-medium ${active ? "text-accent-700" : "text-ink-2"}`}
                   >
                     {t.days} {unit}
                   </span>
@@ -390,7 +443,7 @@ function Packages() {
               onClick={() => setCustom(true)}
               className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition ${
                 custom
-                  ? "border-accent-500 bg-accent-50 text-accent-800"
+                  ? "border-accent-500 bg-accent-50 text-accent-700"
                   : "border-line bg-surface text-ink-3 hover:border-line"
               }`}
             >
@@ -480,7 +533,7 @@ function Packages() {
                     className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
                       isSelected && !shared
                         ? "border-accent-500 bg-accent-500 text-accent-ink"
-                        : "border-accent-200 bg-surface text-accent-700 hover:border-accent-400"
+                        : "border-accent-100 bg-surface text-accent-700 hover:border-accent-400"
                     }`}
                   >
                     {isSelected && !shared ? "✓ " : "🐕 "}
@@ -524,9 +577,8 @@ function Packages() {
           <div className="mb-3 flex items-center justify-between gap-3">
             <input
               value={search}
-              onChange={(e) => setSearch(formatPhoneInput(e.target.value))}
-              placeholder="Search by phone number…"
-              inputMode="numeric"
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by dog, owner or phone…"
               className="w-full max-w-xs rounded-xl border border-line bg-surface px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
             />
             {search && (
@@ -538,10 +590,29 @@ function Packages() {
 
           <p className="mb-2 text-sm font-medium text-ink-2">Active packages</p>
           <div className="mb-8 space-y-2">
-            {active.map((p) => (
-              <PackageRow key={p.id} pkg={p} {...rowProps} />
+            {activeHouseholds.map((h) => (
+              <div
+                key={h.phone}
+                className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+                <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+                  <p className="min-w-0 truncate text-sm font-medium text-ink">
+                    {h.name}
+                    <span className="ml-1.5 font-normal text-ink-3">· {h.phone}</span>
+                  </p>
+                  {h.packages.length > 1 && (
+                    <span className="shrink-0 text-[11px] text-ink-3">
+                      {h.packages.length} packages
+                    </span>
+                  )}
+                </div>
+                {h.packages.map((p) => (
+                  <PackageRow key={p.id} pkg={p} {...rowProps} payState={stateFor(packageChargeKey(p.id ?? ""))} />
+                ))}
+              </div>
             ))}
-            {active.length === 0 && <p className="text-sm text-ink-3">No active packages.</p>}
+            {activeHouseholds.length === 0 && (
+              <p className="text-sm text-ink-3">No active packages.</p>
+            )}
           </div>
 
           {usedUp.length > 0 && (
@@ -549,9 +620,15 @@ function Packages() {
               <summary className="mb-3 cursor-pointer text-sm font-medium text-ink-3">
                 Used-up packages ({usedUp.length})
               </summary>
-              <div className="space-y-2">
+              <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
                 {usedUp.map((p) => (
-                  <PackageRow key={p.id} pkg={p} {...rowProps} />
+                  <PackageRow
+                    key={p.id}
+                    pkg={p}
+                    {...rowProps}
+                    showOwner
+                    payState={stateFor(packageChargeKey(p.id ?? ""))}
+                  />
                 ))}
               </div>
             </details>
@@ -564,175 +641,3 @@ function Packages() {
 
 const inputClass =
   "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
-
-function PackageRow({
-  pkg,
-  allDogs,
-  usesByPackage,
-  historyOpenId,
-  setHistoryOpenId,
-  editingId,
-  setEditingId,
-  editTotal,
-  setEditTotal,
-  saveEditTotal,
-  adjustUsed,
-  deletePackage,
-  deletingId,
-}: {
-  pkg: Package;
-  allDogs: Dog[];
-  usesByPackage: Map<string, PackageUse[]>;
-  historyOpenId: string | null;
-  setHistoryOpenId: (id: string | null) => void;
-  editingId: string | null;
-  setEditingId: (id: string | null) => void;
-  editTotal: number;
-  setEditTotal: (n: number) => void;
-  saveEditTotal: (pkg: Package) => void;
-  adjustUsed: (pkg: Package, delta: number) => void;
-  deletePackage: (pkg: Package) => void;
-  deletingId: string | null;
-}) {
-  const left = daysLeft(pkg);
-  const history = pkg.id ? (usesByPackage.get(pkg.id) ?? []) : [];
-  const isEditing = editingId === pkg.id;
-  const showHistory = historyOpenId === pkg.id;
-  const dog = pkg.dog_name
-    ? findDog(allDogs, { dogName: pkg.dog_name, phone: pkg.phone })
-    : null;
-
-  return (
-    <div className="rounded-2xl border border-line bg-surface px-5 py-3.5 shadow-card">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-ink">
-            {pkg.dog_name ? (
-              <DogLink
-                dog={dog}
-                name={pkg.dog_name}
-                badges={{ packageDaysLeft: left }}
-                className="font-medium text-ink"
-              />
-            ) : (
-              <span className="text-ink-3">Shared across all dogs</span>
-            )}
-            <span className="ml-1.5 font-normal text-ink-3">· {pkg.client_name}</span>
-            <span
-              className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                packageKind(pkg) === "walk"
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "bg-accent-50 text-accent-700"
-              }`}
-            >
-              {packageKind(pkg) === "walk" ? "🚶 Walks" : "🐕 Daycare"}
-            </span>
-          </p>
-          <p className="text-xs text-ink-3">
-            {pkg.phone}
-            {pkg.created_at && ` · bought ${pkg.created_at.slice(0, 10)}`}
-            {pkg.price != null ? (
-              <span className="font-medium text-emerald-700"> · ${pkg.price.toFixed(2)}</span>
-            ) : (
-              // Packages sold before prices were recorded contribute nothing
-              // to revenue, which is worth saying rather than showing $0.
-              <span className="text-amber-700"> · no price recorded</span>
-            )}
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {isEditing ? (
-            <>
-              <input
-                type="number"
-                min={1}
-                value={editTotal}
-                onChange={(e) => setEditTotal(Math.max(1, parseInt(e.target.value) || 1))}
-                className="w-20 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
-              />
-              <button
-                onClick={() => saveEditTotal(pkg)}
-                className="rounded-lg bg-accent-500 px-2.5 py-1 text-xs font-medium text-accent-ink hover:bg-accent-600"
-              >
-                Save
-              </button>
-              <button
-                onClick={() => setEditingId(null)}
-                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-3 hover:border-line"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <span
-                className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  left <= 0 ? "bg-rose-50 text-rose-600" : "bg-accent-50 text-accent-700"
-                }`}
-              >
-                {left} of {pkg.total_days} {packageKind(pkg) === "walk" ? "walks" : "days"} left
-              </span>
-              <button
-                onClick={() => adjustUsed(pkg, 1)}
-                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
-                title="Consume one day"
-              >
-                Use a day
-              </button>
-              <button
-                onClick={() => adjustUsed(pkg, -1)}
-                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
-                title="Give a day back"
-              >
-                Undo
-              </button>
-              <button
-                onClick={() => {
-                  setEditingId(pkg.id ?? null);
-                  setEditTotal(pkg.total_days);
-                }}
-                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
-              >
-                Edit total
-              </button>
-              <button
-                onClick={() => setHistoryOpenId(showHistory ? null : (pkg.id ?? null))}
-                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
-              >
-                🗓️ {history.length} used
-              </button>
-              <button
-                onClick={() => deletePackage(pkg)}
-                disabled={deletingId === pkg.id}
-                className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-500 hover:border-rose-300 disabled:opacity-60"
-              >
-                {deletingId === pkg.id ? "Deleting…" : "Delete"}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {showHistory && (
-        <div className="mt-3 rounded-xl bg-surface-2 px-3.5 py-2.5">
-          {history.length === 0 ? (
-            <p className="text-xs text-ink-3">
-              No days recorded yet. Days consumed before this history existed aren&apos;t listed —
-              the count above is still correct.
-            </p>
-          ) : (
-            <ul className="space-y-1 text-xs text-ink-2">
-              {history.map((u) => (
-                <li key={u.id ?? `${u.package_id}-${u.used_on}`} className="flex justify-between gap-3">
-                  <span>{prettyDateKey(u.used_on)}</span>
-                  <span className="text-ink-3">{u.dog_name ?? "—"}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}

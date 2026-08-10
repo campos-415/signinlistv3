@@ -68,10 +68,18 @@ const triple = (c: Rgb) => `${Math.round(clamp(c.r))} ${Math.round(clamp(c.g))} 
 const ACCENT_STEPS: [string, number][] = [
   ["--accent-50", 0.94],
   ["--accent-100", 0.86],
+  // 200 and 300 exist because the app already asked for them in about sixty
+  // places — hover borders, selected states, soft rings. They were never on
+  // the ramp, so Tailwind generated nothing and every one of those styles
+  // silently did nothing at all.
+  ["--accent-200", 0.72],
+  ["--accent-300", 0.53],
   ["--accent-400", 0.34],
   ["--accent-500", 0],
   ["--accent-600", -0.16],
   ["--accent-700", -0.34],
+  // Dark enough to read as text on a 100-tinted background.
+  ["--accent-800", -0.48],
 ];
 
 const PRINT_STEPS: [string, number][] = [
