@@ -12,7 +12,16 @@ export function getSupabase(): SupabaseClient {
         "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. Add them to .env.local (see README)."
       );
     }
-    client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        // The lobby iPad signs in once and must stay signed in across
+        // reboots, so the session is persisted and refreshed in the
+        // background rather than expiring mid-shift.
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+      },
+    });
   }
   return client;
 }

@@ -282,6 +282,20 @@ export async function approveBoardingRequest(row: BoardingRequest): Promise<Boar
   };
 }
 
+/**
+ * Removes the request itself.
+ *
+ * Only the request row goes. A reservation that confirming it already created
+ * is a real booking on the calendar and stays there — deleting the paperwork
+ * must not quietly cancel a stay the client is expecting. Declining is the
+ * reversible option, so this is for spam and duplicates.
+ */
+export async function deleteBoardingRequest(row: BoardingRequest): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from("boarding_requests").delete().eq("id", row.id);
+  if (error) throw error;
+}
+
 export async function rejectBoardingRequest(row: BoardingRequest, note: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase

@@ -14,6 +14,8 @@ export interface PricingSettings {
   daycareHalfDay: number;
   daycareHalfDayThresholdHours: number;
   boardingPerNight: number;
+  // Discounted nightly rate for a second dog from the same household.
+  boardingSecondDogPerNight: number;
   latePickupHour: number;
   latePickupFee: number;
   bath: { S: number; M: number; L: number };
@@ -44,6 +46,25 @@ export interface BusinessSettings {
   // twelve.
   accentColor: string; // "#rrggbb"
   printColor: string;
+  // ---- Contact details -------------------------------------------------
+  // Shown across the public website: header, footer, contact page, and the
+  // LocalBusiness structured data search engines read. Editable here so a
+  // change of hours or a new phone number does not need a deploy.
+  //
+  // Consistent name/address/phone across a site is a real local-SEO signal,
+  // which is the other reason these live in exactly one place.
+  phone: string;
+  email: string;
+  street: string;
+  city: string;
+  state: string;
+  zip: string;
+  hoursWeekday: string;
+  hoursWeekend: string;
+  hoursBoarding: string;
+  instagram: string; // full URL
+  instagramHandle: string;
+  domain: string; // canonical https:// origin, for metadata and sitemaps
 }
 
 // A package the business sells: so many daycare days for a set price.
@@ -91,7 +112,56 @@ export interface EmailSettings {
   notifyOnNewRequest: boolean;
 }
 
+// Whether this deployment serves the built-in marketing website.
+//
+// Two ways a business uses this app:
+//   - As their whole web presence: the website is on, and / is the home page.
+//   - Back office only: they already have a site they like, and just want
+//     the kiosk, the staff pages, and the forms to embed. The website is off,
+//     / goes straight to the kiosk, and the marketing pages are not served.
+//
+// Either way /enroll and /book stay available, because those are the pieces
+// an existing website needs to link to or iframe.
+export interface SiteSettings {
+  enabled: boolean;
+  // Where "home" points when the built-in site is off — normally their own
+  // website. Blank sends people to the kiosk instead.
+  externalUrl: string;
+}
+
+// Card payments through the Square Point of Sale app. Neither value is a
+// secret — the application ID travels in the deep link the browser opens,
+// so both live in settings rather than in an env var, and each business
+// configures its own.
+export interface SquareSettings {
+  enabled: boolean;
+  applicationId: string;
+  locationId: string;
+  // Runs the whole flow except Square: the button jumps straight to the
+  // return page with a pretend success. Square's Point of Sale API has no
+  // sandbox for the deep link, and the real thing needs the app, a real
+  // account and a deployed https domain — so without this there is no way
+  // to see the flow work before going live.
+  //
+  // Payments recorded this way are marked TEST and can be cleared from
+  // Settings. Nothing is ever charged.
+  testMode: boolean;
+}
+
+// Who can be recorded as having done a walk. Kept as a list rather than a
+// free-text box so the walk log stays consistent — "RM", "R. Marsh" and
+// "Rob" for one person makes the log useless for answering who walked a dog.
+export interface StaffSettings {
+  /** Display names, shown in the walk log dropdown. */
+  names: string[];
+  /** Earliest and latest selectable walk time, and the step, in minutes. */
+  walkDayStartHour: number;
+  walkDayEndHour: number;
+  walkStepMinutes: number;
+}
+
 export interface AppSettings {
+  site: SiteSettings;
   business: BusinessSettings;
   pricing: PricingSettings;
   addons: CatalogItem[];
@@ -99,23 +169,39 @@ export interface AppSettings {
   services: CatalogItem[];
   packageTiers: PackageTier[];
   email: EmailSettings;
+  square: SquareSettings;
+  staff: StaffSettings;
 }
 
 // The values the app shipped with. Used until settings load, and as the
 // baseline a fresh install starts from.
 export const DEFAULT_SETTINGS: AppSettings = {
+  site: { enabled: true, externalUrl: "" },
   business: {
     name: "Lombard Doggy Daycare",
     tagline: "Sign your pup in or out",
     logoData: null,
     accentColor: "#4a72ef",
     printColor: "#f59e0b",
+    phone: "(415) 535-8520",
+    email: "support@lombarddoggydaycare.com",
+    street: "1488 Lombard Street",
+    city: "San Francisco",
+    state: "CA",
+    zip: "94123",
+    hoursWeekday: "Monday – Friday, 7:00 AM – 7:00 PM",
+    hoursWeekend: "Saturday - Sunday 9:00 AM - 5:00 PM",
+    hoursBoarding: "Overnight care, 7 days a week",
+    instagram: "https://www.instagram.com/lombard_doggy_daycare",
+    instagramHandle: "@lombard_doggy_daycare",
+    domain: "https://www.lombarddoggydaycare.com",
   },
   pricing: {
     daycareFullDay: 70,
     daycareHalfDay: 50,
     daycareHalfDayThresholdHours: 4,
     boardingPerNight: 90,
+    boardingSecondDogPerNight: 80,
     latePickupHour: 12,
     latePickupFee: 50,
     bath: { S: 60, M: 80, L: 100 },
@@ -147,6 +233,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { kind: "daycare", days: 20, price: 1100 },
     { kind: "walk", days: 10, price: 250 },
   ],
+  square: { enabled: false, applicationId: "", locationId: "", testMode: false },
+  staff: { names: [], walkDayStartHour: 6, walkDayEndHour: 21, walkStepMinutes: 30 },
   email: {
     autoAcknowledge: false,
     fromName: "",
@@ -245,11 +333,32 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
       ? stored.boardingAddons
       : DEFAULT_SETTINGS.boardingAddons,
     services: stored.services?.length ? stored.services : DEFAULT_SETTINGS.services,
-    packageTiers: stored.packageTiers?.length
-      ? stored.packageTiers
-      : DEFAULT_SETTINGS.packageTiers,
+    // `?? ` not `?.length ?` — deleting every tier is a legitimate choice
+    // (a business that sells no packages), and treating the empty array as
+    // "unset" silently resurrected the defaults.
+    //
+    // The catalogs above keep the length check on purpose: code depends on
+    // the built-in keys existing, so an empty list there is a broken state
+    // rather than a deliberate one.
+    packageTiers: stored.packageTiers ?? DEFAULT_SETTINGS.packageTiers,
     email: { ...DEFAULT_SETTINGS.email, ...(stored.email ?? {}) },
+    square: { ...DEFAULT_SETTINGS.square, ...(stored.square ?? {}) },
+    staff: { ...DEFAULT_SETTINGS.staff, ...(stored.staff ?? {}) },
+    site: { ...DEFAULT_SETTINGS.site, ...(stored.site ?? {}) },
   };
+}
+
+// When the row we loaded was last written. Used to notice that somebody
+// else saved in the meantime — the whole settings object is stored as one
+// JSON blob, so a blind write silently discards their edit rather than
+// merging with it.
+let loadedStamp: string | null = null;
+
+export class SettingsConflictError extends Error {
+  constructor() {
+    super("Settings were changed elsewhere since this page was opened.");
+    this.name = "SettingsConflictError";
+  }
 }
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -257,7 +366,8 @@ export async function loadSettings(): Promise<AppSettings> {
     const supabase = getSupabase();
     const { data, error } = await supabase.from("settings").select("*").eq("id", 1).maybeSingle();
     if (error) throw error;
-    const row = data as { data?: Partial<AppSettings> } | null;
+    const row = data as { data?: Partial<AppSettings>; updated_at?: string } | null;
+    loadedStamp = row?.updated_at ?? null;
     cache = merge(row?.data ?? null);
   } catch (e) {
     // A missing table or a network blip shouldn't take the kiosk down — the
@@ -271,9 +381,27 @@ export async function loadSettings(): Promise<AppSettings> {
 
 export async function saveSettings(next: AppSettings): Promise<void> {
   const supabase = getSupabase();
+
+  // Optimistic concurrency. Two people with /settings open — or one person
+  // with two tabs — would otherwise overwrite each other completely, and
+  // the loser would never know: deleted package tiers reappear, a reworded
+  // email template reverts. Refuse rather than clobber.
+  const { data: current, error: readErr } = await supabase
+    .from("settings")
+    .select("updated_at")
+    .eq("id", 1)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const stamp = (current as { updated_at?: string } | null)?.updated_at ?? null;
+  if (loadedStamp !== null && stamp !== null && stamp !== loadedStamp) {
+    throw new SettingsConflictError();
+  }
+
+  const now = new Date().toISOString();
   const { error } = await supabase
     .from("settings")
-    .upsert({ id: 1, data: next, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    .upsert({ id: 1, data: next, updated_at: now }, { onConflict: "id" });
   if (error) throw error;
+  loadedStamp = now;
   cache = next;
 }

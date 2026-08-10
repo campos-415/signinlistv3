@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+
 /* Defaults for the themeable palette. SettingsProvider overwrites these on
    <html> from the saved settings; they're here so the app renders correctly
    before settings load, and so a fresh install looks finished. Values are
@@ -13,6 +17,8 @@
   --accent-500: 74 114 239;
   --accent-600: 52 87 221;
   --accent-700: 42 68 179;
+
+  --accent-ink: 255 255 255;
 
   --print-from: 245 158 11;
   --print-to: 249 115 22;

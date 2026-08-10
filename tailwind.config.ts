@@ -16,6 +16,9 @@ const config: Config = {
           500: "rgb(var(--accent-500) / <alpha-value>)",
           600: "rgb(var(--accent-600) / <alpha-value>)",
           700: "rgb(var(--accent-700) / <alpha-value>)",
+          // Text to place on a solid accent background. Derived from the
+          // accent's luminance — see readableInk in lib/theme.ts.
+          ink: "rgb(var(--accent-ink) / <alpha-value>)",
         },
         surface: {
           DEFAULT: "rgb(var(--surface) / <alpha-value>)",

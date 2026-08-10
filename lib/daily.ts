@@ -137,12 +137,14 @@ export function computeDailyTotals({
   let projectedCount = 0;
 
   for (const b of boardings) {
+    const nights = nightsBetweenKeys(b.start_date, b.end_date);
     const addonInput = {
       addons: b.addons ?? [],
       walksPerDay: b.walks_per_day ?? null,
       bathSize: b.bath_size ?? null,
+      // Walks a package already paid for are not revenue today — that money
+      // was counted on the day the block was sold.
     };
-    const nights = nightsBetweenKeys(b.start_date, b.end_date);
     const base = nights * PRICING.boardingPerNight;
     const extras = boardingAddonAmounts(addonInput, nights);
 
@@ -336,6 +338,8 @@ export interface DailyInput {
   boardings: Boarding[]; // already narrowed to stays covering the day
   packageUses: PackageUse[];
   packagesSold: Package[]; // packages bought that day — the revenue event
+  // Every package on file, not just today's sales. Needed to work out how
+  // many of a stay's walks a block still has left to cover.
   selectedDate?: string;
 }
 

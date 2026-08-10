@@ -159,10 +159,21 @@ export function packageBillingPickUp<T extends { id?: string; price?: number | n
 
 // A short label distinguishing one of a household's packages from another
 // in a picker — "Bella · 6 of 10 left" vs "Shared · 2 of 5 left".
-export function packageLabel(pkg: Package): string {
+//
+// `held` counts uses this screen has earmarked but that aren't on the ledger
+// yet. A boarding stay spends its walks in one go at pick-up, so days_used
+// still reads zero while four of them are already promised — and a picker
+// that answers "10 of 10 left" invites staff to promise the same four walks
+// to a second stay. Held uses are display only; the ledger stays the single
+// source of truth for what has actually been spent.
+export function packageLabel(pkg: Package, held = 0): string {
   const scope = pkg.dog_name ? pkg.dog_name : "Shared";
   const unit = packageKind(pkg) === "walk" ? "walks" : "days";
-  return `${scope} · ${daysLeft(pkg)} of ${pkg.total_days} ${unit} left`;
+  const reserved = Math.max(0, Math.min(daysLeft(pkg), held));
+  const left = daysLeft(pkg) - reserved;
+  return `${scope} · ${left} of ${pkg.total_days} ${unit} left${
+    reserved ? ` (${reserved} held)` : ""
+  }`;
 }
 
 // Owner profiles are keyed by phone. The stored strings aren't all

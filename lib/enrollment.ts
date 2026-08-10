@@ -523,6 +523,21 @@ export async function approveEnrollment(row: Enrollment): Promise<EnrollmentResu
   return result;
 }
 
+/**
+ * Removes the submission itself.
+ *
+ * Only the request row goes. Anything approving it already created — the dog
+ * profile, its vaccination records, the uploaded document — is real data with
+ * a life of its own and stays put; deleting a form should not silently
+ * un-enrol a dog that has been coming for months. Declining is the reversible
+ * option, so this is for spam and duplicates.
+ */
+export async function deleteEnrollment(row: Enrollment): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase.from("enrollments").delete().eq("id", row.id);
+  if (error) throw error;
+}
+
 export async function rejectEnrollment(row: Enrollment, note: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase

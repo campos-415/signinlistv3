@@ -272,6 +272,13 @@ export interface Boarding {
   walks_per_day?: number | null; // only meaningful when addons includes "walk"
   bath_size?: BathSize | null; // only meaningful when addons includes "bath"
   medication_instructions?: string | null; // only meaningful when addons includes "medication"
+  /**
+   * @deprecated Unused. A boarding stay no longer draws from a walk package:
+   * walk packages cover the daycare walk add-on only, and a stay's walks bill
+   * per walk on the reservation. The column is kept so existing rows are not
+   * silently rewritten, but nothing reads or writes it.
+   */
+  walk_package_id?: string | null;
   photo_data?: string | null; // base64 JPEG data URL, resized client-side — printed on /report
   created_at?: string;
 }
@@ -310,6 +317,12 @@ export interface WalkLog {
   walk_out?: string | null;
   walk_in?: string | null;
   staff_initials?: string | null;
+  // Whose walk this was. A row used to identify itself only by the stay it
+  // belonged to, so the table could not answer the one question asked of it
+  // without a join. dog_name rides along so a row reads on its own, the same
+  // way PackageUse carries one.
+  dog_id?: string | null;
+  dog_name?: string | null;
   created_at?: string;
 }
 

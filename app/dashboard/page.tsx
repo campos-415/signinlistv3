@@ -22,16 +22,16 @@ export default function DashboardPage() {
 // Everywhere staff can go. Profiles are missing on purpose — those are
 // reached by searching a dog or clicking a name.
 const DESTINATIONS: { href: string; icon: string; label: string; blurb: string }[] = [
-  { href: "/records", icon: "📋", label: "Records", blurb: "Sign-in list, walk log, edits" },
+  { href: "/in-house", icon: "📋", label: "In house", blurb: "Sign-in list, walk log, edits" },
   {
-    href: "/records?desk=1",
+    href: "/in-house?desk=1",
     icon: "🚗",
     label: "Front desk",
     blurb: "Sign a dog in or out for a client",
   },
-  { href: "/boardings", icon: "🛏️", label: "Boardings", blurb: "Reservations and calendar" },
+  { href: "/calendar", icon: "🗓️", label: "Boarding calendar", blurb: "Reservations, stays and meet & greets" },
   { href: "/packages", icon: "📦", label: "Packages", blurb: "Sell and track package days" },
-  { href: "/daily", icon: "📊", label: "Full day report", blurb: "Printable end-of-day totals" },
+  { href: "/day-report", icon: "📊", label: "End-of-day report", blurb: "Printable revenue totals" },
   { href: "/signup", icon: "✍️", label: "New client signup", blurb: "Enrollment form at the desk" },
   {
     href: "/requests",
@@ -93,7 +93,7 @@ function Dashboard() {
 
   function openService(category: Category) {
     if (!category.service) return;
-    router.push(`/records?date=${today}&service=${category.service}`);
+    router.push(`/in-house?date=${today}&service=${category.service}`);
   }
 
   return (
@@ -119,18 +119,18 @@ function Dashboard() {
           label="In House"
           value={String(stillHere.length)}
           accent
-          href={`/records?date=${today}`}
+          href={`/in-house?date=${today}`}
         />
         <Stat label="Still to arrive" value={String(totals.scheduledToArrive)} />
         <Stat
           label="Dropped off"
           value={String(totals.dropOffs.length)}
-          href={`/records?date=${today}`}
+          href={`/in-house?date=${today}`}
         />
         <Stat
           label="Picked up"
           value={String(totals.pickUps.length)}
-          href={`/records?date=${today}`}
+          href={`/in-house?date=${today}`}
         />
       </div>
 
@@ -140,7 +140,7 @@ function Dashboard() {
           <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
             What&apos;s on today
           </h2>
-          {/* <Link href="/daily" className="text-xs font-medium text-accent-600 hover:underline">
+          {/* <Link href="/day-report" className="text-xs font-medium text-accent-600 hover:underline">
             Revenue &amp; printable report →
           </Link> */}
         </div>

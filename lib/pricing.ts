@@ -66,6 +66,10 @@ export const BATH_PRICES: Record<"S" | "M" | "L", number> = {
 // Boarding add-on pricing. Walk is per walk (so a stay with 2 walks/day
 // over 3 nights charges 6 walks); medication is a flat daily fee for
 // the whole stay; nail trim is a flat one-time fee for the stay.
+//
+// Boarding walks always bill. A walk package covers the DAYCARE walk add-on
+// and nothing else — a stay's walks are part of what the reservation charges
+// for, so letting a block absorb them would give the walks away twice.
 export const BOARDING_ADDON_PRICES = {
   get walkPerWalk() {
     return getSettings().pricing.boardingWalkPerWalk;
@@ -114,6 +118,11 @@ export function nightsBetweenKeys(startDate: string, endDate: string): number {
 // the same numbers — so the report and the invoice can't disagree.
 export interface BoardingAddonAmounts {
   walks: number;
+  /**
+   * Every walk the stay includes. All of them bill: a walk package covers the
+   * daycare walk add-on only, and boarding walks are charged per walk on the
+   * reservation. See the note above walkPerWalk.
+   */
   walkCount: number;
   bath: number;
   bathCount: number;
@@ -248,11 +257,20 @@ export function estimatePrice(
   }
 
   if (baseCovered) {
-    // The package absorbs the full-day rate. Show it as a $0 line rather
-    // than dropping it: silently omitting the base makes the total look
-    // like the daycare charge went missing, and a package-covered day with
-    // no add-ons would otherwise produce no breakdown at all.
-    breakdown.push({ label: "Daycare (full day) — covered by package", amount: 0 });
+    // The package absorbs the base rate. Show it as a $0 line rather than
+    // dropping it: silently omitting the base makes the total look like the
+    // daycare charge went missing, and a package-covered day with no add-ons
+    // would otherwise produce no breakdown at all.
+    //
+    // A short visit can be covered too, when staff spend a day on it
+    // deliberately. Naming it "full day" there would be a lie on the
+    // receipt, and the half-day fee is not charged on top — the day paid
+    // for the visit, whatever its length.
+    const fullDay = isFullDayVisit(dropOffTime, pickUpTime);
+    breakdown.push({
+      label: `Daycare (${fullDay ? "full day" : "half day"}) — covered by package`,
+      amount: 0,
+    });
   } else {
     if (serviceType === "daycare") {
       const fullDay = isFullDayVisit(dropOffTime, pickUpTime);

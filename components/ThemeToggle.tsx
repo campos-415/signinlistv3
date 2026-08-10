@@ -2,8 +2,10 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { isStaffRoute } from "@/lib/routes";
 
 const KEY = "staff_theme";
+
 
 const ThemeContext = createContext<{ dark: boolean; toggle: () => void; allowed: boolean }>({
   dark: false,
@@ -23,12 +25,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [dark, setDark] = useState(false);
 
-  // The lobby kiosk and the client-facing forms run on a device the business
-  // doesn't sit at — or, for /enroll, inside somebody else's web page — so
-  // they stay light whatever staff picked. Client navigation keeps the same
-  // document, so this also has to actively REMOVE the class on the way in,
-  // not just skip adding it.
-  const allowed = !(pathname === "/" || pathname === "/signup" || pathname === "/enroll");
+  // Dark mode is for the back office only. Everything public — the website,
+  // the lobby kiosk, the enrollment and booking forms — stays light whatever
+  // staff picked, because those run on somebody else's screen.
+  //
+  // An allowlist of staff routes rather than a blocklist of public ones: the
+  // marketing site will grow pages over time, and each new one would
+  // otherwise have to remember to opt out of dark mode.
+  //
+  // Client-side navigation keeps the same document, so this also has to
+  // actively REMOVE the class on the way in, not just skip adding it.
+  const allowed = isStaffRoute(pathname);
 
   useEffect(() => {
     const stored = localStorage.getItem(KEY);

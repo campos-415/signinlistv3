@@ -1,6 +1,8 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+import { isAppRoute } from "@/lib/routes";
 import { AppSettings, DEFAULT_SETTINGS, getSettings, loadSettings } from "@/lib/settings";
 import { applyTheme } from "@/lib/theme";
 
@@ -19,6 +21,7 @@ export function useSettings() {
 // come up even if Supabase is slow — and re-render once the real values
 // land.
 export default function SettingsProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [settings, setSettings] = useState<AppSettings>(getSettings());
 
   async function refresh() {
@@ -34,10 +37,18 @@ export default function SettingsProvider({ children }: { children: React.ReactNo
   // made the app one-business-only.
   useEffect(() => {
     applyTheme(settings.business.accentColor, settings.business.printColor);
-    if (settings.business.name) {
+    // Only on the app. The marketing pages set their own titles through
+    // Next metadata, and overwriting those would cost real SEO — every page
+    // would report itself as the sign-in screen.
+    if (settings.business.name && isAppRoute(pathname)) {
       document.title = `${settings.business.name} — sign in`;
     }
-  }, [settings.business.accentColor, settings.business.printColor, settings.business.name]);
+  }, [
+    settings.business.accentColor,
+    settings.business.printColor,
+    settings.business.name,
+    pathname,
+  ]);
 
   return (
     <SettingsContext.Provider value={{ settings, refresh }}>{children}</SettingsContext.Provider>

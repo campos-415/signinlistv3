@@ -14,6 +14,7 @@ import {
   preferredPackageId,
 } from "@/lib/dogs";
 import { dateRange, prettyDateKey, todayKey } from "@/lib/dates";
+import { buildOpenVisits } from "@/lib/signin";
 import {
   STATUS_CLASSES,
   STATUS_LABELS,
@@ -51,6 +52,7 @@ import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import DateField from "@/components/DateField";
 import { CheckGrid, ChoiceWithOther, YesNo, YesNoDetail } from "@/components/FormBits";
+import Panel from "@/components/Panel";
 
 export default function DogProfilePage() {
   return (
@@ -87,6 +89,8 @@ function DogProfile() {
   const [error, setError] = useState("");
   const [savingInfo, setSavingInfo] = useState(false);
   const [infoSaved, setInfoSaved] = useState(false);
+  // Snapshot of the form as loaded. Anything different means unsaved work.
+  const [baseline, setBaseline] = useState("");
 
   const [docs, setDocs] = useState<DogDoc[]>([]);
 
@@ -190,6 +194,47 @@ function DogProfile() {
         meet_greet_on: dog.meet_greet_on ?? "",
         meet_greet_window: dog.meet_greet_window ?? "",
       });
+      setBaseline(
+        JSON.stringify({
+          dog_name: dog.dog_name ?? "",
+          last_name: dog.last_name ?? "",
+          drop_off_by: dog.drop_off_by ?? "",
+          breed: dog.breed ?? "",
+          sex: dog.sex ?? "",
+          fixed_status: dog.fixed_status ?? "",
+          birthdate: dog.birthdate ?? "",
+          weight_lb: dog.weight_lb != null ? String(dog.weight_lb) : "",
+          vet: dog.vet ?? "",
+          authorized_pickup: dog.authorized_pickup ?? "",
+          color: dog.color ?? "",
+          flea_program: dog.flea_program ?? "",
+          fixed_scheduled_on: dog.fixed_scheduled_on ?? "",
+          dog_source: dog.dog_source ?? "",
+          growled: dog.growled ?? null,
+          growled_note: dog.growled_note ?? "",
+          bitten: dog.bitten ?? null,
+          bitten_note: dog.bitten_note ?? "",
+          climbed_fence: dog.climbed_fence ?? null,
+          fence_height: dog.fence_height ?? "",
+          dog_fight: dog.dog_fight ?? null,
+          dog_fight_note: dog.dog_fight_note ?? "",
+          health_problems: dog.health_problems ?? null,
+          health_notes: dog.health_notes ?? "",
+          activity_restrictions: dog.activity_restrictions ?? [],
+          allergies: dog.allergies ?? [],
+          sensitive_areas: dog.sensitive_areas ?? null,
+          sensitive_areas_note: dog.sensitive_areas_note ?? "",
+          behavior_traits: dog.behavior_traits ?? [],
+          play_style: dog.play_style ?? [],
+          attendance_plan: dog.attendance_plan ?? "",
+          big_dog_response: dog.big_dog_response ?? "",
+          crate_trained: dog.crate_trained ?? null,
+          kennel_trained: dog.kennel_trained ?? null,
+          package_interest: dog.package_interest ?? "",
+          meet_greet_on: dog.meet_greet_on ?? "",
+          meet_greet_window: dog.meet_greet_window ?? "",
+        })
+      );
 
       // Everything else keys off the dog we just loaded — its id for
       // sign-ins and vaccines, its phone + name for packages and stays,
@@ -321,6 +366,7 @@ function DogProfile() {
       const { error: err } = await supabase.from("dogs").update(patch).eq("id", dog.id);
       if (err) throw err;
       setDog({ ...dog, ...patch });
+      setBaseline(JSON.stringify(form));
       setInfoSaved(true);
       setTimeout(() => setInfoSaved(false), 2000);
     } catch (e) {
@@ -508,6 +554,20 @@ function DogProfile() {
     [packages, dog]
   );
 
+  // Walks are only ever spent on a daycare visit, so a walk block means
+  // nothing for a dog that only boards — its walks bill per walk on the
+  // reservation. Evidence of daycare is either a visit on record or the
+  // attendance plan the household gave at enrollment, so a brand-new client
+  // who bought walks up front still sees them before their first visit.
+  const doesDaycare = useMemo(() => {
+    if (signins.some((s) => s.service_type === "daycare")) return true;
+    // "Both often" and "Both occasionally" include daycare without saying the
+    // word, so matching only "daycare" would hide the pill from half the
+    // clients who can actually spend a walk.
+    const plan = (dog?.attendance_plan ?? "").toLowerCase();
+    return plan.includes("daycare") || plan.includes("both");
+  }, [signins, dog]);
+
   // Every package on the number that could apply to this dog — its own,
   // plus shared ones with no dog_name.
   const relevantPackages = useMemo(
@@ -601,6 +661,15 @@ function DogProfile() {
     return boardings.filter((b) => b.end_date >= today);
   }, [boardings]);
 
+  // Is the dog here right now? Derived through the shared rule rather than a
+  // local re-implementation, so the profile, the board and the kiosk cannot
+  // disagree about what "in" means — including its handling of a drop-off
+  // dated in the future.
+  const openVisit = useMemo(
+    () => (dogId ? (buildOpenVisits(signins).get(dogId) ?? null) : null),
+    [signins, dogId]
+  );
+
   // The handful of answers that change how this dog is handled today. They
   // sit at the top of the profile rather than in the questionnaire section
   // below, because "has bitten" is not something to find by scrolling.
@@ -624,6 +693,45 @@ function DogProfile() {
       );
     return flags;
   }, [dog]);
+
+  const dirty = !!baseline && JSON.stringify(form) !== baseline;
+
+  // One-line gist per collapsible section. The whole point of closing a
+  // section is not having to open it to find out.
+  const yn = (v: boolean | null | undefined, yes: string, no: string) =>
+    v === true ? yes : v === false ? no : "";
+
+  const healthSummary = [
+    yn(dog?.health_problems, `Health: ${dog?.health_notes || "see notes"}`, "No health problems"),
+    dog?.allergies?.length ? `Allergies: ${dog.allergies.join(", ")}` : "",
+    dog?.activity_restrictions?.length ? `Restrictions: ${dog.activity_restrictions.join(", ")}` : "",
+    yn(dog?.sensitive_areas, `Touch-sensitive${dog?.sensitive_areas_note ? `: ${dog.sensitive_areas_note}` : ""}`, ""),
+  ].filter(Boolean).join(" · ");
+
+  const historyFlags = [
+    dog?.bitten ? "has bitten" : "",
+    dog?.growled ? "has growled" : "",
+    dog?.dog_fight ? "dog fight" : "",
+    dog?.climbed_fence ? "climbs fences" : "",
+  ].filter(Boolean);
+  const historySummary = historyFlags.length
+    ? `⚠️ ${historyFlags.join(", ")}`
+    : dog?.bitten === false || dog?.growled === false
+      ? "Nothing recorded"
+      : "Not asked";
+
+  const behaviourSummary = [
+    dog?.behavior_traits?.length ? dog.behavior_traits.slice(0, 3).join(", ") : "",
+    dog?.big_dog_response ? `big dogs: ${dog.big_dog_response.toLowerCase()}` : "",
+    dog?.attendance_plan || "",
+  ].filter(Boolean).join(" · ");
+
+  const basicSummary = [dog?.breed, dog?.color, dog?.weight_lb ? `${dog.weight_lb} lb` : "",
+    ageFromBirthdate(dog?.birthdate)].filter(Boolean).join(" · ");
+
+  const vaccineSummary = `${STATUS_LABELS[overallVaccineStatus(vaccinations)]}${
+    docs.length ? ` · ${docs.length} record${docs.length === 1 ? "" : "s"} on file` : " · no records uploaded"
+  }`;
 
   if (loading) {
     return (
@@ -687,7 +795,7 @@ function DogProfile() {
                 <BalanceBadge outstanding={balance.outstanding} />
               </Link>
             )}
-            {dogWalkPackage && (
+            {dogWalkPackage && doesDaycare && (
               <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
                 🚶 {daysLeft(dogWalkPackage)} of {dogWalkPackage.total_days} walks left
               </span>
@@ -697,10 +805,27 @@ function DogProfile() {
                 🐕 {daysLeft(dogPackage)} of {dogPackage.total_days} days left
               </span>
             )}
-            {upcomingStays.length > 0 && (
-              <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">
-                🛏️ {upcomingStays.length} upcoming stay{upcomingStays.length === 1 ? "" : "s"}
+            {/* Where the dog is, in one pill: here now, or booked to come.
+                Never both — a dog that has arrived is not "upcoming" any
+                more — and never a "left" state, because having gone home is
+                the ordinary case and does not need announcing. */}
+            {openVisit ? (
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                🟢 In
+                <span className="ml-1 font-medium text-emerald-800/70">
+                  since{" "}
+                  {openVisit.dropOffTime.toLocaleTimeString(undefined, {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </span>
               </span>
+            ) : (
+              upcomingStays.length > 0 && (
+                <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">
+                  🛏️ {upcomingStays.length} upcoming stay{upcomingStays.length === 1 ? "" : "s"}
+                </span>
+              )
             )}
             {!hasWaiver(dog) && (
               <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
@@ -727,7 +852,7 @@ function DogProfile() {
       )}
 
       {/* Basic info */}
-      <Section title="Basic info">
+      <Panel id="dog-basic" title="Basic info" summary={basicSummary} defaultOpen>
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Dog name">
             <input
@@ -862,16 +987,6 @@ function DogProfile() {
             </Field>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            onClick={saveInfo}
-            disabled={savingInfo}
-            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
-          >
-            {savingInfo ? "Saving…" : "Save changes"}
-          </button>
-          {infoSaved && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
-        </div>
         <p className="mt-2 text-[11px] text-ink-3">
           Phone number is the owner&apos;s — change it on the{" "}
           <Link href={ownerHref(dog.phone)} className="text-accent-600 hover:underline">
@@ -879,10 +994,10 @@ function DogProfile() {
           </Link>
           .
         </p>
-      </Section>
+      </Panel>
 
       {/* Health & grooming — the enrollment answers, editable */}
-      <Section title="Health &amp; grooming">
+      <Panel id="dog-health" title="Health &amp; grooming" summary={healthSummary || "Not answered"} tone={healthSummary.includes("Allergies") || healthSummary.startsWith("Health:") ? "alert" : "default"}>
         <div className="space-y-3">
           <YesNoDetail
             label="Any health problems?"
@@ -918,11 +1033,10 @@ function DogProfile() {
             detailPlaceholder="Paws, ears, tail…"
           />
         </div>
-        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
-      </Section>
+      </Panel>
 
       {/* Incident history */}
-      <Section title="History">
+      <Panel id="dog-history" title="History" summary={historySummary} tone={historyFlags.length ? "alert" : "default"}>
         <div className="grid gap-3 sm:grid-cols-2">
           <YesNoDetail
             label="Has growled at a person or dog?"
@@ -957,11 +1071,10 @@ function DogProfile() {
             detailLabel="What happened?"
           />
         </div>
-        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
-      </Section>
+      </Panel>
 
       {/* Behaviour */}
-      <Section title="Behaviour &amp; play">
+      <Panel id="dog-behaviour" title="Behaviour &amp; play" summary={behaviourSummary || "Not answered"}>
         <div className="space-y-3">
           <Field label="Traits">
             <CheckGrid
@@ -1034,11 +1147,10 @@ function DogProfile() {
             </Field>
           </div>
         </div>
-        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
-      </Section>
+      </Panel>
 
       {/* Vaccines */}
-      <Section title="Vaccines">
+      <Panel id="dog-vaccines" title="Vaccines" summary={vaccineSummary} defaultOpen>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
@@ -1129,10 +1241,10 @@ function DogProfile() {
             />
           </label>
         </div>
-      </Section>
+      </Panel>
 
       {/* Packages */}
-      <Section title="Packages" count={relevantPackages.length}>
+      <Panel id="dog-packages" title="Packages" count={relevantPackages.length} summary={dogPackage || dogWalkPackage ? "Active" : "None on file"}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
@@ -1194,7 +1306,7 @@ function DogProfile() {
                           }
                           className={`rounded-full px-2 py-0.5 text-[10px] font-semibold transition disabled:opacity-40 ${
                             pinned
-                              ? "bg-accent-500 text-white"
+                              ? "bg-accent-500 text-accent-ink"
                               : "border border-line text-ink-3 hover:border-accent-400"
                           }`}
                         >
@@ -1209,10 +1321,10 @@ function DogProfile() {
             </tbody>
           </table>
         </ScrollBox>
-      </Section>
+      </Panel>
 
       {/* Stays */}
-      <Section title="Boarding stays" count={boardings.length}>
+      <Panel id="dog-stays" title="Boarding stays" count={boardings.length} summary={upcomingStays.length ? `${upcomingStays.length} upcoming` : "None upcoming"}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
@@ -1237,7 +1349,7 @@ function DogProfile() {
                   </td>
                   <td className="py-2">
                     <Link
-                      href={`/report?boardingId=${b.id}`}
+                      href={`/stay-report?boardingId=${b.id}`}
                       className="text-xs font-medium text-accent-600 hover:underline"
                     >
                       Open →
@@ -1249,10 +1361,10 @@ function DogProfile() {
             </tbody>
           </table>
         </ScrollBox>
-      </Section>
+      </Panel>
 
       {/* Visits */}
-      <Section title="Visits" count={visits.length}>
+      <Panel id="dog-visits" title="Visits" count={visits.length} summary={visits[0] ? `Last: ${visits[0].date}` : "No visits yet"}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
@@ -1289,10 +1401,10 @@ function DogProfile() {
             </tbody>
           </table>
         </ScrollBox>
-      </Section>
+      </Panel>
 
       {/* Walks */}
-      <Section title="Walks" count={walkRows.length}>
+      <Panel id="dog-walks" title="Walks" count={walkRows.length} summary={walkRows[0] ? `Last: ${walkRows[0].date}` : "None logged"}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
@@ -1320,7 +1432,27 @@ function DogProfile() {
             </tbody>
           </table>
         </ScrollBox>
-      </Section>
+      </Panel>
+
+      {/* One save for the whole profile. Every panel edits the same row, so
+          four identical buttons only raised the question of which one saved
+          what. Sticky, because the field you changed may be several panels
+          up by the time you finish. */}
+      {dirty && (
+        <div className="sticky bottom-4 z-40 mt-4 flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-card">
+          <p className="text-xs font-medium text-amber-900">Unsaved changes to this profile.</p>
+          <button
+            onClick={saveInfo}
+            disabled={savingInfo}
+            className="ml-auto rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
+          >
+            {savingInfo ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      )}
+      {infoSaved && !dirty && (
+        <p className="mt-3 text-xs font-medium text-emerald-600">Saved ✓</p>
+      )}
     </div>
   );
 }
@@ -1366,28 +1498,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Every editable section writes the same `clients` row, so they all share one
 // save action — the button repeats so staff never have to scroll back up to
 // find it.
-function SaveBar({
-  onSave,
-  saving,
-  saved,
-}: {
-  onSave: () => void;
-  saving: boolean;
-  saved: boolean;
-}) {
-  return (
-    <div className="mt-3 flex items-center gap-2">
-      <button
-        onClick={onSave}
-        disabled={saving}
-        className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
-      >
-        {saving ? "Saving…" : "Save changes"}
-      </button>
-      {saved && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
-    </div>
-  );
-}
 
 function EmptyRow({ colSpan, children }: { colSpan: number; children: React.ReactNode }) {
   return (

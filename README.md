@@ -282,7 +282,7 @@ cp .env.local.example .env.local
 
 Fill in `.env.local`:
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from Supabase.
-- `NEXT_PUBLIC_RECORDS_PASSCODE` — any word or number, this gates the `/records` staff page. Not real security (it's a client-side check), just keeps casual visitors out.
+- `NEXT_PUBLIC_STAFF_UNLOCK_MINUTES` — optional, default 30. How long a staff screen stays unlocked with nothing open before it asks for the password again. Not the security boundary — see [Accounts and security](#accounts-and-security).
 - `RESEND_API_KEY` — optional. Only needed to email clients; see [Emailing clients](#emailing-clients). Leave it blank and nothing else changes.
 
 ```bash
@@ -404,6 +404,39 @@ The word **client** is still correct in the app, and still used, for the *human*
 | "client" in prose and UI copy | the person paying |
 
 Two known leftovers, both deliberate: `packages.client_name` actually holds the owner name, and `last_name` on a dog row is the owner surname. Renaming those touches three more tables and ~110 call sites, and was left for a separate pass.
+
+## Accounts and security
+
+Staff and the kiosk sign in with a real account. There is no shared passcode any more, and the reason matters:
+
+**The old passcode was not security.** It was compared in the browser against a `NEXT_PUBLIC_` variable, so it shipped inside the JavaScript — readable in dev tools in about ten seconds. And it only ever guarded the UI: every table carried a blanket allow-all policy, so anyone with the anon key (which is in the public website's bundle by design) could read dogs, owners, phone numbers and payments straight from the database without going near a login screen.
+
+Now:
+
+- **Sign-in is a Supabase session.** Every request carries a token, and Row Level Security decides what it may touch. Refusing happens in the database, not the interface.
+- **The anon key can do four things**, all of which the public pages need: read `settings`, read `site_photos`, insert into `enrollments`, insert into `boarding_requests`. Note both request tables are insert-only for the public — a visitor can submit a form but cannot read back what anyone else submitted.
+- **The kiosk has its own account.** It reads dogs and packages and writes sign-ins, so it cannot work signed out. It is set up once per tablet and stays signed in; the session refreshes itself. Clients never see that screen.
+- **The idle lock stayed**, but it is now a convenience on top of real auth: it re-prompts on an unattended back-office screen without ending the session.
+
+Usernames with no `@` are expanded to `username@staff.local` — a syntactically valid address that never receives mail — so staff type `frontdesk`, not an email.
+
+### Setting it up
+
+Do this in order. **The last step breaks an unauthenticated app the moment it runs**, so create the accounts and deploy the code first.
+
+1. In Supabase → **Authentication → Users → Add user**, create the accounts you need, with **Auto Confirm** on:
+   - one per staff member, e.g. `frontdesk@staff.local`
+   - one for each lobby tablet, e.g. `kiosk@staff.local`
+2. Turn **off** public sign-ups: Authentication → Providers → Email → disable *Enable sign ups*. Otherwise anyone could create themselves an account and inherit staff access.
+3. Deploy this code.
+4. Open the kiosk tablet, go to `/kiosk`, and sign in once with the kiosk account.
+5. Run [rls-lockdown.sql](rls-lockdown.sql).
+
+If something stops loading afterwards, it is almost always a page being used signed-out. Sign in and it returns; nothing is deleted by the lockdown.
+
+### Still worth doing
+
+`NEXT_PUBLIC_SUPABASE_SECRET_KEY` in `.env.local` is a service-role key carrying a `NEXT_PUBLIC_` prefix. Nothing references it, so Next never inlines it into a bundle and it is not currently exposed — but that prefix means any future code that reads it would publish it to every visitor. Rename it to `SUPABASE_SECRET_KEY`, or delete it if unused.
 
 ## How packages work
 

@@ -9,11 +9,13 @@ import {
   ageFromBirthdate,
   approveEnrollment,
   rejectEnrollment,
+  deleteEnrollment,
   templateVars,
 } from "@/lib/enrollment";
 import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
+import RecordPreview from "@/components/RecordPreview";
 import { Enrollment, EnrollmentStatus, VACCINES } from "@/types";
 
 const TABS: { key: EnrollmentStatus; label: string }[] = [
@@ -31,7 +33,7 @@ interface Compose {
   body: string;
 }
 
-export default function Enrollments() {
+export default function Enrollments({ onChanged }: { onChanged?: () => void } = {}) {
   const { settings } = useSettings();
   const [rows, setRows] = useState<Enrollment[]>([]);
   const [tab, setTab] = useState<EnrollmentStatus>("pending");
@@ -69,6 +71,7 @@ export default function Enrollments() {
 
   useEffect(() => {
     load();
+    onChanged?.();
   }, [load]);
 
   const visible = useMemo(() => rows.filter((r) => r.status === tab), [rows, tab]);
@@ -145,6 +148,7 @@ export default function Enrollments() {
       setOpenId(null);
       openCompose(full, "approved", full.data as EnrollmentDraft);
       load();
+      onChanged?.();
     } catch (e) {
       console.error("Approving enrollment failed:", e);
       setError("Could not approve that — nothing was changed, so it's safe to try again.");
@@ -167,9 +171,39 @@ export default function Enrollments() {
       setOpenId(null);
       openCompose(full, "rejected", full.data as EnrollmentDraft);
       load();
+      onChanged?.();
     } catch (e) {
       console.error("Rejecting enrollment failed:", e);
       setError("Could not update that request.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeRow(row: Enrollment) {
+    const created = row.status === "approved";
+    if (
+      !window.confirm(
+        `Delete ${row.owner_name} ${row.last_name}'s enrollment form?\n\n` +
+          (created
+            ? "The dog profiles it created stay on file — only this submission goes.\n\n"
+            : "") +
+          "This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    setBusyId(row.id ?? null);
+    setError("");
+    try {
+      await deleteEnrollment(row);
+      setOpenId(null);
+      setNotice(`Deleted the form from ${row.owner_name} ${row.last_name}.`);
+      load();
+      onChanged?.();
+    } catch (e) {
+      console.error("Deleting enrollment failed:", e);
+      setError("Could not delete that submission.");
     } finally {
       setBusyId(null);
     }
@@ -215,7 +249,7 @@ export default function Enrollments() {
             onClick={() => setTab(t.key)}
             className={`rounded-xl px-3.5 py-2 text-xs font-medium transition ${
               tab === t.key
-                ? "bg-accent-500 text-white shadow-card"
+                ? "bg-accent-500 text-accent-ink shadow-card"
                 : "border border-line bg-surface text-ink-2 hover:border-accent-300"
             }`}
           >
@@ -286,7 +320,7 @@ export default function Enrollments() {
             <button
               onClick={sendCompose}
               disabled={sending}
-              className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+              className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
             >
               {sending ? "Sending…" : "Send email"}
             </button>
@@ -309,7 +343,12 @@ export default function Enrollments() {
         </p>
       ) : (
         <div className="space-y-3">
-          {visible.map((row) => (
+          {visible.map((row) => {
+            // One household can enrol several dogs on a single form —
+            // approving it creates that many profiles, so the count belongs
+            // on the card rather than being counted off the list of names.
+            const dogCount = (row.dog_names ?? []).filter((n) => n.trim()).length;
+            return (
             <div key={row.id} className="rounded-2xl border border-line bg-surface shadow-card">
               <div className="flex flex-wrap items-center gap-3 p-4">
                 <div className="min-w-0 flex-1">
@@ -318,7 +357,13 @@ export default function Enrollments() {
                     <span className="ml-2 text-xs font-normal text-ink-3">{row.phone}</span>
                   </p>
                   <p className="mt-0.5 text-xs text-ink-3">
-                    🐕 {row.dog_names?.join(", ") || "—"} · submitted{" "}
+                    🐕 {row.dog_names?.join(", ") || "—"}
+                    {dogCount > 1 && (
+                      <span className="ml-1.5 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-700">
+                        {dogCount} dogs
+                      </span>
+                    )}{" "}
+                    · submitted{" "}
                     {prettyDateKey((row.created_at ?? "").slice(0, 10))}
                     {row.source && ` · ${row.source === "web" ? "website" : "front desk"}`}
                   </p>
@@ -346,7 +391,7 @@ export default function Enrollments() {
                     <button
                       onClick={() => approve(row)}
                       disabled={busyId === row.id}
-                      className="rounded-xl bg-accent-500 px-4 py-2 text-xs font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+                      className="rounded-xl bg-accent-500 px-4 py-2 text-xs font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
                     >
                       {busyId === row.id ? "Approving…" : "Approve"}
                     </button>
@@ -371,6 +416,15 @@ export default function Enrollments() {
                     Profile →
                   </Link>
                 )}
+
+                <button
+                  onClick={() => removeRow(row)}
+                  disabled={busyId === row.id}
+                  title="Delete this submission"
+                  className="text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
+                >
+                  🗑 Delete
+                </button>
               </div>
 
               {openId === row.id && (
@@ -381,7 +435,8 @@ export default function Enrollments() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -389,7 +444,19 @@ export default function Enrollments() {
 }
 
 function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) {
-  const o = draft.owner;
+  // A submission with no owner block should not take the whole Requests page
+  // down with it. React unmounts the tree on a render throw, so one malformed
+  // row — a half-written insert, a hand-edited jsonb — would white-screen the
+  // queue that staff use to find it.
+  const o = draft?.owner;
+  if (!o) {
+    return (
+      <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        This submission has no owner details saved, so there is nothing to review. Approving it
+        would create nothing — decline it and ask the client to send the form again.
+      </p>
+    );
+  }
   return (
     <div className="space-y-5 text-sm">
       <Block title="Owner">
@@ -516,14 +583,12 @@ function DogReview({ dog }: { dog: DogDraft }) {
           <p className="mt-1 text-xs text-amber-700">No date given for: {missingVax.join(", ")}</p>
         )}
         {dog.doc ? (
-          <a
-            href={dog.doc.data}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 inline-block text-xs font-medium text-accent-600 hover:underline"
-          >
-            📎 Open uploaded records ({dog.doc.name}) →
-          </a>
+          <RecordPreview
+            name={dog.doc.name}
+            mime={dog.doc.mime}
+            data={dog.doc.data}
+            label="Vaccination record"
+          />
         ) : (
           <p className="mt-2 text-xs text-rose-500">No records uploaded.</p>
         )}

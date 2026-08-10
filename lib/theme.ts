@@ -28,6 +28,28 @@ function clamp(v: number): number {
   return Math.max(0, Math.min(255, v));
 }
 
+/** Relative luminance, per WCAG. */
+function luminance({ r, g, b }: Rgb): number {
+  const f = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+function contrast(a: Rgb, b: Rgb): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const WHITE: Rgb = { r: 255, g: 255, b: 255 };
+const NEAR_BLACK: Rgb = { r: 17, g: 24, b: 39 };
+
+/** Whichever of white or near-black is more readable on this background. */
+export function readableInk(bg: Rgb): Rgb {
+  return contrast(bg, WHITE) >= contrast(bg, NEAR_BLACK) ? WHITE : NEAR_BLACK;
+}
+
 /** Mix toward white (amount > 0) or black (amount < 0), -1..1. */
 function shade(c: Rgb, amount: number): Rgb {
   const target = amount > 0 ? 255 : 0;
@@ -70,7 +92,14 @@ export function themeVars(accentHex: string, printHex: string): ThemeVars {
   const vars: ThemeVars = {};
   const accent = hexToRgb(accentHex);
   const print = hexToRgb(printHex);
-  if (accent) for (const [name, amt] of ACCENT_STEPS) vars[name] = triple(shade(accent, amt));
+  if (accent) {
+    for (const [name, amt] of ACCENT_STEPS) vars[name] = triple(shade(accent, amt));
+    // Text laid over a solid accent button. Chosen by contrast rather than
+    // fixed to white: a pale brand colour (a cyan, a yellow) leaves white
+    // text at around 2:1, which is unreadable and fails WCAG AA. Whichever
+    // of white or near-black reads better against their colour wins.
+    vars["--accent-ink"] = triple(readableInk(accent));
+  }
   if (print) for (const [name, amt] of PRINT_STEPS) vars[name] = triple(shade(print, amt));
   return vars;
 }

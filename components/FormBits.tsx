@@ -61,7 +61,7 @@ export function YesNo({
           onClick={() => onChange(value === o.v ? null : (o.v as boolean))}
           className={`${base} ${
             value === o.v
-              ? "border-accent-500 bg-accent-500 text-white shadow-card"
+              ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
               : "border-line bg-surface text-ink-2 hover:border-accent-300"
           }`}
         >

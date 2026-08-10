@@ -18,6 +18,7 @@ import {
   nightsFor,
   noticeDays,
   rejectBoardingRequest,
+  deleteBoardingRequest,
 } from "@/lib/boardingRequest";
 import { hasWaiver } from "@/lib/dogs";
 import {
@@ -58,7 +59,7 @@ interface DogCheck {
   vaccines: VaccineStatus | null; // null when there is no profile to check
 }
 
-export default function BoardingRequests() {
+export default function BoardingRequests({ onChanged }: { onChanged?: () => void } = {}) {
   const { settings } = useSettings();
   const [rows, setRows] = useState<BoardingRequest[]>([]);
   const [tab, setTab] = useState<EnrollmentStatus>("pending");
@@ -194,6 +195,7 @@ export default function BoardingRequests() {
       setOpenId(null);
       openCompose(full, "approved", full.data as BoardingRequestDraft);
       load();
+      onChanged?.();
     } catch (e) {
       console.error("Approving boarding request failed:", e);
       setError("Could not confirm that — nothing was booked, so it's safe to try again.");
@@ -216,9 +218,39 @@ export default function BoardingRequests() {
       setOpenId(null);
       openCompose(full, "rejected", full.data as BoardingRequestDraft);
       load();
+      onChanged?.();
     } catch (e) {
       console.error("Declining boarding request failed:", e);
       setError("Could not update that request.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeRow(row: BoardingRequest) {
+    const booked = row.status === "approved";
+    if (
+      !window.confirm(
+        `Delete ${row.owner_name}'s request for ${prettyDateKey(row.start_date)}?\n\n` +
+          (booked
+            ? "The reservation it created stays on the calendar — only this request record goes.\n\n"
+            : "") +
+          "This cannot be undone."
+      )
+    ) {
+      return;
+    }
+    setBusyId(row.id ?? null);
+    setError("");
+    try {
+      await deleteBoardingRequest(row);
+      setOpenId(null);
+      setNotice(`Deleted the request from ${row.owner_name}.`);
+      load();
+      onChanged?.();
+    } catch (e) {
+      console.error("Deleting boarding request failed:", e);
+      setError("Could not delete that request.");
     } finally {
       setBusyId(null);
     }
@@ -264,7 +296,7 @@ export default function BoardingRequests() {
             onClick={() => setTab(t.key)}
             className={`rounded-xl px-3.5 py-2 text-xs font-medium transition ${
               tab === t.key
-                ? "bg-accent-500 text-white shadow-card"
+                ? "bg-accent-500 text-accent-ink shadow-card"
                 : "border border-line bg-surface text-ink-2 hover:border-accent-300"
             }`}
           >
@@ -277,7 +309,7 @@ export default function BoardingRequests() {
           </button>
         ))}
         <Link
-          href="/boardings"
+          href="/calendar"
           className="ml-auto rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-2 hover:border-accent-300"
         >
           🛏️ Calendar →
@@ -339,7 +371,7 @@ export default function BoardingRequests() {
             <button
               onClick={sendCompose}
               disabled={sending}
-              className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+              className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
             >
               {sending ? "Sending…" : "Send email"}
             </button>
@@ -364,12 +396,21 @@ export default function BoardingRequests() {
         <div className="space-y-3">
           {visible.map((row) => {
             const past = row.end_date < todayKey();
+            // One request can book several dogs, and how many decides
+            // whether there is room for the stay at all — so it is a count,
+            // not something staff should work out from a list of names.
+            const dogCount = (row.dog_names ?? []).filter((n) => n.trim()).length;
             return (
               <div key={row.id} className="rounded-2xl border border-line bg-surface shadow-card">
                 <div className="flex flex-wrap items-center gap-3 p-4">
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-ink">
                       🛏️ {row.dog_names?.join(", ") || "—"}
+                      {dogCount > 1 && (
+                        <span className="ml-2 rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-700">
+                          {dogCount} dogs
+                        </span>
+                      )}
                       <span className="ml-2 text-xs font-normal text-ink-3">
                         {row.owner_name} {row.last_name} · {row.phone}
                       </span>
@@ -419,7 +460,7 @@ export default function BoardingRequests() {
                       <button
                         onClick={() => approve(row)}
                         disabled={busyId === row.id}
-                        className="rounded-xl bg-accent-500 px-4 py-2 text-xs font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+                        className="rounded-xl bg-accent-500 px-4 py-2 text-xs font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
                       >
                         {busyId === row.id ? "Booking…" : "Confirm"}
                       </button>
@@ -442,6 +483,15 @@ export default function BoardingRequests() {
                   >
                     Owner →
                   </Link>
+
+                  <button
+                    onClick={() => removeRow(row)}
+                    disabled={busyId === row.id}
+                    title="Delete this request record"
+                    className="text-xs font-medium text-ink-3 transition hover:text-rose-500 disabled:opacity-60"
+                  >
+                    🗑 Delete
+                  </button>
                 </div>
 
                 {openId === row.id && (

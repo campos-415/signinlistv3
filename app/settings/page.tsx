@@ -15,11 +15,30 @@ import {
   CatalogItem,
   DEFAULT_SETTINGS,
   PackageTier,
+  SettingsConflictError,
   saveSettings,
 } from "@/lib/settings";
+import { getSupabase } from "@/lib/supabase";
+import { canRegisterWithSquare } from "@/lib/square";
 import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
+import GalleryEditor from "@/components/GalleryEditor";
+import { SinglePhotoEditor, TeamEditor } from "@/components/SitePhotoEditors";
+import ReportsSection from "@/components/ReportsSection";
+
+type Tab = "brand" | "pricing" | "website" | "messaging" | "reports";
+
+// Thirteen sections on one page was a scroll, and the important ones (money)
+// sat below a wall of photo uploaders. Grouped by what someone came here to
+// change rather than by when each was built.
+const TABS: { key: Tab; label: string; blurb: string }[] = [
+  { key: "brand", label: "🎨 Brand", blurb: "Name, logo and colours" },
+  { key: "pricing", label: "💵 Pricing", blurb: "Rates, add-ons and packages" },
+  { key: "website", label: "🌐 Website", blurb: "Public site, contact details and photos" },
+  { key: "messaging", label: "✉️ Messaging", blurb: "Client email and staff alerts" },
+  { key: "reports", label: "📊 Reports", blurb: "Print, export and money owed" },
+];
 
 export default function SettingsPage() {
   return (
@@ -30,10 +49,40 @@ export default function SettingsPage() {
 }
 
 function Settings() {
+  const [origin, setOrigin] = useState("");
+  const [clearing, setClearing] = useState(false);
+  const [cleared, setCleared] = useState("");
+
+  // Simulated payments are real rows in the ledger — that is what makes the
+  // test meaningful — so there has to be a way to take them back out.
+  async function clearTestPayments() {
+    if (!window.confirm("Remove every payment recorded in test mode? Real payments are untouched."))
+      return;
+    setClearing(true);
+    setCleared("");
+    try {
+      const supabase = getSupabase();
+      const { data, error: err } = await supabase
+        .from("payments")
+        .delete()
+        .like("note", "TEST (no money taken)%")
+        .select("id");
+      if (err) throw err;
+      const n = (data as { id: string }[] | null)?.length ?? 0;
+      setCleared(`${n} removed`);
+    } catch (e) {
+      console.error("Clearing test payments failed:", e);
+      setError("Could not remove the test payments.");
+    } finally {
+      setClearing(false);
+    }
+  }
+  useEffect(() => setOrigin(window.location.origin), []);
   const { settings, refresh } = useSettings();
   // Edited as a local draft so a half-typed price never reaches the kiosk —
   // nothing takes effect until Save.
   const [draft, setDraft] = useState<AppSettings>(settings);
+  const [tab, setTab] = useState<Tab>("brand");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -46,6 +95,10 @@ function Settings() {
 
   function patchPricing(patch: Partial<AppSettings["pricing"]>) {
     setDraft((d) => ({ ...d, pricing: { ...d.pricing, ...patch } }));
+  }
+
+  function patchBusiness(patch: Partial<AppSettings["business"]>) {
+    setDraft((d) => ({ ...d, business: { ...d.business, ...patch } }));
   }
 
   function patchEmail(patch: Partial<AppSettings["email"]>) {
@@ -62,7 +115,11 @@ function Settings() {
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
       console.error("Saving settings failed:", e);
-      setError("Could not save settings.");
+      setError(
+        e instanceof SettingsConflictError
+          ? "Someone else changed settings since you opened this page — saving now would wipe their edit. Reload to pick up their changes, then redo yours."
+          : "Could not save settings."
+      );
     } finally {
       setSaving(false);
     }
@@ -87,38 +144,87 @@ function Settings() {
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl font-semibold text-ink">Settings</h1>
+          <h1 className="font-display text-2xl font-semibold text-ink">
+            Settings
+          </h1>
           <p className="text-sm text-ink-3">
-            Prices and add-ons here drive every estimate, sign-out total, and report.
+            Prices and add-ons here drive every estimate, sign-out total, and
+            report.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {saved && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
+          {saved && (
+            <span className="text-xs font-medium text-emerald-600">
+              Saved ✓
+            </span>
+          )}
           <button
             onClick={save}
             disabled={saving || !dirty}
-            className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
-          >
+            className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50">
             {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
           </button>
         </div>
       </div>
 
-      {error && <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>}
-      {dirty && (
-        <p className="mb-4 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
-          Unsaved changes — nothing takes effect until you save.
+      {error && (
+        <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>
+      )}
+      <div className="mb-6 border-b border-line">
+        <div className="flex flex-wrap gap-2 pb-3">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              title={t.blurb}
+              className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+                tab === t.key
+                  ? "bg-accent-500 text-accent-ink shadow-card"
+                  : "border border-line bg-surface text-ink-2 hover:border-accent-300"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <p className="pb-3 text-[11px] text-ink-3">
+          {TABS.find((t) => t.key === tab)?.blurb}
         </p>
+      </div>
+
+      {/* Sticky, because this page is long enough that a banner at the top
+          scrolls away exactly when it matters — and an unsaved edit here
+          looks identical to a saved one. */}
+      {dirty && (
+        <div className="sticky top-3 z-40 mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 shadow-card">
+          <p className="text-xs font-medium text-amber-900">
+            Unsaved changes — nothing takes effect until you save.
+          </p>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="ml-auto rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-amber-700 disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save now"}
+          </button>
+        </div>
       )}
 
       {/* Branding */}
-      <Section title="Business" blurb="Shown on the kiosk and at the top of printed reports.">
+      {tab === "brand" && (
+        <>
+      <Section
+        title="Business"
+        blurb="Shown on the kiosk and at the top of printed reports.">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Business name">
             <input
               value={draft.business.name}
               onChange={(e) =>
-                setDraft({ ...draft, business: { ...draft.business, name: e.target.value } })
+                setDraft({
+                  ...draft,
+                  business: { ...draft.business, name: e.target.value },
+                })
               }
               className={inputClass}
             />
@@ -127,7 +233,10 @@ function Settings() {
             <input
               value={draft.business.tagline}
               onChange={(e) =>
-                setDraft({ ...draft, business: { ...draft.business, tagline: e.target.value } })
+                setDraft({
+                  ...draft,
+                  business: { ...draft.business, tagline: e.target.value },
+                })
               }
               className={inputClass}
             />
@@ -140,7 +249,10 @@ function Settings() {
             <ColorInput
               value={draft.business.accentColor}
               onChange={(v) =>
-                setDraft({ ...draft, business: { ...draft.business, accentColor: v } })
+                setDraft({
+                  ...draft,
+                  business: { ...draft.business, accentColor: v },
+                })
               }
             />
           </Field>
@@ -148,14 +260,18 @@ function Settings() {
             <ColorInput
               value={draft.business.printColor}
               onChange={(v) =>
-                setDraft({ ...draft, business: { ...draft.business, printColor: v } })
+                setDraft({
+                  ...draft,
+                  business: { ...draft.business, printColor: v },
+                })
               }
             />
           </Field>
         </div>
         <p className="mt-1.5 text-[11px] text-ink-3">
-          Pick one colour each — the lighter and darker shades used across the app and on printed
-          reports are derived from them. Changes preview live once saved.
+          Pick one colour each — the lighter and darker shades used across the
+          app and on printed reports are derived from them. Changes preview live
+          once saved.
         </p>
 
         <div className="mt-3 flex items-center gap-3">
@@ -174,15 +290,22 @@ function Settings() {
           <div>
             <label className="cursor-pointer text-xs font-medium text-accent-600 hover:text-accent-800">
               {draft.business.logoData ? "Change logo" : "+ Upload a logo"}
-              <input type="file" accept="image/*" className="hidden" onChange={handleLogo} />
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleLogo}
+              />
             </label>
             {draft.business.logoData && (
               <button
                 onClick={() =>
-                  setDraft({ ...draft, business: { ...draft.business, logoData: null } })
+                  setDraft({
+                    ...draft,
+                    business: { ...draft.business, logoData: null },
+                  })
                 }
-                className="ml-3 text-xs text-ink-3 hover:text-ink-2"
-              >
+                className="ml-3 text-xs text-ink-3 hover:text-ink-2">
                 Remove
               </button>
             )}
@@ -194,6 +317,11 @@ function Settings() {
       </Section>
 
       {/* Daycare & boarding */}
+        </>
+      )}
+
+      {tab === "pricing" && (
+        <>
       <Section title="Daycare & boarding rates">
         <div className="grid gap-3 sm:grid-cols-3">
           <Money
@@ -213,11 +341,18 @@ function Settings() {
               max={12}
               value={draft.pricing.daycareHalfDayThresholdHours}
               onChange={(e) =>
-                patchPricing({ daycareHalfDayThresholdHours: Number(e.target.value) || 1 })
+                patchPricing({
+                  daycareHalfDayThresholdHours: Number(e.target.value) || 1,
+                })
               }
               className={inputClass}
             />
           </Field>
+          <Money
+            label="Boarding — second dog / night"
+            value={draft.pricing.boardingSecondDogPerNight}
+            onChange={(v) => patchPricing({ boardingSecondDogPerNight: v })}
+          />
           <Money
             label="Boarding — per night"
             value={draft.pricing.boardingPerNight}
@@ -234,26 +369,33 @@ function Settings() {
               min={0}
               max={23}
               value={draft.pricing.latePickupHour}
-              onChange={(e) => patchPricing({ latePickupHour: Number(e.target.value) || 0 })}
+              onChange={(e) =>
+                patchPricing({ latePickupHour: Number(e.target.value) || 0 })
+              }
               className={inputClass}
             />
           </Field>
         </div>
         <p className="mt-2 text-[11px] text-ink-3">
-          A visit longer than the cutoff bills as a full day, and only a full day is covered by a
-          package. The late fee is charged once, on the day a boarding dog actually goes home.
+          A visit longer than the cutoff bills as a full day, and only a full
+          day is covered by a package. The late fee is charged once, on the day
+          a boarding dog actually goes home.
         </p>
       </Section>
 
       {/* Bath */}
-      <Section title="Bath prices" blurb="Bath is priced by size rather than a flat rate.">
+      <Section
+        title="Bath prices"
+        blurb="Bath is priced by size rather than a flat rate.">
         <div className="grid gap-3 sm:grid-cols-3">
           {(["S", "M", "L"] as const).map((size) => (
             <Money
               key={size}
               label={`Bath — ${size === "S" ? "small" : size === "M" ? "medium" : "large"}`}
               value={draft.pricing.bath[size]}
-              onChange={(v) => patchPricing({ bath: { ...draft.pricing.bath, [size]: v } })}
+              onChange={(v) =>
+                patchPricing({ bath: { ...draft.pricing.bath, [size]: v } })
+              }
             />
           ))}
         </div>
@@ -262,14 +404,17 @@ function Settings() {
       {/* Walk-in add-ons */}
       <Section
         title="Daycare add-ons"
-        blurb="Offered at the kiosk on drop-off. Bath is priced above by size, so it has no flat price here."
-      >
+        blurb="Offered at the kiosk on drop-off. Bath is priced above by size, so it has no flat price here.">
         <CatalogEditor
           items={draft.addons}
           prices={draft.pricing.addons}
           priceless={["bath"]}
           onChange={(items, prices) =>
-            setDraft({ ...draft, addons: items, pricing: { ...draft.pricing, addons: prices } })
+            setDraft({
+              ...draft,
+              addons: items,
+              pricing: { ...draft.pricing, addons: prices },
+            })
           }
         />
       </Section>
@@ -277,8 +422,7 @@ function Settings() {
       {/* Boarding add-ons */}
       <Section
         title="Package pricing"
-        blurb="The blocks of daycare days you sell. Selling a package picks one of these, so the price list stays consistent and the discount is deliberate."
-      >
+        blurb="The blocks of daycare days you sell. Selling a package picks one of these, so the price list stays consistent and the discount is deliberate.">
         <PackageTierEditor
           tiers={draft.packageTiers}
           fullDay={draft.pricing.daycareFullDay}
@@ -286,8 +430,9 @@ function Settings() {
           onChange={(packageTiers) => setDraft({ ...draft, packageTiers })}
         />
       </Section>
-
-      <Section title="Boarding add-on rates" blurb="Booked per stay on the reservation.">
+      <Section
+        title="Boarding add-on rates"
+        blurb="Booked per stay on the reservation.">
         <div className="grid gap-3 sm:grid-cols-3">
           <Money
             label="Walk (per walk)"
@@ -310,8 +455,7 @@ function Settings() {
       {/* Services */}
       <Section
         title="Services"
-        blurb="Rename or re-icon the services the kiosk offers. Adding a brand-new service still needs a code change — daycare, boarding, and meet & greet each have their own pricing and booking rules."
-      >
+        blurb="Rename or re-icon the services the kiosk offers. Adding a brand-new service still needs a code change — daycare, boarding, and meet & greet each have their own pricing and booking rules.">
         <CatalogEditor
           items={draft.services}
           onChange={(items) => setDraft({ ...draft, services: items })}
@@ -321,9 +465,449 @@ function Settings() {
 
       {/* Email */}
       <Section
-        title="Email"
-        blurb="Messages to clients about their enrollment. Sending needs RESEND_API_KEY in .env.local and a From address on your verified domain — leave it unset and the app simply doesn't email anyone."
+        title="Card payments (Square)"
+        blurb="Take payment at pick-up through the Square app on your phone or tablet. Nothing here is secret — the Application ID travels in the link that opens Square.">
+        <label className="mb-3 flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.square.enabled}
+            onChange={(e) =>
+              setDraft({ ...draft, square: { ...draft.square, enabled: e.target.checked } })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Show a &ldquo;Pay now&rdquo; button at pick-up
+            <span className="block text-[11px] text-ink-3">
+              Only appears on a device that has the Square app installed.
+            </span>
+          </span>
+        </label>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Square Application ID">
+            <input
+              value={draft.square.applicationId}
+              onChange={(e) =>
+                setDraft({ ...draft, square: { ...draft.square, applicationId: e.target.value.trim() } })
+              }
+              placeholder="sq0idp-…"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Location ID (optional)">
+            <input
+              value={draft.square.locationId}
+              onChange={(e) =>
+                setDraft({ ...draft, square: { ...draft.square, locationId: e.target.value.trim() } })
+              }
+              placeholder="Leave blank for the default location"
+              className={inputClass}
+            />
+          </Field>
+        </div>
+
+        <label className="mt-3 flex items-start gap-2 rounded-xl border border-dashed border-amber-300 bg-amber-50/60 p-3">
+          <input
+            type="checkbox"
+            checked={draft.square.testMode}
+            onChange={(e) =>
+              setDraft({ ...draft, square: { ...draft.square, testMode: e.target.checked } })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-line text-amber-600 focus:ring-amber-200"
+          />
+          <span className="text-sm text-ink-2">
+            🧪 Test mode — simulate payments without Square
+            <span className="block text-[11px] text-ink-3">
+              The button becomes &ldquo;Simulate payment&rdquo; and skips the Square app entirely.
+              Everything else runs for real, so you can watch a balance clear on a laptop before you
+              have the hardware or a live domain. No card is ever charged.
+            </span>
+          </span>
+        </label>
+
+        {settings.square.testMode && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl bg-amber-100 px-4 py-2.5">
+            <p className="text-xs font-medium text-amber-900">
+              Test mode is on — payments recorded now are not real.
+            </p>
+            <button
+              onClick={clearTestPayments}
+              disabled={clearing}
+              className="ml-auto rounded-lg border border-amber-400 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-200 disabled:opacity-60"
+            >
+              {clearing ? "Removing…" : "Remove test payments"}
+            </button>
+            {cleared && <span className="text-xs font-medium text-emerald-700">{cleared}</span>}
+          </div>
+        )}
+
+        <div className="mt-4 rounded-xl bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
+          <p className="mb-1.5 font-semibold text-ink">Setting this up</p>
+          <ol className="list-inside list-decimal space-y-1">
+            <li>
+              At <code>developer.squareup.com</code>, create an application. Copy its{" "}
+              <strong>Application ID</strong> into the box above.
+            </li>
+            <li>
+              In that application, open <strong>Point of Sale API</strong> and add this exact web
+              callback URL:
+              <code className="mt-1 block break-all rounded-lg bg-surface px-2 py-1.5">
+                {origin ? `${origin}/pay/return` : "https://yourdomain.com/pay/return"}
+              </code>
+              {/* Square rejects anything that is not a public HTTPS address, and
+                  the failure surfaces inside the Square app as "not configured
+                  for making web calls" — which reads like a portal problem
+                  rather than a wrong address. Say so before they go looking. */}
+              {origin && !canRegisterWithSquare(origin) && (
+                <span className="mt-1.5 block rounded-lg bg-amber-50 px-2 py-1.5 text-amber-900">
+                  ⚠️ Square will not accept that address. It only takes a public{" "}
+                  <strong>https://</strong> domain — not <code>localhost</code>, not an IP address on
+                  your wifi. Real card payments therefore only work from the deployed site; use test
+                  mode until then.
+                </span>
+              )}
+            </li>
+            <li>Install the Square app on the tablet and sign in to the business account.</li>
+            <li>Pair the Square Reader to that device in the Square app.</li>
+          </ol>
+          <p className="mt-2 text-ink-3">
+            Payments land in your Square account as normal. This app records them against the
+            household so the balance clears — it never touches card details.
+          </p>
+        </div>
+      </Section>
+
+        </>
+      )}
+
+      {tab === "website" && (
+        <>
+      <Section
+        title="Public website"
+        blurb="This deployment can be your whole web presence, or just the back office behind a website you already have.">
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.site.enabled}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                site: { ...draft.site, enabled: e.target.checked },
+              })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Serve the built-in marketing website
+            <span className="block text-[11px] text-ink-3">
+              Home, Daycare, Boarding, Bath, Dog Walking, Prices, Gallery, About
+              and Contact. Turn this off if you already have a website you want
+              to keep.
+            </span>
+          </span>
+        </label>
+
+        {!draft.site.enabled && (
+          <div className="mt-3">
+            <Field label="Your website address">
+              <input
+                value={draft.site.externalUrl}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    site: { ...draft.site, externalUrl: e.target.value },
+                  })
+                }
+                placeholder="https://www.yourdaycare.com"
+                className={inputClass}
+              />
+            </Field>
+            <p className="mt-1.5 text-[11px] text-ink-3">
+              Anyone landing on this app&apos;s home page is sent here. Leave
+              blank to send them to the kiosk instead.
+            </p>
+          </div>
+        )}
+
+        <p className="mt-4 rounded-xl bg-surface-2 px-4 py-3 text-[11px] text-ink-3">
+          The enrollment and boarding forms stay available either way — they are
+          what an existing website links to or embeds. Their links are under{" "}
+          <strong>Online forms</strong> below. The kiosk is always at{" "}
+          <code className="rounded bg-surface-3 px-1">/kiosk</code>, and the
+          staff pages are unaffected.
+        </p>
+      </Section>
+
+      <Section
+        title="Staff"
+        blurb="Who appears in the walk log dropdown, and the times it offers. Keeping this a list rather than a free-text box is what stops one person being logged as RM, R. Marsh and Rob.">
+        <div className="space-y-2">
+          {draft.staff.names.map((n, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                value={n}
+                onChange={(e) => {
+                  const names = [...draft.staff.names];
+                  names[i] = e.target.value;
+                  setDraft({ ...draft, staff: { ...draft.staff, names } });
+                }}
+                placeholder="Name or initials"
+                className={inputClass}
+              />
+              <button
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    staff: { ...draft.staff, names: draft.staff.names.filter((_, x) => x !== i) },
+                  })
+                }
+                className="shrink-0 rounded-lg border border-line px-2.5 py-2 text-xs text-ink-3 hover:border-rose-300 hover:text-rose-500"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          {draft.staff.names.length === 0 && (
+            <p className="rounded-xl bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
+              No staff added yet, so the walk log&apos;s &ldquo;by&rdquo; dropdown is empty. Anything
+              already logged still shows.
+            </p>
+          )}
+        </div>
+        <button
+          onClick={() =>
+            setDraft({ ...draft, staff: { ...draft.staff, names: [...draft.staff.names, ""] } })
+          }
+          className="mt-2 rounded-xl border border-dashed border-line px-4 py-2 text-xs font-medium text-ink-3 hover:border-accent-400 hover:text-accent-600"
+        >
+          + Add a staff member
+        </button>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <Field label="Walk times from">
+            <select
+              value={draft.staff.walkDayStartHour}
+              onChange={(e) =>
+                setDraft({ ...draft, staff: { ...draft.staff, walkDayStartHour: Number(e.target.value) } })
+              }
+              className={inputClass}
+            >
+              {Array.from({ length: 13 }, (_, i) => i + 4).map((h) => (
+                <option key={h} value={h}>
+                  {h % 12 === 0 ? 12 : h % 12}:00 {h < 12 ? "am" : "pm"}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Walk times until">
+            <select
+              value={draft.staff.walkDayEndHour}
+              onChange={(e) =>
+                setDraft({ ...draft, staff: { ...draft.staff, walkDayEndHour: Number(e.target.value) } })
+              }
+              className={inputClass}
+            >
+              {Array.from({ length: 13 }, (_, i) => i + 12).map((h) => (
+                <option key={h} value={h}>
+                  {h % 12 === 0 ? 12 : h % 12}:00 {h < 12 ? "am" : "pm"}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="In steps of">
+            <select
+              value={draft.staff.walkStepMinutes}
+              onChange={(e) =>
+                setDraft({ ...draft, staff: { ...draft.staff, walkStepMinutes: Number(e.target.value) } })
+              }
+              className={inputClass}
+            >
+              {[15, 30, 60].map((m) => (
+                <option key={m} value={m}>
+                  {m} minutes
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      </Section>
+
+      {/* Website photos */}
+      <Section
+        title="Contact & hours"
+        blurb="Shown on the website header, footer and contact page, and in the business listing search engines read. Changing anything here updates the site immediately — no redeploy.">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Phone">
+            <input
+              value={draft.business.phone}
+              onChange={(e) => patchBusiness({ phone: e.target.value })}
+              placeholder="(415) 555-0132"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Email">
+            <input
+              type="email"
+              value={draft.business.email}
+              onChange={(e) => patchBusiness({ email: e.target.value })}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <Field label="Street address">
+              <input
+                value={draft.business.street}
+                onChange={(e) => patchBusiness({ street: e.target.value })}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <Field label="City">
+            <input
+              value={draft.business.city}
+              onChange={(e) => patchBusiness({ city: e.target.value })}
+              className={inputClass}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="State">
+              <input
+                value={draft.business.state}
+                onChange={(e) =>
+                  patchBusiness({ state: e.target.value.toUpperCase() })
+                }
+                maxLength={2}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="ZIP">
+              <input
+                value={draft.business.zip}
+                onChange={(e) => patchBusiness({ zip: e.target.value })}
+                inputMode="numeric"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </div>
+
+        <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+          Hours
+        </p>
+        <div className="mt-1 grid gap-3">
+          <Field label="Weekdays">
+            <input
+              value={draft.business.hoursWeekday}
+              onChange={(e) => patchBusiness({ hoursWeekday: e.target.value })}
+              placeholder="Monday – Friday, 7:00 AM – 7:00 PM"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Weekend">
+            <input
+              value={draft.business.hoursWeekend}
+              onChange={(e) => patchBusiness({ hoursWeekend: e.target.value })}
+              placeholder="Saturday – Sunday, 9:00 AM – 5:00 PM"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Boarding">
+            <input
+              value={draft.business.hoursBoarding}
+              onChange={(e) => patchBusiness({ hoursBoarding: e.target.value })}
+              placeholder="Overnight care, 7 days a week"
+              className={inputClass}
+            />
+          </Field>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <Field label="Instagram URL">
+            <input
+              value={draft.business.instagram}
+              onChange={(e) => patchBusiness({ instagram: e.target.value })}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Instagram handle">
+            <input
+              value={draft.business.instagramHandle}
+              onChange={(e) =>
+                patchBusiness({ instagramHandle: e.target.value })
+              }
+              placeholder="@yourhandle"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Website address">
+            <input
+              value={draft.business.domain}
+              onChange={(e) => patchBusiness({ domain: e.target.value })}
+              placeholder="https://www.example.com"
+              className={inputClass}
+            />
+          </Field>
+        </div>
+        <p className="mt-1.5 text-[11px] text-ink-3">
+          The website address is the canonical URL search engines are pointed
+          at. It must start with https:// — an invalid value is ignored rather
+          than breaking the site.
+        </p>
+      </Section>
+
+      {/* Notifications */}
+      <Section
+        title="Website photos"
+        blurb="Every image on the public site. Stored separately from these settings, so a page full of photos never gets loaded by the kiosk. Each one saves as you change it — the Save button above does not apply here."
       >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SinglePhotoEditor
+            kind="hero"
+            label="Home page hero"
+            hint="The large photo beside the headline on the front page."
+          />
+          <SinglePhotoEditor
+            kind="about"
+            label="About Us hero"
+            hint="The photo beside the intro on the About Us page."
+          />
+        </div>
+
+        <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+          Team
+        </p>
+        <div className="mt-1">
+          <TeamEditor />
+        </div>
+
+        <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+          Gallery
+        </p>
+        <div className="mt-1">
+          <GalleryEditor />
+        </div>
+      </Section>
+
+      {/* Contact details — shown across the public website */}
+      <Section
+        title="Online forms"
+        blurb="The links clients use. Send them directly, or embed them on your own website.">
+        <OnlineForms />
+      </Section>
+
+      {/* Public website on/off */}
+        </>
+      )}
+
+      {tab === "messaging" && (
+        <>
+      <Section
+        title="Email"
+        blurb="Messages to clients about their enrollment. Sending needs RESEND_API_KEY in .env.local and a From address on your verified domain — leave it unset and the app simply doesn't email anyone.">
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="From name">
             <input
@@ -355,21 +939,23 @@ function Settings() {
           Templates can use{" "}
           <code className="rounded bg-surface-3 px-1">{"{{owner}}"}</code>,{" "}
           <code className="rounded bg-surface-3 px-1">{"{{dogs}}"}</code>,{" "}
-          <code className="rounded bg-surface-3 px-1">{"{{business}}"}</code> and{" "}
-          <code className="rounded bg-surface-3 px-1">{"{{phone}}"}</code>.
+          <code className="rounded bg-surface-3 px-1">{"{{business}}"}</code>{" "}
+          and <code className="rounded bg-surface-3 px-1">{"{{phone}}"}</code>.
         </p>
 
         {/* The sandbox sender only delivers to the address on the Resend
             account, so an automatic acknowledgement to a real client fails
             silently — the client never hears back and nothing on screen
             says so, since submission deliberately survives a failed email. */}
-        {draft.email.autoAcknowledge && /resend\.dev\s*$/i.test(draft.email.fromAddress.trim()) && (
-          <p className="mt-3 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
-            ⚠️ You are sending from Resend&apos;s sandbox address, which only delivers to your own
-            Resend account. Automatic acknowledgements to real clients will not arrive. Fine for
-            testing — turn this off, or verify a domain, before going live.
-          </p>
-        )}
+        {draft.email.autoAcknowledge &&
+          /resend\.dev\s*$/i.test(draft.email.fromAddress.trim()) && (
+            <p className="mt-3 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
+              ⚠️ You are sending from Resend&apos;s sandbox address, which only
+              delivers to your own Resend account. Automatic acknowledgements to
+              real clients will not arrive. Fine for testing — turn this off, or
+              verify a domain, before going live.
+            </p>
+          )}
 
         <label className="mt-3 flex items-start gap-2">
           <input
@@ -381,8 +967,8 @@ function Settings() {
           <span className="text-sm text-ink-2">
             Email an acknowledgement automatically when a form is submitted
             <span className="block text-[11px] text-ink-3">
-              Sent straight away, with no staff involvement. The approve and decline messages
-              below are always written by hand before sending.
+              Sent straight away, with no staff involvement. The approve and
+              decline messages below are always written by hand before sending.
             </span>
           </span>
         </label>
@@ -413,7 +999,8 @@ function Settings() {
           Boarding requests
         </p>
         <p className="mb-1 text-[11px] text-ink-3">
-          These can also use <code className="rounded bg-surface-3 px-1">{"{{dropoff}}"}</code>,{" "}
+          These can also use{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{dropoff}}"}</code>,{" "}
           <code className="rounded bg-surface-3 px-1">{"{{pickup}}"}</code> and{" "}
           <code className="rounded bg-surface-3 px-1">{"{{nights}}"}</code>.
         </p>
@@ -445,22 +1032,15 @@ function Settings() {
 
       {/* Public forms */}
       <Section
-        title="Online forms"
-        blurb="The links clients use. Send them directly, or embed them on your own website."
-      >
-        <OnlineForms />
-      </Section>
-
-      {/* Notifications */}
-      <Section
         title="Notifications"
-        blurb="How staff find out a client sent something in. Separate from the client-facing email above."
-      >
+        blurb="How staff find out a client sent something in. Separate from the client-facing email above.">
         <label className="flex items-start gap-2">
           <input
             type="checkbox"
             checked={draft.email.notifyOnNewRequest}
-            onChange={(e) => patchEmail({ notifyOnNewRequest: e.target.checked })}
+            onChange={(e) =>
+              patchEmail({ notifyOnNewRequest: e.target.checked })
+            }
             className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
           />
           <span className="text-sm text-ink-2">
@@ -481,33 +1061,43 @@ function Settings() {
             />
           </Field>
           <p className="mt-1 text-[11px] text-ink-3">
-            Separate several with commas. Leave blank and no staff email is sent — the in-app
-            badge and alerts below still work.
+            Separate several with commas. Leave blank and no staff email is sent
+            — the in-app badge and alerts below still work.
           </p>
         </div>
 
         <DesktopAlerts />
       </Section>
+        </>
+      )}
 
+      {tab === "reports" && <ReportsSection />}
+
+      {/* Nothing on the Reports tab is a setting, so the save bar would only
+          invite a pointless click there. */}
+      {tab !== "reports" && (
       <div className="mb-10 flex items-center gap-3">
         <button
           onClick={save}
           disabled={saving || !dirty}
-          className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+          className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50">
           {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
         </button>
         <button
           onClick={() => {
-            if (window.confirm("Reset every setting back to the shipped defaults?")) {
+            if (
+              window.confirm(
+                "Reset every setting back to the shipped defaults?",
+              )
+            ) {
               setDraft(DEFAULT_SETTINGS);
             }
           }}
-          className="text-xs font-medium text-ink-3 hover:text-ink-2"
-        >
+          className="text-xs font-medium text-ink-3 hover:text-ink-2">
           Reset to defaults
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -1039,7 +1629,7 @@ function EmailPreview({
             onClick={() => setTab(t.key)}
             className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
               tab === t.key
-                ? "bg-accent-500 text-white shadow-card"
+                ? "bg-accent-500 text-accent-ink shadow-card"
                 : "border border-line bg-surface text-ink-2 hover:border-accent-300"
             }`}
           >
@@ -1154,6 +1744,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </div>
   );
 }
+
 
 function Section({
   title,

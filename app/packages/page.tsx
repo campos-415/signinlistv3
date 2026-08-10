@@ -343,7 +343,7 @@ function Packages() {
                 }}
                 className={`rounded-full border px-4 py-1.5 text-xs font-medium transition ${
                   kind === k.key
-                    ? "border-accent-500 bg-accent-500 text-white"
+                    ? "border-accent-500 bg-accent-500 text-accent-ink"
                     : "border-line bg-surface text-ink-3 hover:border-line"
                 }`}
               >
@@ -479,7 +479,7 @@ function Packages() {
                     onClick={() => toggleDog(c.id)}
                     className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
                       isSelected && !shared
-                        ? "border-accent-500 bg-accent-500 text-white"
+                        ? "border-accent-500 bg-accent-500 text-accent-ink"
                         : "border-accent-200 bg-surface text-accent-700 hover:border-accent-400"
                     }`}
                   >
@@ -504,7 +504,7 @@ function Packages() {
         <button
           onClick={addPackages}
           disabled={saving}
-          className="mt-4 rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+          className="mt-4 rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
         >
           {saving
             ? "Saving…"
@@ -653,7 +653,7 @@ function PackageRow({
               />
               <button
                 onClick={() => saveEditTotal(pkg)}
-                className="rounded-lg bg-accent-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-600"
+                className="rounded-lg bg-accent-500 px-2.5 py-1 text-xs font-medium text-accent-ink hover:bg-accent-600"
               >
                 Save
               </button>

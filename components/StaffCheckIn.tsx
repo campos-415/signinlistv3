@@ -10,6 +10,7 @@ import {
   preferredPackageId,
 } from "@/lib/dogs";
 import { todayKey } from "@/lib/dates";
+import SquarePayButton from "@/components/SquarePayButton";
 import {
   OpenVisit,
   PhoneContext,
@@ -45,6 +46,9 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
   const [busyDogId, setBusyDogId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [done, setDone] = useState<string[]>([]);
+  // What these sign-outs came to. Collected so a household picking up two
+  // dogs taps the card once, not twice.
+  const [owed, setOwed] = useState<{ dogName: string; amount: number; label: string }[]>([]);
 
   // Per-dog choices, keyed by client id.
   const [serviceByDog, setServiceByDog] = useState<Record<string, ServiceType>>({});
@@ -104,6 +108,14 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
     return ctx ? eligiblePackagesFor(ctx.packages, phone.trim(), dog.dog_name, kind) : [];
   }
 
+  // Did staff actually pick this block for this visit, rather than it being
+  // the resolved default? Only a deliberate pick spends a day on a visit
+  // under four hours — see packageApplies.
+  function isExplicitPick(dog: Dog, kind: PackageKind = "daycare"): boolean {
+    const id = dog.id ? packageByDog[`${dog.id}|${kind}`] : undefined;
+    return !!id && packagesFor(dog, kind).some((p) => p.id === id);
+  }
+
   // Whichever package staff picked for this dog and kind, else the default
   // (own before shared, days remaining before exhausted).
   function chosenPackage(dog: Dog, kind: PackageKind = "daycare"): Package | null {
@@ -136,6 +148,7 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
     try {
       const addons = addonsByDog[dog.id] ?? [];
       const reservation = activeBoardingFor(dog);
+
       const result = await performSignIn({
         dog,
         action,
@@ -148,17 +161,31 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
         bathSize: reservation?.bath_size ?? null,
         openVisit: open ?? null,
         pkg: chosenPackage(dog, "daycare"),
+        pkgExplicit: isExplicitPick(dog, "daycare"),
         walkPkg: chosenPackage(dog, "walk"),
         byStaff: true,
       });
       setDone((prev) => [
         ...prev,
-        `${result.dogName} ${action === "drop_off" ? "signed in" : "signed out"}${
-          result.priceDue != null ? ` · $${result.priceDue.toFixed(2)} due` : ""
-        }${result.usedPackage ? " · package day used" : ""}${
-          result.usedWalkPackage ? " · walk from package" : ""
-        }`,
+        result.alreadyClosed
+          ? `${result.dogName} was already signed out${
+              result.priceDue != null ? ` · $${result.priceDue.toFixed(2)} already charged` : ""
+            } — nothing added`
+          : `${result.dogName} ${action === "drop_off" ? "signed in" : "signed out"}${
+              result.priceDue != null ? ` · $${result.priceDue.toFixed(2)} due` : ""
+            }${result.usedPackage ? " · package day used" : ""}${
+              result.usedWalkPackage ? " · walk from package" : ""
+            }`,
       ]);
+      // An already-closed visit must not join the "Due now" list: its charge is
+      // already on the books, and adding it again would inflate the amount the
+      // pay button hands to Square.
+      if (!result.alreadyClosed && action === "pick_up" && (result.priceDue ?? 0) > 0) {
+        setOwed((prev) => [
+          ...prev,
+          { dogName: result.dogName, amount: result.priceDue!, label: result.priceLabel ?? "Visit" },
+        ]);
+      }
       // Reload so the dog's status, and any package it just spent a day
       // from, reflect what was written.
       setCtx(await loadPhoneContext(phone));
@@ -214,6 +241,39 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
         </ul>
       )}
 
+      {owed.length > 0 && (
+        <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Due now</p>
+          <ul className="mt-1.5 space-y-0.5">
+            {owed.map((o, i) => (
+              <li key={i} className="flex justify-between text-xs text-ink-2">
+                <span>
+                  {o.dogName} · {o.label}
+                </span>
+                <span className="font-medium">${o.amount.toFixed(2)}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-emerald-200 pt-2">
+            <span className="text-sm font-semibold text-ink">
+              Total ${owed.reduce((sum, o) => sum + o.amount, 0).toFixed(2)}
+            </span>
+            <span className="ml-auto">
+              <SquarePayButton
+                amount={owed.reduce((sum, o) => sum + o.amount, 0)}
+                note={owed.map((o) => `${o.dogName}: ${o.label}`).join(" | ")}
+                phone={phone.trim()}
+                dogNames={owed.map((o) => o.dogName)}
+                returnTo="/in-house?desk=1"
+              />
+            </span>
+          </div>
+          <p className="mt-1.5 text-[11px] text-ink-3">
+            Or take cash and record it on the owner profile — this only handles the card.
+          </p>
+        </div>
+      )}
+
       {dogs.length > 0 && (
         <div className="mt-4 space-y-3">
           {dogs.map((dog) => {
@@ -223,8 +283,12 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
             const serviceMeta = SERVICE_TYPES.find((s) => s.key === service);
             const pkg = chosenPackage(dog, "daycare");
             const walkPkg = chosenPackage(dog, "walk");
-            const willUsePackage = isIn && packageApplies(service, open, pkg, now);
-            const willUseWalk = isIn && walkPackageApplies(open, walkPkg);
+            const willUsePackage =
+              isIn && packageApplies(service, open, pkg, now, isExplicitPick(dog, "daycare"));
+            // A walk package covers the daycare walk add-on only; a stay's
+            // walks bill per walk on the reservation — see performSignIn.
+            const willUseWalk =
+              isIn && service !== "boarding" && walkPackageApplies(open, walkPkg);
             const addons = (dog.id && addonsByDog[dog.id]) || [];
             const reservation = activeBoardingFor(dog);
 
@@ -351,6 +415,10 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
                   const chosen = k.key === "walk" ? walkPkg : pkg;
                   if (!chosen) return null;
                   const willUse = k.key === "walk" ? willUseWalk : willUsePackage;
+                  // What signing out now would leave on the block. Counted
+                  // against the picked block only, so switching between two
+                  // blocks visibly moves the use rather than spending both.
+                  const held = willUse ? 1 : 0;
                   return (
                     <div key={k.key} className="mt-2">
                       <label className="mb-1 block text-[11px] text-ink-3">
@@ -370,23 +438,27 @@ export default function StaffCheckIn({ onDone }: { onDone?: () => void }) {
                         >
                           {eligible.map((p) => (
                             <option key={p.id} value={p.id ?? ""} disabled={daysLeft(p) === 0}>
-                              {packageLabel(p)}
+                              {packageLabel(p, p.id === chosen.id ? held : 0)}
                               {daysLeft(p) === 0 ? " — used up" : ""}
                             </option>
                           ))}
                         </select>
                       ) : (
-                        <span className="text-xs text-ink-2">📦 {packageLabel(chosen)}</span>
+                        <span className="text-xs text-ink-2">
+                          📦 {packageLabel(chosen, held)}
+                        </span>
                       )}
                       {isIn && (
                         <p className="mt-1 text-[11px] text-ink-3">
-                          {willUse
-                            ? `Signing out now spends one ${k.key === "walk" ? "walk" : "day"} from this package.`
-                            : k.key === "walk"
-                              ? "No walk will be used — this visit has no walk booked."
-                              : service !== "daycare"
-                                ? `No package day will be used — packages only cover daycare, and this is a ${serviceMeta?.label.toLowerCase()} visit.`
-                                : "No package day will be used — under 4 hours bills as a half day."}
+                          {k.key === "walk" && service === "boarding"
+                            ? "No walk will be used — a walk package covers daycare walks only. This stay's walks bill per walk on the reservation."
+                            : willUse
+                              ? `Signing out now spends one ${k.key === "walk" ? "walk" : "day"} from this package.`
+                              : k.key === "walk"
+                                ? "No walk will be used — this visit has no walk booked."
+                                : service !== "daycare"
+                                  ? `No package day will be used — packages only cover daycare, and this is a ${serviceMeta?.label.toLowerCase()} visit.`
+                                  : "No package day will be used — under 4 hours bills as a half day."}
                         </p>
                       )}
                     </div>

@@ -39,10 +39,70 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+// How long to wait on the provider before giving up. Without this a hung
+// connection leaves staff watching a spinner with no way to tell whether
+// the message went.
+const TIMEOUT_MS = 15_000;
+
+// Anything outside printable ASCII cannot go in an HTTP header — fetch
+// throws rather than sending. A key pasted with a trailing newline, a
+// smart quote, or wrapping quotes is the usual culprit, and the raw throw
+// ("Invalid header value") points nowhere useful.
+function keyProblem(key: string): string | null {
+  if (/^["']|["']$/.test(key)) {
+    return "The RESEND_API_KEY in .env.local is wrapped in quotes. Remove them and restart the server.";
+  }
+  if (/[^\x20-\x7e]/.test(key)) {
+    return "The RESEND_API_KEY in .env.local contains a line break or an invalid character. Re-copy it and restart the server.";
+  }
+  if (!key.startsWith("re_")) {
+    return "The RESEND_API_KEY in .env.local doesn't look like a Resend key — they begin with `re_`.";
+  }
+  return null;
+}
+
+// Turns a thrown fetch error into something a staff member can act on.
+// Node reports the real reason on `cause.code`.
+function describeFetchFailure(e: unknown): string {
+  const cause = (e as { cause?: { code?: string } } | undefined)?.cause;
+  const name = (e as { name?: string } | undefined)?.name;
+  switch (cause?.code) {
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return "Could not look up api.resend.com — this machine has no DNS or no internet connection.";
+    case "ECONNREFUSED":
+    case "ECONNRESET":
+    case "EPIPE":
+      return "The connection to Resend was refused or dropped. A firewall or proxy may be blocking it.";
+    case "UND_ERR_CONNECT_TIMEOUT":
+    case "ETIMEDOUT":
+      return "Timed out connecting to Resend. Check the connection and try again.";
+    case "CERT_HAS_EXPIRED":
+    case "UNABLE_TO_VERIFY_LEAF_SIGNATURE":
+      return "The TLS certificate could not be verified — usually a corporate proxy intercepting HTTPS.";
+    case "ERR_INVALID_CHAR":
+      return "The API key contains a character that cannot be sent in a request header. Re-copy RESEND_API_KEY and restart the server.";
+  }
+  if (name === "TimeoutError" || name === "AbortError") {
+    return `Resend did not respond within ${TIMEOUT_MS / 1000} seconds. The message may or may not have been sent — check your Resend dashboard before resending.`;
+  }
+  // Unknown: name the failure rather than guessing at a cause.
+  return `Could not reach the email provider (${name ?? "unknown error"}). The server log has the details.`;
+}
+
 export async function POST(req: NextRequest) {
-  const key = process.env.RESEND_API_KEY;
+  const key = process.env.RESEND_API_KEY?.trim();
   if (!key) {
     return NextResponse.json({ skipped: true, reason: "RESEND_API_KEY is not set" });
+  }
+
+  // Checked before the request rather than after it fails, so a malformed
+  // key reports itself instead of surfacing as a network error. This is the
+  // exact case that made a stale env var look like an outage.
+  const problem = keyProblem(key);
+  if (problem) {
+    console.error("Resend key rejected before sending:", problem);
+    return NextResponse.json({ error: problem }, { status: 500 });
   }
 
   let payload: EmailPayload;
@@ -85,6 +145,7 @@ export async function POST(req: NextRequest) {
         ).replace(/\n/g, "<br>")}</div>`,
         ...(payload.replyTo ? { reply_to: payload.replyTo } : {}),
       }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
     if (!res.ok) {
@@ -105,7 +166,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ sent: true });
   } catch (e) {
+    // Log the real thing — the message returned to the browser is
+    // deliberately plain-language, and the stack is what actually diagnoses
+    // a proxy or a DNS failure.
     console.error("Sending email failed:", e);
-    return NextResponse.json({ error: "Could not reach the email provider." }, { status: 502 });
+    return NextResponse.json({ error: describeFetchFailure(e) }, { status: 502 });
   }
 }

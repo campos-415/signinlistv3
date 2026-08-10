@@ -39,6 +39,9 @@ export default function BoardingRequestForm({
   embed?: boolean;
 }) {
   const { settings } = useSettings();
+  // The kiosk sends people back to the sign-in screen; the website sends
+  // them back to the website.
+  const homeHref = source === "kiosk" ? "/kiosk" : "/";
   const [draft, setDraft] = useState<BoardingRequestDraft>(emptyBoardingRequest());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -88,7 +91,7 @@ export default function BoardingRequestForm({
   if (done) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-6 py-20 text-center">
-        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-500 text-3xl text-white shadow-card">
+        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-500 text-3xl text-accent-ink shadow-card">
           ✓
         </div>
         <p className="text-lg font-medium text-ink">Request sent.</p>
@@ -99,8 +102,8 @@ export default function BoardingRequestForm({
         </p>
         {!embed && (
           <Link
-            href="/"
-            className="mt-2 rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-white shadow-card transition hover:bg-accent-600"
+            href={homeHref}
+            className="mt-2 rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600"
           >
             Back to the start
           </Link>
@@ -346,7 +349,7 @@ export default function BoardingRequestForm({
                     onClick={() => set("walksPerDay", n)}
                     className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
                       draft.walksPerDay === n
-                        ? "border-accent-500 bg-accent-500 text-white shadow-card"
+                        ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
                         : "border-line bg-surface text-ink-2 hover:border-accent-300"
                     }`}
                   >
@@ -413,7 +416,7 @@ export default function BoardingRequestForm({
           type="button"
           onClick={handleSubmit}
           disabled={submitting}
-          className="rounded-xl bg-accent-500 px-6 py-3 text-sm font-medium text-white shadow-card transition hover:bg-accent-600 disabled:opacity-60"
+          className="rounded-xl bg-accent-500 px-6 py-3 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
         >
           {submitting ? "Sending…" : "Request these dates"}
         </button>
@@ -421,8 +424,8 @@ export default function BoardingRequestForm({
           We&apos;ll email you to confirm — nothing is held until then.
         </p>
         {!embed && (
-          <Link href="/" className="ml-auto text-xs font-medium text-ink-3 hover:text-ink-2">
-            Back to sign-in
+          <Link href={homeHref} className="ml-auto text-xs font-medium text-ink-3 hover:text-ink-2">
+            Back
           </Link>
         )}
       </div>
@@ -506,7 +509,7 @@ function Section({
   return (
     <section className="mb-5 rounded-3xl bg-surface p-5 shadow-card sm:p-6">
       <div className="mb-4 flex items-center gap-2.5">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-500 text-[11px] font-semibold text-white">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-500 text-[11px] font-semibold text-accent-ink">
           {step}
         </span>
         <h2 className="font-display text-base font-semibold text-ink">{title}</h2>

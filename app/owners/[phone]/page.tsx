@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { daysLeft, dogHref, hasWaiver, packageKind } from "@/lib/dogs";
+import { daysLeft, dogHref, findDog, hasWaiver, packageKind } from "@/lib/dogs";
+import DogLink from "@/components/DogLink";
 import { prettyDateKey, todayKey } from "@/lib/dates";
 import {
   Boarding,
@@ -17,11 +18,12 @@ import {
   PaymentMethod,
   SignInRecord,
 } from "@/types";
-import { Balance, computeBalance, loadPayments } from "@/lib/billing";
+import { Balance, computeBalance, loadPayments, unpaidCharges } from "@/lib/billing";
 import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import { ChoiceWithOther } from "@/components/FormBits";
+import Panel from "@/components/Panel";
 
 export default function OwnerProfilePage() {
   return (
@@ -298,6 +300,34 @@ function OwnerProfile() {
     [signins, packages, payments]
   );
 
+  // What the outstanding figure is actually made of, oldest charge first.
+  //
+  // "You owe $1,150" is not an answer staff can give a client at the counter.
+  // Payments are not tied to a specific charge — money settles the account —
+  // so they are applied oldest-first, which is both the conventional
+  // allocation and what makes the dates meaningful: the top row is where the
+  // debt starts.
+  const unpaid = useMemo(
+    () => [...unpaidCharges(balance)].sort((a, b) => a.date.localeCompare(b.date)),
+    [balance]
+  );
+
+  function daysAgo(day: string): number {
+    if (!day) return 0;
+    const then = new Date(`${day}T12:00:00`).getTime();
+    const now = new Date(`${todayKey()}T12:00:00`).getTime();
+    return Math.max(0, Math.round((now - then) / 86_400_000));
+  }
+
+  function agoLabel(day: string): string {
+    const n = daysAgo(day);
+    if (n === 0) return "today";
+    if (n === 1) return "yesterday";
+    if (n < 60) return `${n} days ago`;
+    const months = Math.round(n / 30);
+    return `${months} month${months === 1 ? "" : "s"} ago`;
+  }
+
   async function recordPayment() {
     const amount = parseFloat(payForm.amount);
     if (Number.isNaN(amount) || amount <= 0) {
@@ -354,6 +384,14 @@ function OwnerProfile() {
   // when no owner name has been entered yet.
   const displayName = form.owner_name || dogs[0]?.last_name || "Owner";
 
+  const contactSummary = [form.email, [form.city, form.state].filter(Boolean).join(", ")]
+    .filter(Boolean)
+    .join(" · ");
+  const vetSummary = [form.vet_name, form.vet_phone].filter(Boolean).join(" · ");
+  const emergencySummary = [form.emergency_name, form.emergency_relation]
+    .filter(Boolean)
+    .join(" · ");
+
   if (loading) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-10">
@@ -387,7 +425,17 @@ function OwnerProfile() {
       )}
 
       {/* Balance */}
-      <Section
+      <Panel
+        id="owner-balance"
+        defaultOpen
+        summary={
+          balance.outstanding > 0.005
+            ? `$${balance.outstanding.toFixed(2)} outstanding`
+            : balance.outstanding < -0.005
+              ? `$${Math.abs(balance.outstanding).toFixed(2)} in credit`
+              : "Settled"
+        }
+        tone={balance.outstanding > 0.005 ? "alert" : "default"}
         title="Balance"
         blurb="One bill for the household — every dog on this number, and payments settle across all of them."
       >
@@ -406,6 +454,77 @@ function OwnerProfile() {
             }
           />
         </div>
+
+        {/* What the outstanding figure is FROM, and WHEN it started. Always
+            visible when money is owed — the full ledger stays behind the
+            toggle below, but a client asking "what is this for?" should not
+            need staff to expand anything. */}
+        {balance.outstanding > 0.005 && unpaid.length > 0 && (
+          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50/50 p-3.5">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-rose-800">
+                What is unpaid
+              </p>
+              <p className="text-[11px] text-rose-900/70">
+                {unpaid.length} charge{unpaid.length === 1 ? "" : "s"}, oldest first
+              </p>
+            </div>
+
+            <ul className="mt-2 divide-y divide-rose-200/70">
+              {unpaid.map((c) => (
+                <li key={c.key} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
+                  <span className="w-28 shrink-0 text-xs font-medium text-ink-2">
+                    {prettyDateKey(c.date)}
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm text-ink-2">
+                    {c.label}
+                    <span className="ml-1.5 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-800">
+                      {c.kind === "package" ? "package" : "visit"}
+                    </span>
+                    <span className="ml-1.5 text-[11px] text-ink-3">{agoLabel(c.date)}</span>
+                  </span>
+                  <span className="whitespace-nowrap text-sm font-semibold text-rose-700">
+                    ${c.remaining.toFixed(2)}
+                    {/* A charge part-covered by an earlier payment would
+                        otherwise look like it was always this small. */}
+                    {c.remaining < c.amount - 0.005 && (
+                      <span className="ml-1 text-[11px] font-normal text-ink-3">
+                        of ${c.amount.toFixed(2)}
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+
+            <p className="mt-2 border-t border-rose-200 pt-2 text-[11px] text-rose-900">
+              Balance started <strong>{prettyDateKey(unpaid[0].date)}</strong> —{" "}
+              {daysAgo(unpaid[0].date) === 0
+                ? "today"
+                : `${daysAgo(unpaid[0].date)} day${daysAgo(unpaid[0].date) === 1 ? "" : "s"} outstanding`}
+              . Payments are applied to the oldest charge first, so anything paid has already
+              cleared the charges above this list.
+            </p>
+          </div>
+        )}
+
+        {/* Credit needs the same answer, in reverse: where did it come from? */}
+        {balance.outstanding < -0.005 && balance.payments.length > 0 && (
+          <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/60 p-3.5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">
+              Why there is credit
+            </p>
+            <p className="mt-1 text-sm text-ink-2">
+              Paid ${balance.paid.toFixed(2)} against ${balance.charged.toFixed(2)} of charges —{" "}
+              <strong>${Math.abs(balance.outstanding).toFixed(2)} overpaid</strong>. Last payment{" "}
+              {prettyDateKey(balance.payments[0].paid_on)} ({agoLabel(balance.payments[0].paid_on)})
+              {balance.payments[0].note ? `, noted "${balance.payments[0].note}"` : ""}.
+            </p>
+            <p className="mt-1 text-[11px] text-sky-900">
+              It comes off the next visit automatically — nothing to refund unless they ask.
+            </p>
+          </div>
+        )}
 
         {/* Record a payment */}
         <div className="mt-4 grid gap-3 border-t border-line-soft pt-4 sm:grid-cols-4">
@@ -448,7 +567,7 @@ function OwnerProfile() {
           <button
             onClick={recordPayment}
             disabled={savingPay}
-            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
           >
             {savingPay ? "Saving…" : "Record payment"}
           </button>
@@ -531,10 +650,10 @@ function OwnerProfile() {
             </div>
           </div>
         )}
-      </Section>
+      </Panel>
 
       {/* Dogs */}
-      <Section title="Dogs" count={dogs.length}>
+      <Panel id="owner-dogs" title="Dogs" count={dogs.length} defaultOpen summary={dogs.map((d) => d.dog_name).join(", ")}>
         {dogs.length === 0 && !addingDog && (
           <p className="mb-3 text-sm text-ink-3">
             No dogs on file for this number.
@@ -555,7 +674,7 @@ function OwnerProfile() {
                   <button
                     onClick={() => saveDog(d)}
                     disabled={savingDog}
-                    className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60">
+                    className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60">
                     {savingDog ? "Saving…" : "Save"}
                   </button>
                   <button
@@ -641,7 +760,7 @@ function OwnerProfile() {
               <button
                 onClick={addDog}
                 disabled={savingDog}
-                className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60">
+                className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60">
                 {savingDog ? "Adding…" : "Add dog"}
               </button>
               <button
@@ -672,10 +791,10 @@ function OwnerProfile() {
             + Add a dog
           </button>
         )}
-      </Section>
+      </Panel>
 
       {/* Contact */}
-      <Section title="Contact">
+      <Panel id="owner-contact" title="Contact" summary={contactSummary || "Nothing saved yet"}>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Owner name">
             <input
@@ -729,10 +848,12 @@ function OwnerProfile() {
             </Field>
           </div>
         </div>
-      </Section>
+      </Panel>
 
       {/* Veterinarian */}
-      <Section
+      <Panel
+        id="owner-vet"
+        summary={vetSummary || "Not recorded"}
         title="Veterinarian"
         blurb="Who we call in an emergency. A dog with a different vet has it on their own profile."
       >
@@ -762,10 +883,10 @@ function OwnerProfile() {
             </Field>
           </div>
         </div>
-      </Section>
+      </Panel>
 
       {/* Emergency contact */}
-      <Section title="Emergency contact">
+      <Panel id="owner-emergency" title="Emergency contact" summary={emergencySummary || "Not recorded"}>
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Name">
             <input
@@ -822,7 +943,7 @@ function OwnerProfile() {
           <button
             onClick={saveOwner}
             disabled={saving}
-            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60">
+            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60">
             {saving ? "Saving…" : "Save details"}
           </button>
           {saved && (
@@ -831,10 +952,10 @@ function OwnerProfile() {
             </span>
           )}
         </div>
-      </Section>
+      </Panel>
 
       {/* Upcoming reservations */}
-      <Section title="Upcoming reservations" count={upcoming.length}>
+      <Panel id="owner-upcoming" title="Upcoming reservations" count={upcoming.length} summary={upcoming[0] ? `Next: ${prettyDateKey(upcoming[0].start_date)}` : "None booked"}>
         {upcoming.length === 0 ? (
           <p className="text-sm text-ink-3">
             No upcoming stays for any of their dogs.
@@ -846,13 +967,17 @@ function OwnerProfile() {
                 key={b.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line-soft px-3.5 py-2.5 text-sm">
                 <span className="font-medium text-ink">
-                  🛏️ {b.dog_name}
+                  🛏️{" "}
+                  <DogLink
+                    dog={findDog(dogs, { dogId: b.dog_id, dogName: b.dog_name, phone: b.phone })}
+                    name={b.dog_name}
+                  />
                 </span>
                 <span className="text-ink-2">
                   {prettyDateKey(b.start_date)} → {prettyDateKey(b.end_date)}
                 </span>
                 <Link
-                  href={`/report?boardingId=${b.id}`}
+                  href={`/stay-report?boardingId=${b.id}`}
                   className="text-xs font-medium text-accent-600 hover:underline">
                   Stay report →
                 </Link>
@@ -860,10 +985,10 @@ function OwnerProfile() {
             ))}
           </ul>
         )}
-      </Section>
+      </Panel>
 
       {/* Packages */}
-      <Section title="Packages" count={packages.length}>
+      <Panel id="owner-packages" title="Packages" count={packages.length} summary={packages.length ? "On file" : "None"}>
         {packages.length === 0 ? (
           <p className="text-sm text-ink-3">No packages on this number.</p>
         ) : (
@@ -902,7 +1027,7 @@ function OwnerProfile() {
             ))}
           </ul>
         )}
-      </Section>
+      </Panel>
     </div>
   );
 }

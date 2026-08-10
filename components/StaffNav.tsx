@@ -6,16 +6,19 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { loadPendingCount } from "@/lib/enrollment";
 import { loadPendingBoardingCount } from "@/lib/boardingRequest";
 import { showDesktopAlert } from "@/lib/notify";
+import { displayName, signOut } from "@/lib/auth";
+import { getSupabase } from "@/lib/supabase";
+import type { User } from "@supabase/supabase-js";
 
 // Dog and owner profiles are deliberately absent — they're reached by
 // clicking a dog's name anywhere in the app, not from the nav.
 const LINKS: { href: string; label: string }[] = [
   { href: "/dashboard", label: "🏠 Dashboard" },
-  { href: "/records", label: "📋 In House" },
-  { href: "/boardings", label: "🛏️ Boardings" },
+  { href: "/in-house", label: "📋 In House" },
+  { href: "/calendar", label: "🗓️ Calendar" },
   { href: "/packages", label: "📦 Packages" },
   { href: "/requests", label: "📥 Requests" },
-  { href: "/daily", label: "📊 Reports" },
+  { href: "/day-report", label: "📊 Day report" },
   { href: "/settings", label: "⚙️ Settings" },
 ];
 
@@ -34,6 +37,11 @@ export default function StaffNav({ current }: { current: string }) {
   // Previous totals, so a rise can be told from a first load. Starts null
   // so the very first poll never announces the backlog as "new".
   const seen = useRef<{ enrollments: number; boarding: number } | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    getSupabase().auth.getUser().then(({ data }) => setUser(data.user));
+  }, []);
 
   const poll = useCallback(async () => {
     const [enrollments, boarding] = await Promise.all([
@@ -76,34 +84,64 @@ export default function StaffNav({ current }: { current: string }) {
 
   return (
     <>
+      {/* Two rows, because they are two different things: who is signed in
+          and where this device goes, above; where this session goes, below.
+          Sharing one wrapping row meant the account controls changed place
+          depending on how many page links happened to fit. */}
+      <div className="mb-3 flex items-center justify-end gap-2 print:hidden">
+        {user && (
+          <span
+            className="mr-auto hidden text-[11px] text-ink-3 sm:inline"
+            title={user.email ?? undefined}
+          >
+            Signed in as <span className="font-medium text-ink-2">{displayName(user)}</span>
+          </span>
+        )}
+        <button
+          onClick={async () => {
+            await signOut();
+            window.location.href = "/";
+          }}
+          className="rounded-xl border border-line bg-surface px-3 py-2 text-xs font-medium text-ink-3 transition hover:border-rose-300 hover:text-rose-500"
+          title="Sign out of this device"
+        >
+          ⏻ Sign out
+        </button>
+        <ThemeToggle />
+        <Link
+          href="/kiosk"
+          className="rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-3 hover:border-line"
+        >
+          ← Kiosk
+        </Link>
+      </div>
+
       <nav className="mb-6 flex flex-wrap items-center gap-2 print:hidden">
         {LINKS.map((l) => (
           <Link
             key={l.href}
             href={l.href}
-            className={`rounded-xl px-3.5 py-2 text-xs font-medium transition ${
+            // The border stays on both states, transparent when active.
+            // Without it the current link was 2px narrower than the others
+            // and every link after it jumped sideways on navigation.
+            className={`relative rounded-xl border px-3.5 py-2 text-xs font-medium transition ${
               l.href === current
-                ? "bg-accent-500 text-white shadow-card"
-                : "border border-line bg-surface text-ink-2 hover:border-line"
+                ? "border-transparent bg-accent-500 text-accent-ink shadow-card"
+                : "border-line bg-surface text-ink-2 hover:border-line"
             }`}
           >
             {l.label}
+            {/* Taken out of the layout entirely. The count arrives from the
+                network a moment after the page paints, and an inline badge
+                widened this link on arrival, shoving every link after it
+                sideways — the jump that made the bar look broken. */}
             {l.href === "/requests" && pending > 0 && (
-              <span className="ml-1.5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+              <span className="absolute -right-1.5 -top-1.5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-card">
                 {pending}
               </span>
             )}
           </Link>
         ))}
-        <div className="ml-auto flex items-center gap-2">
-          <ThemeToggle />
-          <Link
-            href="/"
-            className="rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-3 hover:border-line"
-          >
-            ← Kiosk
-          </Link>
-        </div>
       </nav>
 
       {toast && (
@@ -113,7 +151,7 @@ export default function StaffNav({ current }: { current: string }) {
             <Link
               href="/requests"
               onClick={() => setToast("")}
-              className="rounded-xl bg-accent-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-600"
+              className="rounded-xl bg-accent-500 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent-600"
             >
               Review now
             </Link>

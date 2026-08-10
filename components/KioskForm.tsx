@@ -34,12 +34,15 @@ import {
 } from "@/types";
 import lombardlogo from "@/public/lombardlogo.avif";
 import { useSettings } from "@/components/SettingsProvider";
+import SquarePayButton from "@/components/SquarePayButton";
 import Image from "next/image";
 
 interface ConfirmedDog {
   dogName: string;
   daysLeft: number | null;
   priceDue: number | null;
+  /** The visit was already closed, so nothing was written for this dog. */
+  alreadyClosed: boolean;
 }
 
 export default function KioskForm() {
@@ -354,6 +357,11 @@ export default function KioskForm() {
     setBreakdownOpenFor(null);
   }
 
+  // What was owed from before, captured at the moment of signing out.
+  // Afterwards the balance includes today's charge as well, so re-reading it
+  // and adding today's total again would count the visit twice.
+  const [priorDueAtSubmit, setPriorDueAtSubmit] = useState(0);
+
   async function handleSubmit() {
     setError("");
     if (selectedDogs.length === 0) {
@@ -394,12 +402,18 @@ export default function KioskForm() {
     try {
       const results: ConfirmedDog[] = [];
       const now = new Date();
+      setPriorDueAtSubmit(
+        action === "pick_up" && balance
+          ? unpaidCharges(balance).reduce((sum, c) => sum + c.remaining, 0)
+          : 0
+      );
 
       // One dog at a time so a package-day deduction failure for one dog
       // doesn't affect the others' rows. The write itself lives in
       // lib/signin.ts, shared with the staff front-desk panel.
       for (const dog of selectedDogs) {
         const dogAddons = dog.id ? (addonsByDog[dog.id] ?? []) : [];
+
         const result = await performSignIn({
           dog,
           action,
@@ -420,6 +434,7 @@ export default function KioskForm() {
           dogName: result.dogName,
           daysLeft: result.daysLeft,
           priceDue: result.priceDue,
+          alreadyClosed: !!result.alreadyClosed,
         });
       }
 
@@ -436,27 +451,81 @@ export default function KioskForm() {
     }
   }
 
+  // What this pick-up came to across every dog on the number.
+  //
+  // An already-closed visit contributes nothing: its charge was written on an
+  // earlier sign-out, so it is already inside priorDueAtSubmit. Counting it
+  // here as well is how the amount handed to Square would double.
+  const confirmedTotal =
+    (confirmed ?? []).reduce((sum, c) => sum + (c.alreadyClosed ? 0 : (c.priceDue ?? 0)), 0) +
+    priorDueAtSubmit;
+
+  // Every dog refused means nothing happened, so a tick would be a lie.
+  const nothingWritten = !!confirmed && confirmed.length > 0 && confirmed.every((c) => c.alreadyClosed);
+
   if (confirmed) {
     return (
       <div className="flex min-h-[70vh] flex-col items-center justify-center gap-4 text-center">
-        <div className="flex h-20 w-20 items-center justify-center rounded-full bg-accent-500 text-3xl text-white shadow-card">
-          ✓
+        <div
+          className={`flex h-20 w-20 items-center justify-center rounded-full text-3xl shadow-card ${
+            nothingWritten ? "bg-amber-500 text-white" : "bg-accent-500 text-accent-ink"
+          }`}
+        >
+          {nothingWritten ? "!" : "✓"}
         </div>
         <div className="space-y-1.5">
           {confirmed.map((c) => (
             <p key={c.dogName} className="text-lg font-medium text-ink">
-              {c.dogName} {action === "drop_off" ? "dropped off" : "picked up"}
+              {c.alreadyClosed ? (
+                <>
+                  {c.dogName} was already signed out
+                  <span className="ml-2 text-sm font-normal text-ink-3">
+                    nothing was charged again
+                  </span>
+                </>
+              ) : (
+                <>{c.dogName} {action === "drop_off" ? "dropped off" : "picked up"}</>
+              )}
               {c.daysLeft !== null && (
                 <span className="ml-2 text-sm font-medium text-accent-600">
                   {c.daysLeft > 0 ? `· ${c.daysLeft} day${c.daysLeft === 1 ? "" : "s"} left` : "· last day on package"}
                 </span>
               )}
-              {c.priceDue !== null && (
-                <span className="ml-2 text-sm font-medium text-emerald-600">· ${c.priceDue.toFixed(2)} Paid today</span>
+              {/* An already-closed visit's price is history, not a new charge —
+                  it is already inside the balance shown below. */}
+              {c.priceDue !== null && !c.alreadyClosed && (
+                <span className="ml-2 text-sm font-medium text-emerald-600">
+                  · ${c.priceDue.toFixed(2)} due
+                </span>
               )}
             </p>
           ))}
         </div>
+
+        {/* Pay on the way out. Only on a pick-up, and only when something is
+            actually owed — a visit covered by a package owes nothing and
+            should not be asked for money. */}
+        {action === "pick_up" && confirmedTotal > 0 && (
+          <div className="mt-2 flex flex-col items-center gap-2">
+            <SquarePayButton
+              amount={confirmedTotal}
+              note={confirmed
+                .filter((c) => c.priceDue)
+                .map((c) => `${c.dogName}: $${c.priceDue!.toFixed(2)}`)
+                .join(" | ")}
+              phone={phone.trim()}
+              dogNames={confirmed.filter((c) => c.priceDue).map((c) => c.dogName)}
+              returnTo="/kiosk"
+              label="Pay now"
+            />
+            {priorDueAtSubmit > 0 && (
+              <p className="text-xs text-ink-3">
+                Includes ${priorDueAtSubmit.toFixed(2)} still owed from before.
+              </p>
+            )}
+            <p className="text-xs text-ink-3">Or settle at the front desk.</p>
+          </div>
+        )}
       </div>
     );
   }
@@ -466,14 +535,82 @@ export default function KioskForm() {
   const showNoProfile = phoneEntered && dogsChecked && !dogsLoading && matches.length === 0;
   const showDogPicker = matches.length > 1;
   const now = new Date();
+
+  // What this dog owes for the visit it is being collected from. Null on a
+  // drop-off, or when nothing is open.
+  function pickUpEstimate(dog: Dog) {
+    const open = dog.id ? openVisits.get(dog.id) : undefined;
+    if (action !== "pick_up" || !open) return null;
+    const pkg = packageFor(dog);
+    return estimatePrice(
+      effectiveService(dog),
+      open.dropOffTime,
+      now,
+      open.addons,
+      packageAppliesNow(dog, open, pkg, now),
+      open.bathSize,
+      true,
+      soldToday(dog),
+      walkAppliesNow(dog, open)
+    );
+  }
+
+  // Today's charges, one line per dog being collected.
+  const dueTodayItems = selectedDogs
+    .map((dog) => {
+      const est = pickUpEstimate(dog);
+      return est && est.amount > 0
+        ? { key: dog.id ?? dog.dog_name, dogName: dog.dog_name, label: est.label, amount: est.amount }
+        : null;
+    })
+    .filter((x): x is { key: string; dogName: string; label: string; amount: number } => !!x);
+
+  // Still owed from before. Today's pick-up is NOT in here — a visit is only
+  // priced when the dog is signed out — so adding the two cannot double up.
+  const previousDue = action === "pick_up" && balance ? unpaidCharges(balance) : [];
+
+  const amountDue =
+    dueTodayItems.reduce((sum, i) => sum + i.amount, 0) +
+    previousDue.reduce((sum, c) => sum + c.remaining, 0);
+
+  // Paying navigates away to the Square app, which would discard an
+  // un-submitted sign-out. So the dog is signed out first, and only a
+  // successful sign-out lets the payment proceed.
+  async function signOutBeforePaying(): Promise<boolean> {
+    if (confirmed) return true; // already signed out
+    try {
+      await handleSubmit();
+      return true;
+    } catch (e) {
+      console.error("Could not sign out before payment:", e);
+      return false;
+    }
+  }
+
   const hasDuplicateDropOff =
     action === "drop_off" && selectedDogs.some((d) => d.id && openVisits.has(d.id));
+
+  // The mirror of hasDuplicateDropOff: a dog that is not signed in cannot be
+  // signed out. Blocking it here is what stops a second sign-out — and with it
+  // a second charge for the same visit — rather than letting the client press
+  // the button and find out afterwards. lib/signin.ts refuses it as well; this
+  // is the half that can explain itself.
+  const alreadyOutDogs =
+    action === "pick_up" ? selectedDogs.filter((d) => !d.id || !openVisits.has(d.id)) : [];
+  const hasAlreadySignedOut = alreadyOutDogs.length > 0;
   // Dogs whose stay covers today — they sign in as boarding no matter
   // what the service selector says (see effectiveService). The rest fall
   // to the selector, so a reserved dog and a daycare dog can check in
   // together on one sign-in.
+  // Dogs already in the building are excluded: their drop-off is blocked
+  // anyway, and mentioning the reservation again once the dog has arrived
+  // reads as though something is still outstanding.
   const reservedDogs =
-    action === "drop_off" ? selectedDogs.filter((d) => !!activeBoardingFor(d)) : [];
+    action === "drop_off"
+      ? selectedDogs.filter(
+          (d) => !!activeBoardingFor(d) && !(d.id && openVisits.has(d.id))
+        )
+      : [];
   const unreservedDogs =
     action === "drop_off" ? selectedDogs.filter((d) => !activeBoardingFor(d)) : [];
   // Only a dog with no reservation can be missing one — asking to board
@@ -514,7 +651,7 @@ export default function KioskForm() {
             onClick={() => selectAction("drop_off")}
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
               action === "drop_off"
-                ? "border-accent-500 bg-accent-500 text-white shadow-card"
+                ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
                 : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
             🚗 Drop off
@@ -523,7 +660,7 @@ export default function KioskForm() {
             onClick={() => selectAction("pick_up")}
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
               action === "pick_up"
-                ? "border-accent-500 bg-accent-500 text-white shadow-card"
+                ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
                 : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
             🏠 Pick up
@@ -586,7 +723,7 @@ export default function KioskForm() {
                       onClick={() => toggleDog(m.id)}
                       className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
                         selected
-                          ? "border-accent-500 bg-accent-500 text-white"
+                          ? "border-accent-500 bg-accent-500 text-accent-ink"
                           : "border-accent-200 bg-surface text-accent-700 hover:border-accent-400"
                       }`}>
                       {selected ? "✓ " : "🐕 "}
@@ -608,28 +745,8 @@ export default function KioskForm() {
           {/* Anything owed on this number, oldest charge first. Shown for the
               household rather than per dog, since that's how it's paid — and
               it includes today's charges, not just older ones. */}
-          {balance && balance.outstanding > 0.005 && (
-            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-              <p className="text-sm font-semibold text-amber-900">
-                💰 ${balance.outstanding.toFixed(2)} outstanding on this number
-              </p>
-              <ul className="mt-1.5 space-y-0.5">
-                {unpaidCharges(balance).map((c) => (
-                  <li key={c.key} className="flex justify-between gap-4 text-xs text-amber-800">
-                    <span>
-                      {prettyDay(c.date)} · {c.label}
-                    </span>
-                    <span className="whitespace-nowrap font-medium">
-                      ${c.remaining.toFixed(2)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-[11px] text-amber-700">
-                Please settle with a staff member.
-              </p>
-            </div>
-          )}
+
+
 
           {selectedDogs.length > 0 && (
             <div className="mt-3 space-y-2">
@@ -646,26 +763,17 @@ export default function KioskForm() {
                   action === "pick_up"
                     ? packageAppliesNow(dog, open, pkg, now)
                     : false;
-                const priceEstimate =
-                  action === "pick_up" && open
-                    ? estimatePrice(
-                        effService,
-                        open.dropOffTime,
-                        now,
-                        open.addons,
-                        usingPackage,
-                        open.bathSize,
-                        true,
-                        soldToday(dog),
-                        walkAppliesNow(dog, open),
-                      )
-                    : null;
+                const priceEstimate = pickUpEstimate(dog);
                 const showBreakdown = breakdownOpenFor === dog.id;
                 const reservation = activeBoardingFor(dog);
                 // Only today's stay drives the add-on prefill; an upcoming
                 // one is shown purely so the parent can see it's booked.
                 const upcoming = reservation ? null : upcomingBoardingFor(dog);
-                const shownReservation = reservation ?? upcoming;
+                // A dog that is already signed in has arrived, so the booking
+                // has served its purpose — repeating "reservation on file" on
+                // every later lookup reads as though something is still
+                // outstanding. The badge beside the name says where it is.
+                const shownReservation = isIn ? null : (reservation ?? upcoming);
                 return (
                   <div
                     key={dog.id}
@@ -911,6 +1019,58 @@ export default function KioskForm() {
               })}
             </div>
           )}
+          {action === "pick_up" && amountDue > 0 && (
+            <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+              {/* Only what is NOT already on a dog card: anything still owed
+                  from before. Today's charges stay on the dog they belong
+                  to, so no figure is printed twice. */}
+              {previousDue.length > 0 && (
+                <ul className="mb-2 space-y-0.5 border-b border-emerald-200 pb-2">
+                  {previousDue.map((c) => (
+                    <li key={c.key} className="flex justify-between gap-4 text-xs text-emerald-800/80">
+                      <span>
+                        {c.label}
+                        <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium">
+                          {c.date === todayKey() ? "earlier today" : `from ${prettyDay(c.date)}`}
+                        </span>
+                      </span>
+                      <span className="whitespace-nowrap font-medium">${c.remaining.toFixed(2)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-base font-semibold text-emerald-900">
+                  Total due ${amountDue.toFixed(2)}
+                </span>
+                <span className="ml-auto">
+                  <SquarePayButton
+                    amount={amountDue}
+                    note={[
+                      ...dueTodayItems.map((i) => `${i.dogName}: ${i.label}`),
+                      ...previousDue.map((c) => `${c.label} (${c.date})`),
+                    ].join(" | ")}
+                    phone={phone.trim()}
+                    dogNames={selectedDogs.map((d) => d.dog_name)}
+                    returnTo="/kiosk"
+                    label="Pay now"
+                    beforePay={signOutBeforePaying}
+                  />
+                </span>
+              </div>
+              {/* Only true when there is actually a visit left to close. Once
+                  the dog is out, this box is settling an outstanding balance
+                  and nothing gets signed out. */}
+              <p className="mt-1.5 text-[11px] text-emerald-800">
+                {hasAlreadySignedOut
+                  ? "This settles what is still owed. Or settle with a staff member."
+                  : `Paying signs ${
+                      selectedDogs.length > 1 ? "them" : "the dog"
+                    } out first. Or settle with a staff member.`}
+              </p>
+            </div>
+          )}
 
           {matches.length === 1 && (
             <Link
@@ -981,10 +1141,14 @@ export default function KioskForm() {
                   )}
                 </>
               ) : (
-                selectedDogs.some((d) => !d.id || !openVisits.has(d.id)) && (
-                    <>
-                      <p className="mb-2 rounded-lg bg-accent-50 px-2.5 py-1.5 text-xs text-accent-700">pleses sign in pets first</p>
-                  </>
+                hasAlreadySignedOut && (
+                  <p className="mb-2 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                    {alreadyOutDogs.length === 1
+                      ? `${alreadyOutDogs[0].dog_name} is not signed in, so there is nothing to sign out.`
+                      : `${alreadyOutDogs.map((d) => d.dog_name).join(" and ")} are not signed in, so there is nothing to sign out.`}{" "}
+                    If {alreadyOutDogs.length === 1 ? "they were" : "they were"} already collected
+                    today, this is done — please see a staff member if something looks wrong.
+                  </p>
                 )
               )}
             </div>
@@ -1002,15 +1166,18 @@ export default function KioskForm() {
               submitting ||
               selectedDogs.length === 0 ||
               hasDuplicateDropOff ||
+              hasAlreadySignedOut ||
               hasMissingBoardingReservation
             }
-            className="rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-white shadow-card transition hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50">
+            className="rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-50">
             {submitting
               ? action === "drop_off"
                 ? "Signing in…"
                 : "Signing out…"
               : hasDuplicateDropOff
                 ? "Already signed in"
+                : hasAlreadySignedOut
+                ? "Already signed out"
                 : hasMissingBoardingReservation
                   ? "No reservation found"
                   : action === "drop_off"

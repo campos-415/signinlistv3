@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
@@ -33,10 +33,20 @@ function Requests() {
   );
   const [counts, setCounts] = useState({ enrollments: 0, boarding: 0 });
 
-  useEffect(() => {
+  // Both numbers count PENDING rows only — the badge is a to-do list, not a
+  // running total of everything ever submitted.
+  //
+  // They used to be read once on mount and never again, so approving three
+  // requests left the tab still claiming three were waiting. Re-read whenever
+  // a queue changes something.
+  const refreshCounts = useCallback(() => {
     loadPendingCount().then((n) => setCounts((c) => ({ ...c, enrollments: n })));
     loadPendingBoardingCount().then((n) => setCounts((c) => ({ ...c, boarding: n })));
   }, []);
+
+  useEffect(() => {
+    refreshCounts();
+  }, [refreshCounts]);
 
   function pick(next: Tab) {
     setTab(next);
@@ -69,7 +79,7 @@ function Requests() {
             onClick={() => pick(t.key)}
             className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
               tab === t.key
-                ? "bg-accent-500 text-white shadow-card"
+                ? "bg-accent-500 text-accent-ink shadow-card"
                 : "border border-line bg-surface text-ink-2 hover:border-accent-300"
             }`}
           >
@@ -87,7 +97,11 @@ function Requests() {
         ))}
       </div>
 
-      {tab === "enrollments" ? <EnrollmentQueue /> : <BoardingQueue />}
+      {tab === "enrollments" ? (
+        <EnrollmentQueue onChanged={refreshCounts} />
+      ) : (
+        <BoardingQueue onChanged={refreshCounts} />
+      )}
     </div>
   );
 }
