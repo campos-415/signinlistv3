@@ -4,11 +4,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { daysLeft, dogHref, hasWaiver } from "@/lib/clients";
+import { daysLeft, dogHref, hasWaiver, packageKind } from "@/lib/dogs";
 import { prettyDateKey, todayKey } from "@/lib/dates";
-import { Boarding, Client, Owner, Package } from "@/types";
+import {
+  Boarding,
+  Dog,
+  HEARD_ABOUT,
+  Owner,
+  PAYMENT_METHODS,
+  Package,
+  Payment,
+  PaymentMethod,
+  SignInRecord,
+} from "@/types";
+import { Balance, computeBalance, loadPayments } from "@/lib/billing";
+import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
+import { ChoiceWithOther } from "@/components/FormBits";
 
 export default function OwnerProfilePage() {
   return (
@@ -29,6 +42,12 @@ const EMPTY_OWNER = {
   city: "",
   state: "",
   zip: "",
+  // Collected once per household on the enrollment form. A dog with its own
+  // vet overrides this on its profile.
+  vet_name: "",
+  vet_phone: "",
+  vet_address: "",
+  heard_about: "",
 };
 
 const EMPTY_DOG = { dog_name: "", last_name: "", drop_off_by: "", waiver_on_file: false };
@@ -42,9 +61,15 @@ function OwnerProfile() {
 
   const [owner, setOwner] = useState<Owner | null>(null);
   const [form, setForm] = useState(EMPTY_OWNER);
-  const [dogs, setDogs] = useState<Client[]>([]);
+  const [dogs, setDogs] = useState<Dog[]>([]);
   const [boardings, setBoardings] = useState<Boarding[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
+  const [signins, setSignins] = useState<SignInRecord[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payForm, setPayForm] = useState({ amount: "", method: "card" as PaymentMethod, note: "" });
+  const [savingPay, setSavingPay] = useState(false);
+  const [deletingPayId, setDeletingPayId] = useState<string | null>(null);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -64,18 +89,21 @@ function OwnerProfile() {
     setError("");
     try {
       const supabase = getSupabase();
-      const [ownerRes, dogRes, boardingRes, pkgRes] = await Promise.all([
+      const [ownerRes, dogRes, boardingRes, pkgRes, signinRes, payRes] = await Promise.all([
         // maybeSingle: the owner row is created lazily on first save, so a
         // profile with no details yet is normal, not an error.
         supabase.from("owners").select("*").eq("phone", phone).maybeSingle(),
-        supabase.from("clients").select("*").eq("phone", phone).order("created_at", { ascending: true }),
+        supabase.from("dogs").select("*").eq("phone", phone).order("created_at", { ascending: true }),
         supabase.from("boardings").select("*").eq("phone", phone).order("start_date", { ascending: false }),
         supabase.from("packages").select("*").eq("phone", phone).order("created_at", { ascending: false }),
+        supabase.from("signins").select("*").eq("phone", phone).limit(1000),
+        loadPayments(phone),
       ]);
       if (ownerRes.error) throw ownerRes.error;
       if (dogRes.error) throw dogRes.error;
       if (boardingRes.error) throw boardingRes.error;
       if (pkgRes.error) throw pkgRes.error;
+      if (signinRes.error) throw signinRes.error;
 
       const ownerRow = (ownerRes.data as Owner | null) ?? null;
       setOwner(ownerRow);
@@ -91,11 +119,17 @@ function OwnerProfile() {
           city: ownerRow.city ?? "",
           state: ownerRow.state ?? "",
           zip: ownerRow.zip ?? "",
+          vet_name: ownerRow.vet_name ?? "",
+          vet_phone: ownerRow.vet_phone ?? "",
+          vet_address: ownerRow.vet_address ?? "",
+          heard_about: ownerRow.heard_about ?? "",
         });
       }
-      setDogs((dogRes.data as Client[]) ?? []);
+      setDogs((dogRes.data as Dog[]) ?? []);
       setBoardings((boardingRes.data as Boarding[]) ?? []);
       setPackages((pkgRes.data as Package[]) ?? []);
+      setSignins((signinRes.data as SignInRecord[]) ?? []);
+      setPayments(payRes);
     } catch (e) {
       console.error("Loading owner profile failed:", e);
       setError("Could not load this owner's profile.");
@@ -137,7 +171,7 @@ function OwnerProfile() {
     setError("");
     try {
       const supabase = getSupabase();
-      const { error: err } = await supabase.from("clients").insert({
+      const { error: err } = await supabase.from("dogs").insert({
         phone,
         dog_name: dogForm.dog_name.trim(),
         // Default the surname to whatever the household already uses.
@@ -161,7 +195,7 @@ function OwnerProfile() {
     }
   }
 
-  async function saveDog(dog: Client) {
+  async function saveDog(dog: Dog) {
     if (!dog.id || !dogForm.dog_name.trim()) {
       setError("Give the dog a name.");
       return;
@@ -173,7 +207,7 @@ function OwnerProfile() {
     try {
       const supabase = getSupabase();
       const { error: err } = await supabase
-        .from("clients")
+        .from("dogs")
         .update({
           dog_name: nextName,
           last_name: nextLast,
@@ -216,7 +250,7 @@ function OwnerProfile() {
     }
   }
 
-  async function deleteDog(dog: Client) {
+  async function deleteDog(dog: Dog) {
     if (!dog.id) return;
     // Sign-ins and reservations reference the dog but aren't cascaded, so
     // say plainly what survives the delete before doing it.
@@ -237,7 +271,7 @@ function OwnerProfile() {
     setError("");
     try {
       const supabase = getSupabase();
-      const { error: err } = await supabase.from("clients").delete().eq("id", dog.id);
+      const { error: err } = await supabase.from("dogs").delete().eq("id", dog.id);
       if (err) throw err;
       load();
     } catch (e) {
@@ -248,7 +282,7 @@ function OwnerProfile() {
     }
   }
 
-  function startEditDog(dog: Client) {
+  function startEditDog(dog: Dog) {
     setAddingDog(false);
     setEditingDogId(dog.id ?? null);
     setDogForm({
@@ -257,6 +291,56 @@ function OwnerProfile() {
       drop_off_by: dog.drop_off_by ?? "",
       waiver_on_file: !!dog.waiver_on_file,
     });
+  }
+
+  const balance: Balance = useMemo(
+    () => computeBalance(signins, packages, payments),
+    [signins, packages, payments]
+  );
+
+  async function recordPayment() {
+    const amount = parseFloat(payForm.amount);
+    if (Number.isNaN(amount) || amount <= 0) {
+      setError("Enter how much was paid.");
+      return;
+    }
+    setSavingPay(true);
+    setError("");
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("payments").insert({
+        phone,
+        amount,
+        method: payForm.method,
+        note: payForm.note.trim() || null,
+        paid_on: todayKey(),
+      });
+      if (err) throw err;
+      setPayForm({ amount: "", method: payForm.method, note: "" });
+      load();
+    } catch (e) {
+      console.error("Recording payment failed:", e);
+      setError("Could not record that payment.");
+    } finally {
+      setSavingPay(false);
+    }
+  }
+
+  async function deletePayment(pay: Payment) {
+    if (!pay.id) return;
+    if (!window.confirm(`Remove the $${pay.amount.toFixed(2)} payment from ${pay.paid_on}?`)) return;
+    setDeletingPayId(pay.id);
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("payments").delete().eq("id", pay.id);
+      if (err) throw err;
+      load();
+    } catch (e) {
+      console.error("Deleting payment failed:", e);
+      setError("Could not remove that payment.");
+    } finally {
+      setDeletingPayId(null);
+    }
   }
 
   const upcoming = useMemo(() => {
@@ -274,7 +358,7 @@ function OwnerProfile() {
     return (
       <div className="mx-auto max-w-4xl px-6 py-10">
         <StaffNav current="" />
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-ink-3">Loading…</p>
       </div>
     );
   }
@@ -284,10 +368,13 @@ function OwnerProfile() {
       <StaffNav current="" />
 
       <div className="mb-6">
-        <h1 className="font-display text-2xl font-semibold text-slate-900">
+        <h1 className="font-display text-2xl font-semibold text-ink">
           {displayName}
         </h1>
-        <p className="text-sm text-slate-500">{phone}</p>
+        <p className="text-sm text-ink-3">{phone}</p>
+        <div className="mt-2">
+          <BalanceBadge outstanding={balance.outstanding} />
+        </div>
         {!owner && (
           <p className="mt-1 text-xs text-amber-700">
             No contact details saved yet — fill in what you know and hit save.
@@ -299,10 +386,157 @@ function OwnerProfile() {
         <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>
       )}
 
+      {/* Balance */}
+      <Section
+        title="Balance"
+        blurb="One bill for the household — every dog on this number, and payments settle across all of them."
+      >
+        <div className="grid grid-cols-3 gap-3">
+          <Figure label="Charged" value={`$${balance.charged.toFixed(2)}`} />
+          <Figure label="Paid" value={`$${balance.paid.toFixed(2)}`} />
+          <Figure
+            label={balance.outstanding < 0 ? "In credit" : "Outstanding"}
+            value={`$${Math.abs(balance.outstanding).toFixed(2)}`}
+            tone={
+              balance.outstanding > 0.005
+                ? "text-rose-700"
+                : balance.outstanding < -0.005
+                  ? "text-sky-700"
+                  : "text-emerald-700"
+            }
+          />
+        </div>
+
+        {/* Record a payment */}
+        <div className="mt-4 grid gap-3 border-t border-line-soft pt-4 sm:grid-cols-4">
+          <Field label="Amount">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={payForm.amount}
+              onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
+              placeholder={balance.outstanding > 0 ? balance.outstanding.toFixed(2) : "0.00"}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Method">
+            <select
+              value={payForm.method}
+              onChange={(e) => setPayForm({ ...payForm, method: e.target.value as PaymentMethod })}
+              className={inputClass}
+            >
+              {PAYMENT_METHODS.map((m) => (
+                <option key={m.key} value={m.key}>
+                  {m.icon} {m.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="Note (optional)">
+              <input
+                value={payForm.note}
+                onChange={(e) => setPayForm({ ...payForm, note: e.target.value })}
+                placeholder="Reference, who took it…"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            onClick={recordPayment}
+            disabled={savingPay}
+            className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+          >
+            {savingPay ? "Saving…" : "Record payment"}
+          </button>
+          {balance.outstanding > 0.005 && (
+            <button
+              onClick={() =>
+                setPayForm({ ...payForm, amount: balance.outstanding.toFixed(2) })
+              }
+              className="text-xs font-medium text-accent-600 hover:underline"
+            >
+              Pay full balance (${balance.outstanding.toFixed(2)})
+            </button>
+          )}
+          <button
+            onClick={() => setLedgerOpen((v) => !v)}
+            className="ml-auto text-xs font-medium text-ink-3 hover:text-ink-2"
+          >
+            {ledgerOpen ? "Hide" : "Show"} charges &amp; payments
+          </button>
+        </div>
+
+        {ledgerOpen && (
+          <div className="mt-4 grid gap-4 border-t border-line-soft pt-4 sm:grid-cols-2">
+            <div>
+              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
+                Charges ({balance.charges.length})
+              </p>
+              <div className="max-h-56 overflow-y-auto">
+                {balance.charges.length === 0 ? (
+                  <p className="text-xs text-ink-3">Nothing charged yet.</p>
+                ) : (
+                  <ul className="space-y-1 text-xs">
+                    {balance.charges.map((c) => (
+                      <li key={c.key} className="flex items-baseline justify-between gap-3">
+                        <span className="text-ink-2">
+                          <span className="text-ink-3">{c.date}</span> {c.label}
+                        </span>
+                        <span className="whitespace-nowrap font-medium text-ink-2">
+                          ${c.amount.toFixed(2)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+            <div>
+              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
+                Payments ({balance.payments.length})
+              </p>
+              <div className="max-h-56 overflow-y-auto">
+                {balance.payments.length === 0 ? (
+                  <p className="text-xs text-ink-3">No payments recorded.</p>
+                ) : (
+                  <ul className="space-y-1 text-xs">
+                    {balance.payments.map((p) => (
+                      <li key={p.id} className="flex items-baseline justify-between gap-3">
+                        <span className="text-ink-2">
+                          <span className="text-ink-3">{p.paid_on}</span>{" "}
+                          {PAYMENT_METHODS.find((m) => m.key === p.method)?.label ?? "Payment"}
+                          {p.note && <span className="text-ink-3"> · {p.note}</span>}
+                        </span>
+                        <span className="flex items-center gap-2 whitespace-nowrap">
+                          <span className="font-medium text-emerald-700">
+                            ${p.amount.toFixed(2)}
+                          </span>
+                          <button
+                            onClick={() => deletePayment(p)}
+                            disabled={deletingPayId === p.id}
+                            className="text-[10px] text-rose-400 hover:text-rose-600 disabled:opacity-50"
+                          >
+                            remove
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Section>
+
       {/* Dogs */}
       <Section title="Dogs" count={dogs.length}>
         {dogs.length === 0 && !addingDog && (
-          <p className="mb-3 text-sm text-slate-400">
+          <p className="mb-3 text-sm text-ink-3">
             No dogs on file for this number.
           </p>
         )}
@@ -313,7 +547,7 @@ function OwnerProfile() {
               <div
                 key={d.id}
                 className="w-full rounded-2xl border border-accent-200 bg-accent-50/40 p-4">
-                <p className="mb-2 text-xs font-medium text-slate-600">
+                <p className="mb-2 text-xs font-medium text-ink-2">
                   Editing {d.dog_name}
                 </p>
                 <DogFields form={dogForm} setForm={setDogForm} />
@@ -329,7 +563,7 @@ function OwnerProfile() {
                       setEditingDogId(null);
                       setDogForm(EMPTY_DOG);
                     }}
-                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-500 hover:border-slate-300">
+                    className="rounded-xl border border-line px-4 py-2 text-sm text-ink-3 hover:border-line">
                     Cancel
                   </button>
                 </div>
@@ -337,7 +571,7 @@ function OwnerProfile() {
             ) : (
               <div
                 key={d.id}
-                className="flex w-44 flex-col items-center gap-2 rounded-2xl border border-slate-200 p-3 text-center">
+                className="flex w-44 flex-col items-center gap-2 rounded-2xl border border-line p-3 text-center">
                 <Link
                   href={d.id ? dogHref(d.id) : "#"}
                   className="flex flex-col items-center gap-2 transition hover:opacity-80">
@@ -349,11 +583,11 @@ function OwnerProfile() {
                       className="h-16 w-16 rounded-full object-cover"
                     />
                   ) : (
-                    <span className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-100 text-2xl">
+                    <span className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-3 text-2xl">
                       🐕
                     </span>
                   )}
-                  <span className="text-sm font-medium text-slate-800">
+                  <span className="text-sm font-medium text-ink">
                     {d.dog_name}
                   </span>
                   <span className="text-[11px] text-accent-600">
@@ -369,12 +603,12 @@ function OwnerProfile() {
                   </span>
                 )}
                 {!d.signature_data && d.waiver_on_file && (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                  <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-semibold text-ink-3">
                     Waiver on file (paper)
                   </span>
                 )}
                 {d.signature_data && !d.waiver_on_file && (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                  <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-semibold text-ink-3">
                     Waiver on file (digital)
                   </span>
                 )}
@@ -382,7 +616,7 @@ function OwnerProfile() {
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => startEditDog(d)}
-                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] text-slate-600 hover:border-slate-300">
+                    className="rounded-lg border border-line px-2.5 py-1 text-[11px] text-ink-2 hover:border-line">
                     Edit
                   </button>
                   <button
@@ -399,7 +633,7 @@ function OwnerProfile() {
 
         {addingDog ? (
           <div className="mt-3 rounded-2xl border border-accent-200 bg-accent-50/40 p-4">
-            <p className="mb-2 text-xs font-medium text-slate-600">
+            <p className="mb-2 text-xs font-medium text-ink-2">
               Add a dog to this number
             </p>
             <DogFields form={dogForm} setForm={setDogForm} />
@@ -415,11 +649,11 @@ function OwnerProfile() {
                   setAddingDog(false);
                   setDogForm(EMPTY_DOG);
                 }}
-                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-500 hover:border-slate-300">
+                className="rounded-xl border border-line px-4 py-2 text-sm text-ink-3 hover:border-line">
                 Cancel
               </button>
             </div>
-            <p className="mt-2 text-[11px] text-slate-400">
+            <p className="mt-2 text-[11px] text-ink-3">
               To capture an actual signature, send the client through{" "}
               <Link href="/signup" className="text-accent-600 hover:underline">
                 signup
@@ -434,7 +668,7 @@ function OwnerProfile() {
               setDogForm({ ...EMPTY_DOG, last_name: dogs[0]?.last_name ?? "" });
               setAddingDog(true);
             }}
-            className="mt-3 rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:border-accent-300">
+            className="mt-3 rounded-xl border border-line px-4 py-2 text-sm font-medium text-ink-2 hover:border-accent-300">
             + Add a dog
           </button>
         )}
@@ -497,6 +731,39 @@ function OwnerProfile() {
         </div>
       </Section>
 
+      {/* Veterinarian */}
+      <Section
+        title="Veterinarian"
+        blurb="Who we call in an emergency. A dog with a different vet has it on their own profile."
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Hospital name">
+            <input
+              value={form.vet_name}
+              onChange={(e) => setForm({ ...form, vet_name: e.target.value })}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Phone">
+            <input
+              value={form.vet_phone}
+              onChange={(e) => setForm({ ...form, vet_phone: e.target.value })}
+              inputMode="tel"
+              className={inputClass}
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="Address">
+              <input
+                value={form.vet_address}
+                onChange={(e) => setForm({ ...form, vet_address: e.target.value })}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </div>
+      </Section>
+
       {/* Emergency contact */}
       <Section title="Emergency contact">
         <div className="grid gap-3 sm:grid-cols-3">
@@ -531,6 +798,16 @@ function OwnerProfile() {
           </Field>
         </div>
         <div className="mt-3">
+          <Field label="How they heard about us">
+            <ChoiceWithOther
+              options={HEARD_ABOUT}
+              value={form.heard_about}
+              onChange={(v) => setForm({ ...form, heard_about: v })}
+              ariaLabel="How they heard about us"
+            />
+          </Field>
+        </div>
+        <div className="mt-3">
           <Field label="Notes">
             <textarea
               value={form.notes}
@@ -559,7 +836,7 @@ function OwnerProfile() {
       {/* Upcoming reservations */}
       <Section title="Upcoming reservations" count={upcoming.length}>
         {upcoming.length === 0 ? (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-ink-3">
             No upcoming stays for any of their dogs.
           </p>
         ) : (
@@ -567,11 +844,11 @@ function OwnerProfile() {
             {upcoming.map((b) => (
               <li
                 key={b.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 px-3.5 py-2.5 text-sm">
-                <span className="font-medium text-slate-800">
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line-soft px-3.5 py-2.5 text-sm">
+                <span className="font-medium text-ink">
                   🛏️ {b.dog_name}
                 </span>
-                <span className="text-slate-600">
+                <span className="text-ink-2">
                   {prettyDateKey(b.start_date)} → {prettyDateKey(b.end_date)}
                 </span>
                 <Link
@@ -588,17 +865,28 @@ function OwnerProfile() {
       {/* Packages */}
       <Section title="Packages" count={packages.length}>
         {packages.length === 0 ? (
-          <p className="text-sm text-slate-400">No packages on this number.</p>
+          <p className="text-sm text-ink-3">No packages on this number.</p>
         ) : (
           <ul className="space-y-2">
             {packages.map((p) => (
               <li
                 key={p.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 px-3.5 py-2.5 text-sm">
-                <span className="text-slate-700">
-                  📦{" "}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line-soft px-3.5 py-2.5 text-sm">
+                <span className="flex flex-wrap items-center gap-2 text-ink-2">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                      packageKind(p) === "walk"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-accent-50 text-accent-700"
+                    }`}
+                  >
+                    {packageKind(p) === "walk" ? "🚶 Walks" : "🐕 Daycare"}
+                  </span>
                   {p.dog_name || (
-                    <span className="text-slate-400">Shared across dogs</span>
+                    <span className="text-ink-3">Shared across dogs</span>
+                  )}
+                  {p.price != null && (
+                    <span className="text-xs text-ink-3">${p.price.toFixed(2)}</span>
                   )}
                 </span>
                 <span
@@ -607,7 +895,8 @@ function OwnerProfile() {
                       ? "bg-accent-50 text-accent-700"
                       : "bg-rose-50 text-rose-600"
                   }`}>
-                  {daysLeft(p)} of {p.total_days} left
+                  {daysLeft(p)} of {p.total_days}{" "}
+                  {packageKind(p) === "walk" ? "walks" : "days"} left
                 </span>
               </li>
             ))}
@@ -619,7 +908,7 @@ function OwnerProfile() {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+  "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
 
 function trimmed(form: typeof EMPTY_OWNER) {
   return Object.fromEntries(
@@ -630,27 +919,47 @@ function trimmed(form: typeof EMPTY_OWNER) {
 function Section({
   title,
   count,
+  blurb,
   children,
 }: {
   title: string;
   count?: number;
+  blurb?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+    <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
         {title}
-        {count != null && <span className="ml-1.5 font-normal text-slate-300">({count})</span>}
+        {count != null && <span className="ml-1.5 font-normal text-ink-3">({count})</span>}
       </h2>
+      {blurb ? <p className="mb-3 mt-1 text-[11px] text-ink-3">{blurb}</p> : <div className="mb-3" />}
       {children}
     </section>
+  );
+}
+
+function Figure({
+  label,
+  value,
+  tone = "text-ink",
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-line-soft px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-ink-3">{label}</p>
+      <p className={`text-lg font-semibold ${tone}`}>{value}</p>
+    </div>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-[11px] text-slate-400">{label}</label>
+      <label className="mb-1 block text-[11px] text-ink-3">{label}</label>
       {children}
     </div>
   );
@@ -695,11 +1004,11 @@ function DogFields({
           type="checkbox"
           checked={form.waiver_on_file}
           onChange={(e) => setForm({ ...form, waiver_on_file: e.target.checked })}
-          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-accent-500 focus:ring-accent-100"
+          className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
         />
-        <span className="text-xs text-slate-600">
+        <span className="text-xs text-ink-2">
           Waiver signed and on file
-          <span className="block text-[11px] text-slate-400">
+          <span className="block text-[11px] text-ink-3">
             Tick this only if the client has actually signed — on paper or at another location. It
             clears the &ldquo;no waiver&rdquo; flag without capturing a signature.
           </span>

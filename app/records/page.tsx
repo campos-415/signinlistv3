@@ -8,16 +8,29 @@ import {
   ADDONS,
   BathSize,
   Boarding,
-  Client,
+  Dog,
   Package,
   ServiceType,
   SERVICE_TYPES,
+  PackageKind,
+  PackageUse,
   SignInRecord,
   WalkLog,
 } from "@/types";
 import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
-import { findClient, findPackageFor, packageBoughtOn } from "@/lib/clients";
+import {
+  daysLeft,
+  findDog,
+  findPackageFor,
+  eligiblePackagesFor,
+  packageBillingPickUp,
+  packageLabel,
+  packageKind,
+  packagesBoughtOn,
+} from "@/lib/dogs";
 import StaffNav from "@/components/StaffNav";
+import DateField from "@/components/DateField";
+import { useSettings } from "@/components/SettingsProvider";
 import DogLink from "@/components/DogLink";
 import StaffCheckIn from "@/components/StaffCheckIn";
 
@@ -85,9 +98,12 @@ type WalkField = "walk_out" | "walk_in" | "walk_staff_initials";
 interface WalkRow {
   key: string;
   service: "daycare" | "boarding";
+  // Present on daycare rows: the merged visit behind this walk, so its walk
+  // package can be resolved and changed from the log.
+  row?: MergedRow;
   dogName: string;
   phone: string;
-  clientId?: string;
+  dogId?: string;
   handler: string;
   slot: string;
   out: string;
@@ -117,6 +133,9 @@ interface MergedRow {
   walk_in?: string | null;
   walk_staff_initials?: string | null;
   pickup_window?: string | null;
+  // Set when the pick-up landed on a different day from the drop-off, so a
+  // multi-day boarding stay still appears on the day the dog went home.
+  pickUpDateKey?: string;
 }
 
 interface EditState {
@@ -129,6 +148,7 @@ interface EditState {
   pick_up_time: string;
   price: string; // input value; parsed to number/null on save
   bath_size: BathSize | null;
+  package_id: string; // "" means this visit spent no package day
 }
 
 function localDateKey(iso: string): string {
@@ -136,51 +156,83 @@ function localDateKey(iso: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// One row per VISIT, not per dog-day. Rows are paired sequentially: a
+// drop-off opens a visit and the next pick-up for that dog closes it.
+//
+// Keying on dog+phone+date instead would collapse a dog that comes back a
+// second time the same day into a single row — the second drop-off
+// overwrites the first, the last pick-up's price wins, and one of the two
+// visits is invisible along with whatever it was charged.
 function mergeRecords(records: SignInRecord[]): MergedRow[] {
   const sorted = [...records].sort(
     (a, b) => new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime()
   );
-  const map = new Map<string, MergedRow>();
+
+  const byDog = new Map<string, SignInRecord[]>();
   for (const r of sorted) {
     if (!r.created_at) continue;
-    const dateKey = localDateKey(r.created_at);
-    const key = `${r.dog_name}|${r.phone}|${dateKey}`;
-    let row = map.get(key);
-    if (!row) {
-      row = {
-        key,
-        dateKey,
-        dog_name: r.dog_name,
-        last_name: r.last_name,
-        drop_off_by: "",
-        pick_up_by: "",
-        phone: r.phone,
-        allIds: [],
-      };
-      map.set(key, row);
-    }
-    if (r.id) row.allIds.push(r.id);
-    if (r.action === "drop_off") {
-      row.drop_off_id = r.id;
-      row.drop_off_time = r.created_at;
-      row.drop_off_by = r.drop_off_by || row.drop_off_by;
-      row.service_type = r.service_type;
-      row.addons = r.addons;
-      row.bath_size = r.bath_size ?? row.bath_size;
-      row.walk_out = r.walk_out ?? row.walk_out;
-      row.walk_in = r.walk_in ?? row.walk_in;
-      row.walk_staff_initials = r.walk_staff_initials ?? row.walk_staff_initials;
-      row.pickup_window = r.pickup_window ?? row.pickup_window;
-    } else {
-      row.pick_up_id = r.id;
-      row.pick_up_time = r.created_at;
-      row.pick_up_by = r.pick_up_by || row.pick_up_by;
-      row.price = r.price ?? row.price;
-      if (!row.service_type) row.service_type = r.service_type;
-    }
+    const k = `${r.dog_name.trim().toLowerCase()}|${r.phone}`;
+    const list = byDog.get(k) ?? [];
+    list.push(r);
+    byDog.set(k, list);
   }
-  return Array.from(map.values()).sort(
-    (a, b) => new Date(b.drop_off_time ?? b.pick_up_time ?? 0).getTime() - new Date(a.drop_off_time ?? a.pick_up_time ?? 0).getTime()
+
+  const rows: MergedRow[] = [];
+
+  function blank(r: SignInRecord): MergedRow {
+    return {
+      key: `${r.dog_name}|${r.phone}|${r.id ?? r.created_at}`,
+      dateKey: localDateKey(r.created_at as string),
+      dog_name: r.dog_name,
+      last_name: r.last_name,
+      drop_off_by: "",
+      pick_up_by: "",
+      phone: r.phone,
+      allIds: [],
+    };
+  }
+
+  byDog.forEach((visits) => {
+    let open: MergedRow | null = null;
+    for (const r of visits) {
+      if (r.action === "drop_off") {
+        // A drop-off with no pick-up before it means the previous visit was
+        // never closed out — keep it rather than losing it to the overwrite.
+        if (open) rows.push(open);
+        open = blank(r);
+        if (r.id) open.allIds.push(r.id);
+        open.drop_off_id = r.id;
+        open.drop_off_time = r.created_at;
+        open.drop_off_by = r.drop_off_by || "";
+        open.service_type = r.service_type;
+        open.addons = r.addons;
+        open.bath_size = r.bath_size ?? null;
+        open.walk_out = r.walk_out ?? null;
+        open.walk_in = r.walk_in ?? null;
+        open.walk_staff_initials = r.walk_staff_initials ?? null;
+        open.pickup_window = r.pickup_window ?? null;
+      } else {
+        // A pick-up with no open drop-off is a manual correction; it still
+        // gets a row so its price is visible.
+        const row = open ?? blank(r);
+        if (r.id) row.allIds.push(r.id);
+        row.pick_up_id = r.id;
+        row.pick_up_time = r.created_at;
+        row.pick_up_by = r.pick_up_by || row.pick_up_by;
+        row.price = r.price ?? row.price;
+        row.pickUpDateKey = localDateKey(r.created_at as string);
+        if (!row.service_type) row.service_type = r.service_type;
+        rows.push(row);
+        open = null;
+      }
+    }
+    if (open) rows.push(open);
+  });
+
+  return rows.sort(
+    (a, b) =>
+      new Date(b.drop_off_time ?? b.pick_up_time ?? 0).getTime() -
+      new Date(a.drop_off_time ?? a.pick_up_time ?? 0).getTime()
   );
 }
 
@@ -200,16 +252,16 @@ function SortableTh({
 }) {
   const active = sort?.key === sortKey;
   return (
-    <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+    <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
       <button
         onClick={() => onSort(sortKey)}
         title={`Sort by ${label.replace(/^\W+\s*/, "")}`}
-        className={`inline-flex items-center gap-1 uppercase tracking-wide transition hover:text-slate-600 print:pointer-events-none ${
+        className={`inline-flex items-center gap-1 uppercase tracking-wide transition hover:text-ink-2 print:pointer-events-none ${
           active ? "font-semibold text-accent-600" : ""
         }`}
       >
         {label}
-        <span className={`text-[9px] print:hidden ${active ? "" : "text-slate-300"}`}>
+        <span className={`text-[9px] print:hidden ${active ? "" : "text-ink-3"}`}>
           {active ? (sort!.dir === "asc" ? "▲" : "▼") : "↕"}
         </span>
       </button>
@@ -237,11 +289,17 @@ function isoToTimeInput(iso?: string): string {
 }
 
 export default function RecordsPage() {
+  const { settings } = useSettings();
+  const business = settings.business;
+
   const [unlocked, setUnlocked] = useState(false);
   const [entered, setEntered] = useState("");
   const [error, setError] = useState("");
   const [records, setRecords] = useState<SignInRecord[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
+  // The package-use ledger, so a visit's row knows which package it spent
+  // and staff can move that use to a different one.
+  const [uses, setUses] = useState<PackageUse[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => {
     const d = new Date();
@@ -274,7 +332,7 @@ export default function RecordsPage() {
     }
     if (params.get("desk")) setDeskOpen(true);
   }, []);
-  const [clients, setClients] = useState<Client[]>([]);
+  const [dogs, setDogs] = useState<Dog[]>([]);
   const [boardings, setBoardings] = useState<Boarding[]>([]);
   const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
 
@@ -290,20 +348,23 @@ export default function RecordsPage() {
     setLoading(true);
     try {
       const supabase = getSupabase();
-      const [signinsRes, packagesRes, clientsRes, boardingsRes] = await Promise.all([
+      const [signinsRes, usesRes, packagesRes, clientsRes, boardingsRes] = await Promise.all([
         supabase.from("signins").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase.from("package_uses").select("*").limit(2000),
         supabase.from("packages").select("*"),
         // Clients back the hover cards and profile links on dog names.
-        supabase.from("clients").select("*"),
+        supabase.from("dogs").select("*"),
         supabase.from("boardings").select("*"),
       ]);
       if (signinsRes.error) throw signinsRes.error;
+      if (usesRes.error) throw usesRes.error;
       if (packagesRes.error) throw packagesRes.error;
+      setUses((usesRes.data as PackageUse[]) ?? []);
       if (clientsRes.error) throw clientsRes.error;
       if (boardingsRes.error) throw boardingsRes.error;
       setRecords((signinsRes.data as SignInRecord[]) ?? []);
       setPackages((packagesRes.data as Package[]) ?? []);
-      setClients((clientsRes.data as Client[]) ?? []);
+      setDogs((clientsRes.data as Dog[]) ?? []);
       setBoardings((boardingsRes.data as Boarding[]) ?? []);
     } catch (e) {
       console.error("Loading records failed:", e);
@@ -384,6 +445,90 @@ export default function RecordsPage() {
   // reconstructed from the actual recorded times once it has. A package
   // only ever covers a FULL daycare day, decided against whichever
   // pick-up time is used here.
+  // The ledger row this visit spent, for a given package kind.
+  //
+  // Filtering by kind matters: a visit can spend a daycare day AND a walk on
+  // the same pick-up, and the records picker only offers daycare packages —
+  // without it a walk use gets handed to a daycare dropdown that has no such
+  // option.
+  //
+  // `signin_id` pins a use to one exact visit. Rows written before that
+  // column existed only have dog + date, which is ambiguous once a dog
+  // visits twice in a day; rather than guess wrong, those resolve to null and
+  // the picker shows "No package used" until staff set it explicitly.
+  function useForRow(r: MergedRow, kind: PackageKind = "daycare"): PackageUse | null {
+    const ofKind = (u: PackageUse) => {
+      const pkg = packages.find((p) => p.id === u.package_id);
+      return !!pkg && packageKind(pkg) === kind;
+    };
+
+    if (r.pick_up_id) {
+      const exact = uses.find((u) => u.signin_id === r.pick_up_id && ofKind(u));
+      if (exact) return exact;
+    }
+
+    const dog = findDog(dogs, { dogName: r.dog_name, phone: r.phone });
+    const legacy = uses.filter(
+      (u) =>
+        !u.signin_id &&
+        u.used_on === r.dateKey &&
+        ofKind(u) &&
+        (dog?.id
+          ? u.dog_id === dog.id
+          : (u.dog_name ?? "").trim().toLowerCase() === r.dog_name.trim().toLowerCase())
+    );
+    // Exactly one candidate is unambiguous; more than one isn't attributable.
+    return legacy.length === 1 ? legacy[0] : null;
+  }
+
+  // Moves a visit's package day from one block to another: refund the old,
+  // deduct the new, and repoint the ledger row so history stays truthful.
+  async function reassignPackage(
+    r: MergedRow,
+    nextPackageId: string,
+    kind: PackageKind = "daycare"
+  ) {
+    const existing = useForRow(r, kind);
+    const currentId = existing?.package_id ?? "";
+    if (currentId === nextPackageId) return;
+    const supabase = getSupabase();
+
+    const older = packages.find((p) => p.id === currentId);
+    if (older?.id) {
+      await supabase
+        .from("packages")
+        .update({ days_used: Math.max(0, older.days_used - 1) })
+        .eq("id", older.id);
+    }
+    const next = packages.find((p) => p.id === nextPackageId);
+    if (next?.id) {
+      await supabase
+        .from("packages")
+        .update({ days_used: Math.min(next.total_days, next.days_used + 1) })
+        .eq("id", next.id);
+    }
+
+    if (existing?.id && nextPackageId) {
+      await supabase.from("package_uses").update({ package_id: nextPackageId }).eq("id", existing.id);
+    } else if (existing?.id && !nextPackageId) {
+      await supabase.from("package_uses").delete().eq("id", existing.id);
+    } else if (nextPackageId) {
+      await supabase.from("package_uses").insert({
+        package_id: nextPackageId,
+        dog_id: findDog(dogs, { dogName: r.dog_name, phone: r.phone })?.id ?? null,
+        signin_id: r.pick_up_id ?? null,
+        dog_name: r.dog_name,
+        used_on: r.dateKey,
+      });
+    }
+    if (r.pick_up_id) {
+      await supabase
+        .from("signins")
+        .update({ package_id: nextPackageId || null })
+        .eq("id", r.pick_up_id);
+    }
+  }
+
   function computeEstimate(r: MergedRow, pkg: Package | null): PriceEstimate | null {
     if (!r.drop_off_time || !r.service_type) return null;
     const dropOff = new Date(r.drop_off_time);
@@ -395,7 +540,28 @@ export default function RecordsPage() {
     const usingPackage = !!pkg && r.service_type === "daycare" && isFullDayVisit(dropOff, pickUp);
     // A package bought on this same day is part of what the client pays for
     // this visit; one bought earlier isn't — those days are already paid for.
-    const sold = packageBoughtOn(packages, r.phone, r.dog_name, r.dateKey);
+    // Only sales not already charged to an earlier pick-up that day — a dog
+    // that came back for a second visit shouldn't be billed the package twice.
+    // A sale belongs to exactly one visit — the first pick-up after it. Show
+    // it on that visit's estimate, and on a not-yet-picked-up visit when no
+    // pick-up has claimed it yet.
+    const pricedPickUpsThatDay = records.filter(
+      (s2) =>
+        s2.phone === r.phone &&
+        s2.action === "pick_up" &&
+        s2.price != null &&
+        !!s2.created_at &&
+        localDateKey(s2.created_at) === r.dateKey
+    );
+    const sold = packagesBoughtOn(packages, r.phone, r.dog_name, r.dateKey).filter((p) => {
+      const owner = packageBillingPickUp(p, pricedPickUpsThatDay);
+      return owner ? owner.id === r.pick_up_id : !r.pick_up_id;
+    });
+    // A walk package covers the walk add-on the same way a daycare package
+    // covers the base rate.
+    const walkPkg = findPackageFor(packages, r.phone, r.dog_name, "walk");
+    const walkCovered =
+      !!walkPkg && (r.addons ?? []).includes("walk") && daysLeft(walkPkg) > 0;
     return estimatePrice(
       r.service_type,
       dropOff,
@@ -404,7 +570,12 @@ export default function RecordsPage() {
       usingPackage,
       r.bath_size ?? null,
       pickedUp,
-      sold ? { days: sold.total_days, price: sold.price ?? 0 } : null
+      sold.map((p) => ({
+        days: p.total_days,
+        price: p.price ?? 0,
+        unit: packageKind(p) === "walk" ? "walks" : "days",
+      })),
+      walkCovered
     );
   }
 
@@ -412,7 +583,7 @@ export default function RecordsPage() {
   const SERVICE_ORDER: Record<string, number> = { daycare: 0, boarding: 1, meet_greet: 2 };
   const filtered = useMemo(() => {
     const rows = merged
-      .filter((r) => r.dateKey === selectedDate)
+      .filter((r) => r.dateKey === selectedDate || r.pickUpDateKey === selectedDate)
       .filter((r) => !serviceFilter || r.service_type === serviceFilter);
 
     // No explicit sort means the default view: grouped by service, most
@@ -489,9 +660,10 @@ export default function RecordsPage() {
       .map((r) => ({
         key: `daycare-${r.key}`,
         service: "daycare",
+        row: r,
         dogName: r.dog_name,
         phone: r.phone,
-        clientId: undefined,
+        dogId: undefined,
         handler: r.drop_off_by,
         slot: "Walk",
         out: r.walk_out ?? "",
@@ -512,7 +684,7 @@ export default function RecordsPage() {
           service: "boarding",
           dogName: b.dog_name,
           phone: b.phone,
-          clientId: b.client_id ?? undefined,
+          dogId: b.dog_id ?? undefined,
           handler: b.last_name,
           slot: perDay > 1 ? `Walk ${i + 1} of ${perDay}` : "Walk",
           out: entry?.walk_out ?? "",
@@ -554,6 +726,7 @@ export default function RecordsPage() {
       pick_up_time: isoToTimeInput(row.pick_up_time),
       price: row.price != null ? String(row.price) : "",
       bath_size: row.bath_size ?? null,
+      package_id: useForRow(row, "daycare")?.package_id ?? "",
     });
   }
 
@@ -619,12 +792,19 @@ export default function RecordsPage() {
             service_type: editState.service_type,
             price: parsedPrice !== null && !Number.isNaN(parsedPrice) ? parsedPrice : null,
             created_at: editState.pick_up_time
-              ? combineDateTime(row.dateKey, editState.pick_up_time)
+              // The pick-up keeps its own day — a boarding stay's pick-up is
+              // often not the drop-off date, and reusing that would drag it
+              // back across the calendar.
+              ? combineDateTime(row.pickUpDateKey ?? row.dateKey, editState.pick_up_time)
               : row.pick_up_time,
           })
           .eq("id", row.pick_up_id);
         if (err) throw err;
       }
+
+      // Moving the day between packages touches three tables, so it runs as
+      // its own step rather than being folded into the row updates above.
+      await reassignPackage(row, editState.package_id);
 
       cancelEdit();
       loadAll();
@@ -728,14 +908,14 @@ export default function RecordsPage() {
   if (!unlocked) {
     return (
       <div className="mx-auto mt-28 flex max-w-xs flex-col gap-3 px-5">
-        <h1 className="font-display text-xl font-semibold text-slate-900">Staff records</h1>
+        <h1 className="font-display text-xl font-semibold text-ink">Staff records</h1>
         <input
           type="password"
           value={entered}
           onChange={(e) => setEntered(e.target.value)}
           placeholder="Passcode"
           onKeyDown={(e) => e.key === "Enter" && checkPasscode()}
-          className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+          className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
         />
         <button
           onClick={checkPasscode}
@@ -758,7 +938,7 @@ export default function RecordsPage() {
           thead { display: table-header-group; }
           tr { break-inside: avoid; }
           .print-header {
-            background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+            background: linear-gradient(135deg, rgb(var(--print-from)) 0%, rgb(var(--print-to)) 100%);
             border-radius: 20px;
             position: relative;
             overflow: hidden;
@@ -769,10 +949,10 @@ export default function RecordsPage() {
             opacity: 0.15;
             transform: rotate(-15deg);
           }
-          tbody tr:nth-child(even) td { background: #fff7ed; }
+          tbody tr:nth-child(even) td { background: rgb(var(--print-tint)); }
           .print-footer {
             text-align: center;
-            color: #b45309;
+            color: rgb(var(--print-ink));
             font-size: 8px;
             margin-top: 10px;
           }
@@ -782,7 +962,7 @@ export default function RecordsPage() {
       <StaffNav current="/records" />
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <h1 className="font-display text-xl font-semibold text-slate-900">
+        <h1 className="font-display text-xl font-semibold text-ink">
           {view === "signins" ? "Sign-in records" : "Walk log"}
           {view === "signins" && stillInCount > 0 && (
             <span className="ml-2.5 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
@@ -791,15 +971,16 @@ export default function RecordsPage() {
           )}
         </h1>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
+          <DateField
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+            onChange={setSelectedDate}
+            wrapperClassName="w-40"
+            className="rounded-xl border border-line bg-surface px-3.5 py-2 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+            ariaLabel="Date"
           />
           <button
             onClick={() => setView(view === "signins" ? "walklog" : "signins")}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:border-slate-300">
+            className="rounded-xl border border-line bg-surface px-4 py-2 text-sm font-medium text-ink-2 hover:border-line">
             {view === "signins" ? "🚶 Walk log" : "📋 Sign-in list"}
           </button>
           <button
@@ -807,7 +988,7 @@ export default function RecordsPage() {
             className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
               deskOpen
                 ? "bg-slate-700 text-white shadow-card hover:bg-slate-800"
-                : "border border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                : "border border-line bg-surface text-ink-2 hover:border-line"
             }`}>
             {deskOpen ? "✕ Close front desk" : "🚗 Sign a dog in / out"}
           </button>
@@ -839,19 +1020,19 @@ export default function RecordsPage() {
               </span>
               <button
                 onClick={() => setServiceFilter(null)}
-                className="text-xs font-medium text-slate-400 hover:text-slate-600">
+                className="text-xs font-medium text-ink-3 hover:text-ink-2">
                 Show all services
               </button>
             </>
           )}
           {sort && (
             <>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              <span className="rounded-full bg-surface-3 px-3 py-1 text-xs font-medium text-ink-2">
                 Sorted by {SORT_LABELS[sort.key]} {sort.dir === "asc" ? "↑" : "↓"}
               </span>
               <button
                 onClick={() => setSort(null)}
-                className="text-xs font-medium text-slate-400 hover:text-slate-600">
+                className="text-xs font-medium text-ink-3 hover:text-ink-2">
                 Back to grouped by service
               </button>
             </>
@@ -869,7 +1050,7 @@ export default function RecordsPage() {
         <div className="relative flex items-center justify-between">
           <div>
             <h2 className="font-display text-2xl font-bold text-white">
-              🐾 Lombard Doggy Daycare
+              🐾 {business.name}
             </h2>
             <p className="text-base font-medium text-white/90">
               {view === "signins" ? "Sign-in list" : "Daycare walk log"} — {prettyDate}
@@ -887,7 +1068,7 @@ export default function RecordsPage() {
       </div>
 
       {loading && (
-        <p className="text-sm text-slate-500 print:hidden">Loading…</p>
+        <p className="text-sm text-ink-3 print:hidden">Loading…</p>
       )}
       {error && (
         <p className="text-xs font-medium text-rose-500 print:hidden">
@@ -896,10 +1077,10 @@ export default function RecordsPage() {
       )}
 
       {view === "signins" && (
-      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-card print:overflow-visible print:rounded-2xl print:border print:border-amber-200 print:shadow-none">
+      <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card print:overflow-visible print:rounded-2xl print:border print:border-paper-rule print:shadow-none">
         <table className="w-full text-left text-sm print:border-collapse">
           <thead>
-            <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400 print:border-b-2 print:border-amber-300 print:bg-amber-100 print:text-amber-900">
+            <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
               <SortableTh label="🐕 Dog" sortKey="dog_name" sort={sort} onSort={toggleSort} />
               <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
               <SortableTh label="Last name" sortKey="last_name" sort={sort} onSort={toggleSort} />
@@ -908,10 +1089,10 @@ export default function RecordsPage() {
               <SortableTh label="Drop off" sortKey="drop_off_time" sort={sort} onSort={toggleSort} />
               <SortableTh label="Picked up by" sortKey="pick_up_by" sort={sort} onSort={toggleSort} />
               <SortableTh label="Pick up" sortKey="pick_up_time" sort={sort} onSort={toggleSort} />
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+              <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                 Add-ons
               </th>
-              <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+              <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                 Package
               </th>
               <SortableTh label="Price" sortKey="price" sort={sort} onSort={toggleSort} />
@@ -937,7 +1118,7 @@ export default function RecordsPage() {
                 <tr key={`${r.key}-group`}>
                   <td
                     colSpan={13}
-                    className="bg-slate-100 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 print:border print:border-amber-200 print:bg-amber-50 print:px-2 print:text-amber-900">
+                    className="bg-surface-3 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-3 print:border print:border-paper-rule print:bg-paper-band print:px-2 print:text-paper-ink">
                     {groupInfo
                       ? `${groupInfo.icon} ${groupInfo.label}`
                       : "Other"}
@@ -949,14 +1130,14 @@ export default function RecordsPage() {
                 return (
                   <Fragment key={r.key}>
                     {groupHeader}
-                    <tr className="border-b border-slate-100 bg-accent-50/40 align-top print:hidden">
-                      <td className="px-4 py-3 font-medium text-slate-800">
+                    <tr className="border-b border-line-soft bg-accent-50/40 align-top print:hidden">
+                      <td className="px-4 py-3 font-medium text-ink">
                         {r.dog_name}
                       </td>
                       {/* Status is derived from the times below, so it's shown
                           rather than edited — keeps the columns aligned. */}
                       <td className="px-4 py-3">
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-3">
                           {isStillIn(r) ? "🟢 In" : "✓ Left"}
                         </span>
                       </td>
@@ -969,10 +1150,10 @@ export default function RecordsPage() {
                               last_name: e.target.value,
                             })
                           }
-                          className="w-28 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                          className="w-28 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                         />
                       </td>
-                      <td className="px-4 py-3 text-slate-500">{r.phone}</td>
+                      <td className="px-4 py-3 text-ink-3">{r.phone}</td>
                       <td className="px-4 py-3">
                         <input
                           value={editState.drop_off_by}
@@ -982,7 +1163,7 @@ export default function RecordsPage() {
                               drop_off_by: e.target.value,
                             })
                           }
-                          className="w-28 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                          className="w-28 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                         />
                       </td>
 
@@ -997,7 +1178,7 @@ export default function RecordsPage() {
                                 drop_off_time: e.target.value,
                               })
                             }
-                            className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                            className="w-24 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                           />
                         ) : (
                           "—"
@@ -1012,7 +1193,7 @@ export default function RecordsPage() {
                               pick_up_by: e.target.value,
                             })
                           }
-                          className="w-28 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                          className="w-28 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                         />
                       </td>
                       <td className="px-4 py-3">
@@ -1026,7 +1207,7 @@ export default function RecordsPage() {
                                 pick_up_time: e.target.value,
                               })
                             }
-                            className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                            className="w-24 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                           />
                         ) : (
                           "—"
@@ -1041,7 +1222,7 @@ export default function RecordsPage() {
                               className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
                                 editState.addons.includes(a.key)
                                   ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                                  : "border-slate-200 bg-white text-slate-500"
+                                  : "border-line bg-surface text-ink-3"
                               }`}>
                               {a.label}
                             </button>
@@ -1049,7 +1230,7 @@ export default function RecordsPage() {
                         </div>
                         {editState.addons.includes("bath") && (
                           <div className="mt-1.5 flex items-center gap-1">
-                            <span className="text-[10px] text-slate-400">
+                            <span className="text-[10px] text-ink-3">
                               Bath size:
                             </span>
                             {BATH_SIZES.map((size) => (
@@ -1059,7 +1240,7 @@ export default function RecordsPage() {
                                 className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
                                   editState.bath_size === size
                                     ? "border-sky-500 bg-sky-50 text-sky-700"
-                                    : "border-slate-200 bg-white text-slate-500"
+                                    : "border-line bg-surface text-ink-3"
                                 }`}>
                                 {size} ${BATH_PRICES[size]}
                               </button>
@@ -1067,8 +1248,34 @@ export default function RecordsPage() {
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-slate-500">
-                        {pkg ? `${left} of ${pkg.total_days} left` : "—"}
+                      <td className="px-4 py-3 text-ink-3">
+                        {/* Which package this visit spent. Changing it refunds
+                            the old block and deducts the new one. */}
+                        {(() => {
+                          const options = eligiblePackagesFor(
+                            packages,
+                            r.phone,
+                            r.dog_name,
+                            "daycare"
+                          );
+                          if (!options.length) return "—";
+                          return (
+                            <select
+                              value={editState.package_id}
+                              onChange={(e) =>
+                                setEditState({ ...editState, package_id: e.target.value })
+                              }
+                              className="w-full rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500"
+                            >
+                              <option value="">No package used</option>
+                              {options.map((p) => (
+                                <option key={p.id} value={p.id ?? ""}>
+                                  {packageLabel(p)}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3">
                         {r.pick_up_id ? (
@@ -1084,20 +1291,20 @@ export default function RecordsPage() {
                               })
                             }
                             placeholder="0.00"
-                            className="w-20 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                            className="w-20 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
                           />
                         ) : (
                           (() => {
                             const liveEstimate = computeEstimate(r, pkg);
                             return liveEstimate ? (
                               <span
-                                className="text-xs text-slate-400"
+                                className="text-xs text-ink-3"
                                 title="Live estimate — finalizes at pick-up">
                                 ~${liveEstimate.amount.toFixed(2)}
                               </span>
                             ) : (
                               <span
-                                className="text-xs text-slate-400"
+                                className="text-xs text-ink-3"
                                 title="Set once this visit has a pick-up">
                                 —
                               </span>
@@ -1115,7 +1322,7 @@ export default function RecordsPage() {
                           </button>
                           <button
                             onClick={cancelEdit}
-                            className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-500 hover:border-slate-300">
+                            className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-3 hover:border-line">
                             Cancel
                           </button>
                         </div>
@@ -1132,57 +1339,58 @@ export default function RecordsPage() {
                   {/* A left edge and faint tint make the dogs still on site
                       scannable without reading the times column. */}
                   <tr
-                    className={`border-b border-slate-50 last:border-0 print:border-b-0 ${
+                    className={`border-b border-line-soft last:border-0 print:border-b-0 ${
                       stillIn
-                        ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 print:bg-transparent"
+                        ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 dark:bg-emerald-400/10 print:bg-transparent"
                         : "border-l-4 border-l-transparent"
                     }`}>
-                    <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
                       <DogLink
-                        client={findClient(clients, { dogName: r.dog_name, phone: r.phone })}
+                        dog={findDog(dogs, { dogName: r.dog_name, phone: r.phone })}
                         name={r.dog_name}
                         badges={{ packageDaysLeft: left }}
-                        className="font-medium text-slate-800"
+                        className="font-medium text-ink"
+                        avatar
                       />
                       {/* Sorting drops the service group bands, so carry the
                           service here instead of losing it. */}
                       {sort && groupInfo && (
-                        <span className="ml-1.5 text-[10px] font-normal text-slate-400">
+                        <span className="ml-1.5 text-[10px] font-normal text-ink-3">
                           {groupInfo.icon} {groupInfo.label}
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {stillIn ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-800 print:bg-transparent print:px-0 print:font-bold">
                           🟢 In
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 print:bg-transparent print:px-0">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-surface-3 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3 print:bg-transparent print:px-0">
                           ✓ Left
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.last_name}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.phone}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.drop_off_by || "—"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {timeOnly(r.drop_off_time)}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.pick_up_by || "—"}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {timeOnly(r.pick_up_time)}
                     </td>
 
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.addons && r.addons.length
                         ? r.addons
                           .map((a) =>
@@ -1209,14 +1417,14 @@ export default function RecordsPage() {
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {pkg ? `${left} / ${pkg.total_days}` : "—"}
                     </td>
-                    <td className="px-4 py-3 font-medium text-emerald-700 print:border print:border-amber-100 print:px-2 print:py-1.5 align-top">
+                    <td className="px-4 py-3 font-medium text-emerald-700 print:border print:border-paper-line print:px-2 print:py-1.5 align-top">
                       {(() => {
                         const estimate = computeEstimate(r, pkg);
                         if (!estimate)
-                          return <span className="text-slate-400">—</span>;
+                          return <span className="text-ink-3">—</span>;
                         const finalAmount =
                           r.price != null ? r.price : estimate.amount;
                         const isFinal = r.price != null;
@@ -1232,14 +1440,14 @@ export default function RecordsPage() {
                               className="inline-flex items-center gap-1 hover:underline ">
                               ${finalAmount.toFixed(2)}
                               {!isFinal && (
-                                <span className="text-[10px] font-normal text-slate-400 print:hidden">
+                                <span className="text-[10px] font-normal text-ink-3 print:hidden">
                                   (est.)
                                 </span>
                               )}
-                              <span className="text-slate-400 print:hidden">🧾</span>
+                              <span className="text-ink-3 print:hidden">🧾</span>
                             </button>
                             {showBreakdown && (
-                              <ul className="mt-1 space-y-0.5 text-[10px] font-normal text-slate-500">
+                              <ul className="mt-1 space-y-0.5 text-[10px] font-normal text-ink-3">
                                 {estimate.breakdown.map((item, i) => (
                                   <li
                                     key={i}
@@ -1251,7 +1459,7 @@ export default function RecordsPage() {
                                 {isFinal &&
                                   Math.abs(finalAmount - estimate.amount) >
                                     0.01 && (
-                                    <li className="pt-0.5 text-slate-400">
+                                    <li className="pt-0.5 text-ink-3">
                                       (price manually adjusted)
                                     </li>
                                   )}
@@ -1265,7 +1473,7 @@ export default function RecordsPage() {
                       <div className="flex gap-1.5">
                         <button
                           onClick={() => startEdit(r)}
-                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:border-slate-300">
+                          className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line">
                           Edit
                         </button>
                         <button
@@ -1284,7 +1492,7 @@ export default function RecordsPage() {
               <tr>
                 <td
                   colSpan={13}
-                  className="px-4 py-6 text-center text-sm text-slate-400 print:border print:border-amber-100">
+                  className="px-4 py-6 text-center text-sm text-ink-3 print:border print:border-paper-line">
                   No sign-ins for this date.
                 </td>
               </tr>
@@ -1295,33 +1503,34 @@ export default function RecordsPage() {
       )}
 
       {view === "walklog" && (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-card print:overflow-visible print:rounded-2xl print:border print:border-amber-200 print:shadow-none">
+        <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card print:overflow-visible print:rounded-2xl print:border print:border-paper-rule print:shadow-none">
           <table className="w-full text-left text-sm print:border-collapse">
             <thead>
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400 print:border-b-2 print:border-amber-300 print:bg-amber-100 print:text-amber-900">
-                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
+                <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                   🐕 Dog
                 </th>
-                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                   Walk
                 </th>
-                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                   Walk out
                 </th>
-                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                   Walk in
                 </th>
-                <th className="px-4 py-3 print:border print:border-amber-200 print:px-2 print:py-1.5">
+                <th className="px-4 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
                   Staff initials
                 </th>
+                <th className="px-4 py-3 print:hidden">Walk package</th>
               </tr>
             </thead>
             <tbody>
               {walkRows.map((r, i) => {
                 const showGroupHeader = i === 0 || r.service !== walkRows[i - 1].service;
                 const groupInfo = SERVICE_TYPES.find((s) => s.key === r.service);
-                const client = findClient(clients, {
-                  clientId: r.clientId,
+                const dog = findDog(dogs, {
+                  dogId: r.dogId,
                   dogName: r.dogName,
                   phone: r.phone,
                 });
@@ -1332,29 +1541,30 @@ export default function RecordsPage() {
                       <tr>
                         <td
                           colSpan={5}
-                          className="bg-slate-100 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 print:border print:border-amber-200 print:bg-amber-50 print:px-2 print:text-amber-900">
+                          className="bg-surface-3 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-3 print:border print:border-paper-rule print:bg-paper-band print:px-2 print:text-paper-ink">
                           {groupInfo ? `${groupInfo.icon} ${groupInfo.label}` : r.service}
                         </td>
                       </tr>
                     )}
-                    <tr className="border-b border-slate-50 last:border-0 print:border-b-0">
-                      <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-800 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                    <tr className="border-b border-line-soft last:border-0 print:border-b-0">
+                      <td className="whitespace-nowrap px-4 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
                         <DogLink
-                          client={client}
+                          dog={dog}
                           name={r.dogName}
                           badges={{
                             packageDaysLeft: pkg ? Math.max(0, pkg.total_days - pkg.days_used) : null,
                           }}
-                          className="font-medium text-slate-800"
+                          className="font-medium text-ink"
+                          avatar
                         />
-                        <span className="block text-[10px] font-normal text-slate-400">
+                        <span className="block text-[10px] font-normal text-ink-3">
                           {r.handler || "—"}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-slate-600 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                      <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                         {r.slot}
                       </td>
-                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                      <td className="px-4 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                         <WalkCell
                           cellKey={`${r.key}-out`}
                           value={r.out}
@@ -1362,7 +1572,7 @@ export default function RecordsPage() {
                           onSave={(v) => r.save("walk_out", v)}
                         />
                       </td>
-                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                      <td className="px-4 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                         <WalkCell
                           cellKey={`${r.key}-in`}
                           value={r.back}
@@ -1370,7 +1580,7 @@ export default function RecordsPage() {
                           onSave={(v) => r.save("walk_in", v)}
                         />
                       </td>
-                      <td className="px-4 py-3 print:border print:border-amber-100 print:px-2 print:py-1.5">
+                      <td className="px-4 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                         <WalkCell
                           cellKey={`${r.key}-by`}
                           value={r.initials}
@@ -1380,6 +1590,42 @@ export default function RecordsPage() {
                           onSave={(v) => r.save("walk_staff_initials", v)}
                         />
                       </td>
+                      <td className="whitespace-nowrap px-4 py-3 print:hidden">
+                        {/* A walk package covers the daycare walk add-on, so
+                            only daycare rows draw from one — boarding walks
+                            are billed per walk on the reservation. */}
+                        {r.service === "daycare" && r.row ? (
+                          (() => {
+                            const options = eligiblePackagesFor(
+                              packages,
+                              r.phone,
+                              r.dogName,
+                              "walk"
+                            );
+                            if (!options.length)
+                              return <span className="text-xs text-ink-3">—</span>;
+                            const current = useForRow(r.row!, "walk")?.package_id ?? "";
+                            return (
+                              <select
+                                value={current}
+                                onChange={async (e) => {
+                                  await reassignPackage(r.row!, e.target.value, "walk");
+                                  loadAll();
+                                }}
+                                className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500">
+                                <option value="">No walk package</option>
+                                {options.map((p) => (
+                                  <option key={p.id} value={p.id ?? ""}>
+                                    {packageLabel(p)}
+                                  </option>
+                                ))}
+                              </select>
+                            );
+                          })()
+                        ) : (
+                          <span className="text-xs text-ink-3">—</span>
+                        )}
+                      </td>
                     </tr>
                   </Fragment>
                 );
@@ -1387,8 +1633,8 @@ export default function RecordsPage() {
               {walkRows.length === 0 && !loading && (
                 <tr>
                   <td
-                    colSpan={5}
-                    className="px-4 py-6 text-center text-sm text-slate-400 print:border print:border-amber-100">
+                    colSpan={6}
+                    className="px-4 py-6 text-center text-sm text-ink-3 print:border print:border-paper-line">
                     No walks booked for this date.
                   </td>
                 </tr>
@@ -1432,7 +1678,7 @@ function WalkCell({
       onBlur={(e) => {
         if (e.target.value.trim() !== value.trim()) onSave(e.target.value);
       }}
-      className={`${width} rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs outline-none focus:border-accent-500 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
+      className={`${width} rounded-lg border border-line bg-surface px-2 py-1 text-xs outline-none focus:border-accent-500 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
     />
   );
 }

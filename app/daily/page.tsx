@@ -6,6 +6,8 @@ import { todayKey } from "@/lib/dates";
 import { Category, DailyInput, computeDailyTotals, loadDailyData } from "@/lib/daily";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
+import DateField from "@/components/DateField";
+import { useSettings } from "@/components/SettingsProvider";
 import BarChart from "@/components/BarChart";
 
 export default function DailyPage() {
@@ -17,6 +19,9 @@ export default function DailyPage() {
 }
 
 function Daily() {
+  const { settings } = useSettings();
+  const business = settings.business;
+
   const router = useRouter();
   const [selectedDate, setSelectedDate] = useState(todayKey());
   // Held whole rather than split into pieces and reassembled — the totals
@@ -108,10 +113,10 @@ function Daily() {
           @page { margin: 0.4in; size: portrait; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .print-header {
-            background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+            background: linear-gradient(135deg, rgb(var(--print-from)) 0%, rgb(var(--print-to)) 100%);
             border-radius: 20px;
           }
-          .print-footer { text-align: center; color: #b45309; font-size: 8px; margin-top: 10px; }
+          .print-footer { text-align: center; color: rgb(var(--print-ink)); font-size: 8px; margin-top: 10px; }
           section { break-inside: avoid; }
         }
       `}</style>
@@ -121,15 +126,16 @@ function Daily() {
       </div>
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <h1 className="font-display text-xl font-semibold text-slate-900">
+        <h1 className="font-display text-xl font-semibold text-ink">
           End-of-day report
         </h1>
         <div className="flex items-center gap-2">
-          <input
-            type="date"
+          <DateField
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+            onChange={setSelectedDate}
+            wrapperClassName="w-40"
+            className="rounded-xl border border-line bg-surface px-3.5 py-2 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+            ariaLabel="Date"
           />
           <button
             onClick={() => window.print()}
@@ -143,7 +149,7 @@ function Daily() {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-display text-2xl font-bold text-white">
-              🐾 Lombard Doggy Daycare
+              🐾 {business.name}
             </h2>
             <p className="text-base font-medium text-white/90">
               End of day — {prettyDate}
@@ -157,7 +163,7 @@ function Daily() {
       </div>
 
       {loading && (
-        <p className="text-sm text-slate-500 print:hidden">Loading…</p>
+        <p className="text-sm text-ink-3 print:hidden">Loading…</p>
       )}
       {error && (
         <p className="text-xs font-medium text-rose-500 print:hidden">
@@ -181,8 +187,8 @@ function Daily() {
         </div>
       )}
 
-      <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+      <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-3">
           Revenue by category
         </h2>
         <BarChart
@@ -192,7 +198,7 @@ function Daily() {
         />
         <table className="mt-4 w-full text-left text-sm">
           <thead>
-            <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+            <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
               <th className="py-2">Category</th>
               <th className="py-2 text-right">Count</th>
               <th className="py-2 text-right">Amount</th>
@@ -202,8 +208,8 @@ function Daily() {
             {categories.map((c) => (
               <tr
                 key={c.key}
-                className="border-b border-slate-50 last:border-0">
-                <td className="py-2 text-slate-700">
+                className="border-b border-line-soft last:border-0">
+                <td className="py-2 text-ink-2">
                   <span
                     className="mr-2 inline-block h-2.5 w-2.5 rounded-full align-middle"
                     style={{ backgroundColor: c.color }}
@@ -218,14 +224,14 @@ function Daily() {
                     c.label
                   )}
                 </td>
-                <td className="py-2 text-right text-slate-500">{c.count}</td>
-                <td className="py-2 text-right font-medium text-slate-800">
+                <td className="py-2 text-right text-ink-3">{c.count}</td>
+                <td className="py-2 text-right font-medium text-ink">
                   ${c.amount.toFixed(2)}
                 </td>
               </tr>
             ))}
-            <tr className="border-t-2 border-slate-200">
-              <td className="py-2 font-semibold text-slate-800">Total</td>
+            <tr className="border-t-2 border-line">
+              <td className="py-2 font-semibold text-ink">Total</td>
               <td />
               <td className="py-2 text-right font-semibold text-emerald-700">
                 ${revenueTotal.toFixed(2)}
@@ -234,16 +240,17 @@ function Daily() {
           </tbody>
         </table>
         {Math.abs(chargedTotal - revenueTotal) > 0.01 && (
-          <p className="mt-2 text-[11px] text-slate-400">
-            Charged at pick-up today: ${chargedTotal.toFixed(2)}. A gap is
-            normal — boarding is counted per night rather than at checkout, and
-            staff can edit a price on /records.
+          <p className="mt-2 text-[11px] text-ink-3">
+            Charged at pick-up today: ${chargedTotal.toFixed(2)}. A gap is normal — a package
+            sale is revenue on the day it&apos;s sold but isn&apos;t charged to a visit, a boarding
+            stay bills its whole total on the day the dog leaves, and staff can edit a price on
+            /records.
           </p>
         )}
       </section>
 
-      <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+      <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-3">
           Dogs by service
         </h2>
         <BarChart
@@ -251,7 +258,7 @@ function Daily() {
           format={(n) => String(n)}
           onSelect={openService}
         />
-        <p className="mt-2 text-[11px] text-slate-400 print:hidden">
+        <p className="mt-2 text-[11px] text-ink-3 print:hidden">
           Tap a service to open that day&apos;s sign-in list.
         </p>
       </section>
@@ -266,9 +273,9 @@ function Daily() {
 
 function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-card">
-      <p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p>
-      <p className={`text-xl font-semibold ${accent ? "text-emerald-700" : "text-slate-800"}`}>
+    <div className="rounded-2xl border border-line bg-surface px-4 py-3 shadow-card">
+      <p className="text-[11px] uppercase tracking-wide text-ink-3">{label}</p>
+      <p className={`text-xl font-semibold ${accent ? "text-emerald-700" : "text-ink"}`}>
         {value}
       </p>
     </div>

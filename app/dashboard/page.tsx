@@ -32,7 +32,13 @@ const DESTINATIONS: { href: string; icon: string; label: string; blurb: string }
   { href: "/boardings", icon: "🛏️", label: "Boardings", blurb: "Reservations and calendar" },
   { href: "/packages", icon: "📦", label: "Packages", blurb: "Sell and track package days" },
   { href: "/daily", icon: "📊", label: "Full day report", blurb: "Printable end-of-day totals" },
-  { href: "/signup", icon: "✍️", label: "New client signup", blurb: "Waiver and first dog" },
+  { href: "/signup", icon: "✍️", label: "New client signup", blurb: "Enrollment form at the desk" },
+  {
+    href: "/requests",
+    icon: "📥",
+    label: "Requests",
+    blurb: "Approve new clients and boarding dates",
+  },
 ];
 
 function Dashboard() {
@@ -80,7 +86,7 @@ function Dashboard() {
     for (const s of [...(data?.signins ?? [])].sort(
       (a, b) => new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime()
     )) {
-      if (s.client_id) lastAction.set(s.client_id, s);
+      if (s.dog_id) lastAction.set(s.dog_id, s);
     }
     return Array.from(lastAction.values()).filter((s) => s.action === "drop_off");
   }, [data]);
@@ -95,8 +101,8 @@ function Dashboard() {
       <StaffNav current="/dashboard" />
 
       <div className="mb-6">
-        <h1 className="font-display text-2xl font-semibold text-slate-900">Today</h1>
-        <p className="text-sm text-slate-500">{prettyDateKey(today)}</p>
+        <h1 className="font-display text-2xl font-semibold text-ink">Today</h1>
+        <p className="text-sm text-ink-3">{prettyDateKey(today)}</p>
       </div>
 
       {/* Search sits at the top — it's the fastest way to anything. */}
@@ -129,9 +135,9 @@ function Dashboard() {
       </div>
 
       {/* The day's report, front and centre. */}
-      <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
+      <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
             What&apos;s on today
           </h2>
           {/* <Link href="/daily" className="text-xs font-medium text-accent-600 hover:underline">
@@ -140,20 +146,20 @@ function Dashboard() {
         </div>
 
         {loading ? (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <p className="text-sm text-ink-3">Loading…</p>
         ) : (
           <>
-            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
               Services scheduled
             </p>
             <BarChart data={totals.scheduled} format={(n) => String(n)} />
 
-            <p className="mb-1.5 mt-5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+            <p className="mb-1.5 mt-5 text-[11px] font-medium uppercase tracking-wide text-ink-3">
               Dogs by service
             </p>
             <BarChart data={totals.dogsByService} format={(n) => String(n)} onSelect={openService} />
 
-            <p className="mt-3 text-[11px] text-slate-400">
+            <p className="mt-3 text-[11px] text-ink-3">
               Counts of work booked for today — walks and medications for every stay covering today,
               grooming on the day a boarding dog goes home. Tap a service to open its sign-in list.
             </p>
@@ -163,7 +169,7 @@ function Dashboard() {
 
       {/* Everywhere else */}
       <section className="mb-5">
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-3">
           Everything else
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -171,17 +177,18 @@ function Dashboard() {
             <Link
               key={d.href}
               href={d.href}
-              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition hover:border-accent-300"
+              className="rounded-2xl border border-line bg-surface p-4 shadow-card transition hover:border-accent-300"
             >
-              <p className="text-sm font-medium text-slate-800">
+              <p className="text-sm font-medium text-ink">
                 <span className="mr-1.5">{d.icon}</span>
                 {d.label}
               </p>
-              <p className="mt-0.5 text-xs text-slate-500">{d.blurb}</p>
+              <p className="mt-0.5 text-xs text-ink-3">{d.blurb}</p>
             </Link>
           ))}
         </div>
       </section>
+
     </div>
   );
 }
@@ -199,13 +206,13 @@ function Stat({
 }) {
   const body = (
     <>
-      <p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p>
-      <p className={`text-xl font-semibold ${accent ? "text-emerald-700" : "text-slate-800"}`}>
+      <p className="text-[11px] uppercase tracking-wide text-ink-3">{label}</p>
+      <p className={`text-xl font-semibold ${accent ? "text-emerald-700" : "text-ink"}`}>
         {value}
       </p>
     </>
   );
-  const className = `block rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-card${
+  const className = `block rounded-2xl border border-line bg-surface px-4 py-3 shadow-card${
     href ? " transition hover:border-accent-300" : ""
   }`;
   return href ? (

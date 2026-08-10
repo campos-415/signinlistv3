@@ -39,14 +39,56 @@ export interface BusinessSettings {
   name: string;
   tagline: string;
   logoData: string | null; // base64 data URL; falls back to the bundled logo
+  // One brand colour and one print colour. The shade ramps either side of
+  // them are derived — see lib/theme.ts — so staff pick two colours, not
+  // twelve.
+  accentColor: string; // "#rrggbb"
+  printColor: string;
 }
 
 // A package the business sells: so many daycare days for a set price.
 // Selling one picks a tier rather than typing an amount, so the price list
 // stays consistent and the discount is deliberate.
 export interface PackageTier {
+  kind?: "daycare" | "walk"; // absent means daycare, for tiers saved before walks existed
   days: number;
   price: number;
+}
+
+// Client-facing email. The provider key is a server-side env var
+// (RESEND_API_KEY) — only the wording and the addresses are settings, so a
+// business can reword everything without a deploy.
+//
+// Templates support {{owner}}, {{dogs}}, {{business}} and {{phone}}.
+export interface EmailSettings {
+  // The acknowledgement sent the moment a form is submitted. Off by
+  // default, because an install with no verified sending domain would just
+  // be generating failures.
+  autoAcknowledge: boolean;
+  fromName: string;
+  fromAddress: string;
+  replyTo: string;
+  ackSubject: string;
+  ackBody: string;
+  // Starting points for the messages staff send after reviewing. They're
+  // editable in the compose box before sending — that's the "custom" half.
+  approvedSubject: string;
+  approvedBody: string;
+  declinedSubject: string;
+  declinedBody: string;
+  // Boarding requests. Separate wording from enrollment, because these also
+  // carry dates — {{dropoff}}, {{pickup}} and {{nights}} work here too.
+  boardingAckSubject: string;
+  boardingAckBody: string;
+  boardingConfirmedSubject: string;
+  boardingConfirmedBody: string;
+  boardingDeclinedSubject: string;
+  boardingDeclinedBody: string;
+  // Where to tell STAFF that something new came in. Separate from
+  // everything above, which is client-facing. Comma-separated for a shared
+  // inbox plus a manager, say.
+  notifyAddresses: string;
+  notifyOnNewRequest: boolean;
 }
 
 export interface AppSettings {
@@ -56,6 +98,7 @@ export interface AppSettings {
   boardingAddons: CatalogItem[];
   services: CatalogItem[];
   packageTiers: PackageTier[];
+  email: EmailSettings;
 }
 
 // The values the app shipped with. Used until settings load, and as the
@@ -65,6 +108,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     name: "Lombard Doggy Daycare",
     tagline: "Sign your pup in or out",
     logoData: null,
+    accentColor: "#4a72ef",
+    printColor: "#f59e0b",
   },
   pricing: {
     daycareFullDay: 70,
@@ -97,10 +142,79 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ],
   // Buying in bulk beats the $70 walk-in day, more so the bigger the block.
   packageTiers: [
-    { days: 5, price: 325 },
-    { days: 10, price: 600 },
-    { days: 20, price: 1100 },
+    { kind: "daycare", days: 5, price: 325 },
+    { kind: "daycare", days: 10, price: 600 },
+    { kind: "daycare", days: 20, price: 1100 },
+    { kind: "walk", days: 10, price: 250 },
   ],
+  email: {
+    autoAcknowledge: false,
+    fromName: "",
+    fromAddress: "",
+    replyTo: "",
+    ackSubject: "We've received your enrollment — {{business}}",
+    ackBody: `Hi {{owner}},
+
+Thanks for enrolling {{dogs}} with {{business}}.
+
+We've got your form and someone will review it shortly. Once it's approved we'll email you to arrange the meet & greet, and from then on you can check in at the front desk with just your phone number.
+
+If anything changes in the meantime, just reply to this email.
+
+— {{business}}`,
+    approvedSubject: "You're all set at {{business}}",
+    approvedBody: `Hi {{owner}},
+
+Good news — {{dogs}} is approved and on our books.
+
+Next step is the meet & greet. Give us a call or reply here and we'll find a time that works.
+
+After that, checking in is just your phone number ({{phone}}) at the front desk.
+
+See you soon,
+{{business}}`,
+    declinedSubject: "About your enrollment at {{business}}",
+    declinedBody: `Hi {{owner}},
+
+Thanks for your interest in {{business}}, and for taking the time to fill in the enrollment form for {{dogs}}.
+
+Unfortunately we aren't able to take {{dogs}} on at the moment.
+
+Please do get in touch if you'd like to talk it through.
+
+— {{business}}`,
+    boardingAckSubject: "We've got your boarding request — {{business}}",
+    boardingAckBody: `Hi {{owner}},
+
+Thanks for asking about boarding for {{dogs}}, {{dropoff}} to {{pickup}} ({{nights}} nights).
+
+This is a request, not a confirmed booking yet — we'll check availability and email you back to confirm. Please don't drop off until you've heard from us.
+
+— {{business}}`,
+    boardingConfirmedSubject: "Boarding confirmed — {{dropoff}} to {{pickup}}",
+    boardingConfirmedBody: `Hi {{owner}},
+
+You're booked. We'll see {{dogs}} on {{dropoff}}, going home {{pickup}} — {{nights}} nights.
+
+Please bring their food, any medication in its original packaging, and make sure vaccinations are current.
+
+If anything changes, call us as soon as you can.
+
+See you then,
+{{business}}`,
+    boardingDeclinedSubject: "About your boarding request — {{business}}",
+    boardingDeclinedBody: `Hi {{owner}},
+
+Thanks for asking about boarding for {{dogs}} from {{dropoff}} to {{pickup}}.
+
+Unfortunately we can't take that booking. We're sorry to miss them.
+
+Do get in touch if you'd like to look at other dates.
+
+— {{business}}`,
+    notifyAddresses: "",
+    notifyOnNewRequest: true,
+  },
 };
 
 let cache: AppSettings = DEFAULT_SETTINGS;
@@ -134,6 +248,7 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
     packageTiers: stored.packageTiers?.length
       ? stored.packageTiers
       : DEFAULT_SETTINGS.packageTiers,
+    email: { ...DEFAULT_SETTINGS.email, ...(stored.email ?? {}) },
   };
 }
 

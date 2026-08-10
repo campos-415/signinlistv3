@@ -100,27 +100,72 @@ export function isBaseCoveredByPackage(
 // Price breakdown for a boarding reservation's add-ons only (not the
 // nightly rate itself — combine with PRICING.boardingPerNight * nights
 // separately, e.g. in estimateBoardingTotal below).
-export function estimateBoardingAddons(input: BoardingAddonInput, nights: number): PriceBreakdownItem[] {
-  const breakdown: PriceBreakdownItem[] = [];
+// Nights between two "YYYY-MM-DD" keys, minimum 1.
+export function nightsBetweenKeys(startDate: string, endDate: string): number {
+  return Math.max(
+    1,
+    Math.round((parseYmd(endDate).getTime() - parseYmd(startDate).getTime()) / 86_400_000)
+  );
+}
+
+// A boarding stay's add-ons split by category, with counts. The daily
+// report needs the amounts attributed to Walks/Baths/etc rather than as one
+// lump, and estimateBoardingAddons below builds its labelled breakdown from
+// the same numbers — so the report and the invoice can't disagree.
+export interface BoardingAddonAmounts {
+  walks: number;
+  walkCount: number;
+  bath: number;
+  bathCount: number;
+  nailTrim: number;
+  nailTrimCount: number;
+  medication: number;
+  medicationCount: number;
+  total: number;
+}
+
+export function boardingAddonAmounts(
+  input: BoardingAddonInput,
+  nights: number
+): BoardingAddonAmounts {
   const addons = input.addons ?? [];
-  if (addons.includes("walk")) {
-    const perDay = Math.max(1, input.walksPerDay || 1);
-    const totalWalks = perDay * nights;
+  const perDay = Math.max(1, input.walksPerDay || 1);
+  const walkCount = addons.includes("walk") ? perDay * nights : 0;
+  const bathCount = addons.includes("bath") && input.bathSize ? 1 : 0;
+  const nailTrimCount = addons.includes("nail_trim") ? 1 : 0;
+  const medicationCount = addons.includes("medication") ? nights : 0;
+
+  const out = {
+    walks: walkCount * BOARDING_ADDON_PRICES.walkPerWalk,
+    walkCount,
+    bath: bathCount && input.bathSize ? BATH_PRICES[input.bathSize] : 0,
+    bathCount,
+    nailTrim: nailTrimCount * BOARDING_ADDON_PRICES.nailTrim,
+    nailTrimCount,
+    medication: medicationCount * BOARDING_ADDON_PRICES.medicationPerDay,
+    medicationCount,
+    total: 0,
+  };
+  out.total = out.walks + out.bath + out.nailTrim + out.medication;
+  return out;
+}
+
+export function estimateBoardingAddons(input: BoardingAddonInput, nights: number): PriceBreakdownItem[] {
+  const a = boardingAddonAmounts(input, nights);
+  const perDay = Math.max(1, input.walksPerDay || 1);
+  const breakdown: PriceBreakdownItem[] = [];
+  if (a.walkCount) {
     breakdown.push({
       label: `Walks (${perDay}/day × ${nights} night${nights === 1 ? "" : "s"})`,
-      amount: totalWalks * BOARDING_ADDON_PRICES.walkPerWalk,
+      amount: a.walks,
     });
   }
-  if (addons.includes("bath") && input.bathSize) {
-    breakdown.push({ label: `Bath (${input.bathSize})`, amount: BATH_PRICES[input.bathSize] });
-  }
-  if (addons.includes("nail_trim")) {
-    breakdown.push({ label: "Nail trim", amount: BOARDING_ADDON_PRICES.nailTrim });
-  }
-  if (addons.includes("medication")) {
+  if (a.bathCount) breakdown.push({ label: `Bath (${input.bathSize})`, amount: a.bath });
+  if (a.nailTrimCount) breakdown.push({ label: "Nail trim", amount: a.nailTrim });
+  if (a.medicationCount) {
     breakdown.push({
       label: `Medication (${nights} night${nights === 1 ? "" : "s"})`,
-      amount: nights * BOARDING_ADDON_PRICES.medicationPerDay,
+      amount: a.medication,
     });
   }
   return breakdown;
@@ -132,10 +177,7 @@ export function estimateBoardingTotal(
   endDate: string,
   addonInput: BoardingAddonInput
 ): PriceEstimate {
-  const nights = Math.max(
-    1,
-    Math.round((parseYmd(endDate).getTime() - parseYmd(startDate).getTime()) / 86_400_000)
-  );
+  const nights = nightsBetweenKeys(startDate, endDate);
   const breakdown: PriceBreakdownItem[] = [
     { label: `Boarding (${nights} night${nights === 1 ? "" : "s"})`, amount: nights * PRICING.boardingPerNight },
     ...estimateBoardingAddons(addonInput, nights),
@@ -191,14 +233,17 @@ export function estimatePrice(
   // A package the client bought on this visit. The sale is money changing
   // hands today, so it belongs in today's total — but only today. Later
   // visits merely spend days that were already paid for.
-  packageSold: { days: number; price: number } | null = null
+  packagesSold: { days: number; price: number; unit?: string }[] | null = null,
+  // True when a walk package covers this visit's walk add-on, the walk
+  // equivalent of baseCovered.
+  walkCovered: boolean = false
 ): PriceEstimate | null {
   const breakdown: PriceBreakdownItem[] = [];
 
-  if (packageSold) {
+  for (const sold of packagesSold ?? []) {
     breakdown.push({
-      label: `Package (${packageSold.days} days)`,
-      amount: packageSold.price,
+      label: `Package (${sold.days} ${sold.unit ?? "days"})`,
+      amount: sold.price,
     });
   }
 
@@ -229,7 +274,15 @@ export function estimatePrice(
     }
   }
 
-  if (addons.includes("walk")) breakdown.push({ label: "Walk", amount: ADDON_PRICES.walk });
+  if (addons.includes("walk")) {
+    // Same treatment as a package-covered daycare day: shown as a $0 line
+    // rather than dropped, so the walk doesn't look like it went missing.
+    breakdown.push(
+      walkCovered
+        ? { label: "Walk — covered by package", amount: 0 }
+        : { label: "Walk", amount: ADDON_PRICES.walk }
+    );
+  }
   if (addons.includes("nail_trim")) breakdown.push({ label: "Nail trim", amount: ADDON_PRICES.nail_trim });
   if (bathSize) breakdown.push({ label: `Bath (${bathSize})`, amount: BATH_PRICES[bathSize] });
 

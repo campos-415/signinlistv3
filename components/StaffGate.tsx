@@ -38,14 +38,14 @@ export default function StaffGate({
 
   return (
     <div className="mx-auto mt-28 flex max-w-xs flex-col gap-3 px-5">
-      <h1 className="font-display text-xl font-semibold text-slate-900">{title}</h1>
+      <h1 className="font-display text-xl font-semibold text-ink">{title}</h1>
       <input
         type="password"
         value={entered}
         onChange={(e) => setEntered(e.target.value)}
         placeholder="Passcode"
         onKeyDown={(e) => e.key === "Enter" && checkPasscode()}
-        className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+        className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
       />
       <button
         onClick={checkPasscode}

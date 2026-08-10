@@ -50,7 +50,7 @@ If you already created the `signins` table from an earlier version, just run thi
 ```sql
 alter table signins add column if not exists addons text[] default '{}';
 alter table signins add column if not exists package_id uuid;
-alter table signins add column if not exists client_id uuid;
+alter table signins add column if not exists dog_id uuid;
 alter table signins add column if not exists pick_up_by text;
 alter table signins add column if not exists price numeric;
 alter table signins add column if not exists bath_size text;
@@ -59,10 +59,10 @@ alter table signins add column if not exists walk_in text;
 alter table signins add column if not exists walk_staff_initials text;
 ```
 
-Then add the `clients` table — this is the one-time signup/waiver profile, looked up by phone at check-in:
+Then add the `dogs` table — this is the one-time signup/waiver profile, looked up by phone at check-in:
 
 ```sql
-create table clients (
+create table dogs (
   id uuid primary key default gen_random_uuid(),
   phone text not null,
   dog_name text not null,
@@ -71,14 +71,14 @@ create table clients (
   signature_data text,
   created_at timestamptz default now()
 );
-alter table clients enable row level security;
+alter table dogs enable row level security;
 create policy "allow all" on clients for all using (true) with check (true);
 ```
 
-If you already have a `clients` table from an earlier version, add the photo column instead of recreating it:
+If you already have a `dogs` table from an earlier version, add the photo column instead of recreating it:
 
 ```sql
-alter table clients add column if not exists photo_data text;
+alter table dogs add column if not exists photo_data text;
 ```
 
 Then add the `boardings` table (staff-created advance boarding reservations) and `meal_logs` (the per-day meal chart on `/report`):
@@ -89,7 +89,7 @@ create table boardings (
   dog_name text not null,
   last_name text not null,
   phone text not null,
-  client_id uuid,
+  dog_id uuid,
   start_date date not null,
   end_date date not null,
   feeding_instructions text,
@@ -126,7 +126,7 @@ alter table boardings add column if not exists photo_data text;
 Finally, the tables behind the staff profile pages, vaccine records, boarding walk log, and package usage history:
 
 ```sql
--- Owner-level details. `clients` is one row per DOG, so this is where the
+-- Owner-level details. `dogs` is one row per DOG, so this is where the
 -- person behind a phone number lives. Created lazily on first save.
 create table owners (
   id uuid primary key default gen_random_uuid(),
@@ -146,12 +146,12 @@ create policy "allow all" on owners for all using (true) with check (true);
 -- One row per (dog, vaccine). Fixed vaccine list — staff only fill in dates.
 create table vaccinations (
   id uuid primary key default gen_random_uuid(),
-  client_id uuid references clients(id) on delete cascade,
+  dog_id uuid references clients(id) on delete cascade,
   vaccine text not null,
   given_on date,
   expires_on date,
   created_at timestamptz default now(),
-  unique (client_id, vaccine)
+  unique (dog_id, vaccine)
 );
 alter table vaccinations enable row level security;
 create policy "allow all" on vaccinations for all using (true) with check (true);
@@ -178,7 +178,7 @@ create policy "allow all" on walk_logs for all using (true) with check (true);
 create table package_uses (
   id uuid primary key default gen_random_uuid(),
   package_id uuid references packages(id) on delete cascade,
-  client_id uuid,
+  dog_id uuid,
   signin_id uuid,
   dog_name text,
   used_on date not null default current_date,
@@ -187,12 +187,28 @@ create table package_uses (
 alter table package_uses enable row level security;
 create policy "allow all" on package_uses for all using (true) with check (true);
 
+-- Money taken from a client. Recorded against the phone number, since that's
+-- the household that pays — one payment settles charges across their dogs.
+create table payments (
+  id uuid primary key default gen_random_uuid(),
+  phone text not null,
+  dog_id uuid,
+  amount numeric not null,
+  method text,
+  note text,
+  paid_on date not null default current_date,
+  created_at timestamptz default now()
+);
+alter table payments enable row level security;
+create policy "allow all" on payments for all using (true) with check (true);
+create index if not exists payments_phone_idx on payments (phone);
+
 -- Pick-up window chosen at the kiosk when a bath is booked.
 alter table signins add column if not exists pickup_window text;
 
 -- Set by staff when a waiver was signed outside the kiosk (paper, another
 -- location), so a dog added from an owner profile isn't flagged forever.
-alter table clients add column if not exists waiver_on_file boolean default false;
+alter table dogs add column if not exists waiver_on_file boolean default false;
 
 -- `/report` records who fed each meal; earlier versions of this README
 -- never created the column.
@@ -202,17 +218,20 @@ alter table meal_logs add column if not exists fed_by text;
 -- the day the package was sold, and the visits it later covers are $0.
 alter table packages add column if not exists price numeric;
 
+-- What a package buys. Existing rows are all daycare packages.
+alter table packages add column if not exists kind text not null default 'daycare';
+
 -- The dog itself. All optional — kiosk signup only asks for the basics, and
 -- these mostly arrive by importing an existing system's export.
-alter table clients add column if not exists breed text;
-alter table clients add column if not exists sex text;            -- male | female
-alter table clients add column if not exists fixed_status text;   -- spayed | neutered | intact | unknown
-alter table clients add column if not exists birthdate date;
-alter table clients add column if not exists weight_lb numeric;
-alter table clients add column if not exists vet text;
-alter table clients add column if not exists authorized_pickup text;
-alter table clients add column if not exists notes text;
-alter table clients add column if not exists waiver_on_file boolean default false;
+alter table dogs add column if not exists breed text;
+alter table dogs add column if not exists sex text;            -- male | female
+alter table dogs add column if not exists fixed_status text;   -- spayed | neutered | intact | unknown
+alter table dogs add column if not exists birthdate date;
+alter table dogs add column if not exists weight_lb numeric;
+alter table dogs add column if not exists vet text;
+alter table dogs add column if not exists authorized_pickup text;
+alter table dogs add column if not exists notes text;
+alter table dogs add column if not exists waiver_on_file boolean default false;
 
 -- Address split out, since imports carry the parts separately.
 alter table owners add column if not exists city text;
@@ -237,8 +256,18 @@ alter table signins add column if not exists by_staff boolean default false;
 -- Set when staff confirm a waiver was signed somewhere other than the
 -- kiosk signup flow (paper, another location), so a dog added from an
 -- owner profile can still be marked as covered.
-alter table clients add column if not exists waiver_on_file boolean default false;
+alter table dogs add column if not exists waiver_on_file boolean default false;
 ```
+
+Finally, run the enrollment migration — it adds the review queue, the uploads table, and every column the enrollment form collects:
+
+```bash
+cat enrollment-migration.sql
+```
+
+Paste [enrollment-migration.sql](enrollment-migration.sql) and then [boarding-requests-migration.sql](boarding-requests-migration.sql) into the SQL editor and run them. Every statement is idempotent, so re-running is harmless.
+
+> Copy the file **contents**, not the `cat` command — and note the comments in these files deliberately contain no apostrophes. The Supabase SQL editor splits statements on semicolons with a scanner that does not skip comments, so a lone `'` in a comment makes it swallow every following `;` and report one baffling syntax error.
 
 Grab your **Project URL** and **anon public key** from Settings → API.
 
@@ -254,51 +283,134 @@ cp .env.local.example .env.local
 Fill in `.env.local`:
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from Supabase.
 - `NEXT_PUBLIC_RECORDS_PASSCODE` — any word or number, this gates the `/records` staff page. Not real security (it's a client-side check), just keeps casual visitors out.
+- `RESEND_API_KEY` — optional. Only needed to email clients; see [Emailing clients](#emailing-clients). Leave it blank and nothing else changes.
 
 ```bash
 npm run dev
 ```
 
-Open http://localhost:3000 for the kiosk form and http://localhost:3000/signup for the one-time client signup/waiver. The staff pages all share one passcode: `/records` for saved sign-ins and the walk log, `/packages` for daycare packages, `/boardings` for reservations and the calendar, `/report` for a printable boarding stay report, and `/daily` for the end-of-day totals. Dog profiles (`/dogs/[id]`) and owner profiles (`/owners/[phone]`) aren't in the nav — click a dog's name on any staff page to open one.
+Open http://localhost:3000 for the kiosk form, http://localhost:3000/signup for the in-lobby enrollment form, http://localhost:3000/enroll for the public enrollment version you'd link from a website, and http://localhost:3000/book for the boarding request form. The staff pages all share one passcode: `/records` for saved sign-ins and the walk log, `/packages` for daycare packages, `/requests` for reviewing new-client and boarding requests, `/boardings` for reservations and the calendar, `/report` for a printable boarding stay report, and `/daily` for the end-of-day totals. Dog profiles (`/dogs/[id]`) and owner profiles (`/owners/[phone]`) aren't in the nav — click a dog's name on any staff page to open one.
 
 ## How pre-registration works
 
-1. First-time visitors go to `/signup` (there's a link on the kiosk screen) and fill in the dog's name, last name, usual drop-off person, phone number, and sign the waiver once. **Multiple dogs** on the same account can be added right there in one sitting — an "+ Add another dog" button adds another name/last-name pair, and one signature at the end covers all of them, saved as separate records under the same phone number.
+1. First-time visitors fill in the full **enrollment form** — at the kiosk on `/signup`, or from home on the public `/enroll` link. It collects owner and emergency contacts, the vet, and a full profile per dog (breed, colour, birthday, spay/neuter, flea program, bite/growl/fence/fight history, health problems, allergies, behaviour and play traits, crate/kennel training, vaccination dates and a photo or PDF of the records), then one signature covering the contract, the meet & greet policy, and every dog listed. **Multiple dogs** go on one submission — "+ Add another dog" repeats the whole dog section, and each keeps its own answers.
 2. From then on, the kiosk home screen only asks for a phone number. Typing one in looks up every dog on file for that number and shows them for confirmation — no re-typing name/last name and no re-signing, since the waiver's already on file.
 3. **Multiple dogs, same phone number:** if a phone number matches more than one dog, the kiosk shows a picker where you tap every dog checking in together — both can be signed in (or out) in the same action, one tap on "Sign in" creates a separate record for each selected dog. Nothing auto-selects when there's more than one, so adding a second dog never hides the first.
 4. **Already-signed-in indicator:** the kiosk checks today's records for each matched dog — a dog currently dropped off (no pick-up logged yet) shows a "🟢 Signed in" badge in the picker and on their card. If Drop off is selected for a dog that's already signed in, a warning nudges toward Pick up instead — it doesn't hard-block (staff can still correct a mistake), but it catches the common accidental double-drop-off before it happens.
 4. Staff/owner still pick drop-off vs. pick-up, service type, and add-ons once per visit — shared across whichever dogs are selected, since those usually match for dogs going in together.
-5. If a phone number doesn't match any signup, the kiosk shows a prompt pointing to `/signup` instead of letting the visit be logged — this keeps every dog on file with a signed waiver.
-6. Each saved sign-in links back to the specific dog's client record via `client_id`, so records can always be traced to the signup that authorized them.
+5. If a phone number doesn't match an **approved** client, the kiosk shows a prompt pointing to the enrollment form instead of letting the visit be logged — this keeps every dog on file with a signed waiver. A submitted-but-unapproved household is deliberately invisible to the kiosk.
+6. Each saved sign-in links back to the specific dog's client record via `dog_id`, so records can always be traced to the signup that authorized them.
 
-## PetExec sync (one lookup left)
+## Enrollment requests and approval
 
-Every kiosk sign-in fires a call to `app/api/petexec-checkin/route.ts`, which pushes it to PetExec.
+The enrollment form is reachable from three places, all rendering the same component:
 
-**Confirmed and built:**
-- OAuth2 token exchange (`lib/petexec.ts`) — `POST /token` with Basic auth, cached in memory.
-- `schedulePetExecDaycare()` — `POST /daycare`, creates a same-day daycare appointment. Used on kiosk drop-off.
-- `markPetExecPickup()` — `PUT /daycare/:daycareid`, sets pick-up time on an existing appointment.
-- `getPetExecDaycareServices()` — `GET /daycare/services`, PetExec's service ID catalog.
+| Route | Who it's for |
+| --- | --- |
+| `/signup` | The lobby kiosk — carries the business logo |
+| `/enroll` | The public link to put on the business's website |
+| `/enroll?embed=1` | The same form with no heading or navigation, for an `<iframe>` |
 
-**Still blocking everything above:** `getPetIdForPhone()` in `lib/petexec.ts` is a stub. Every Daycare call needs PetExec's internal `petid`, and the lookup-by-phone endpoint hasn't been found in the docs yet — it's almost certainly under an "Owner" or "Pet" section in the same API docs sidebar (tied to the `owner_read`/`pet_read` scopes already granted). Screenshot that section (should include something like "Get an owner" or "Get owner's pets" by phone/email/name) and this can be filled in.
+Both public form URLs, with ready-made embed snippets and copy buttons, are under **Settings → Online forms**.
 
-**Also needed before pick-up sync works:** finding today's PetExec `daycareid` for a given pet — likely via the "Get all current signed-in daycares" list, filtered to match. Not wired up yet.
+**Submitting does not create a client.** Anyone with the link can reach the public form, so a submission is a *request*: the whole thing is written to the `enrollments` table as a pending row and nothing else in the app can see it — the kiosk still won't find that phone number.
 
-**Setup once the lookup is confirmed:**
-1. Register a real API Application on your actual Lombard PetExec account with scopes `owner_read`, `pet_read`, `daycare_create`, `daycare_update`, `daycare_read`. Save the Client ID/Secret immediately.
-2. Add `PETEXEC_CLIENT_ID`, `PETEXEC_CLIENT_SECRET`, `PETEXEC_USERNAME`, `PETEXEC_PASSWORD` to `.env.local` and Vercel.
-3. Run `GET /daycare/services` (or check with your boss) to find which PetExec service ID represents a standard kiosk drop-off, and set `PETEXEC_DAYCARE_SERVICE_ID` to that number — the kiosk's own service/add-on picker doesn't map cleanly onto PetExec's more granular service catalog, so this is a simplification: every kiosk drop-off logs as one representative PetExec service for now.
-4. Fill in `getPetIdForPhone()`.
+Staff review pending requests on **`/requests`** (nav item **Requests**, with a red badge showing how many are waiting across both queues). The review panel lays out every answer, pulls anything safety-relevant into a **"Needs attention"** block at the top (bites, growls, fights, fence climbing, health problems, allergies, touch sensitivity), lists the vaccination dates with anything missing called out, and links to the uploaded records and the signature.
 
-Until then, the route no-ops and returns `{ skipped: true }` — the kiosk's own Supabase sign-in works exactly as before regardless.
+- **Approve** fans the submission out into `owners`, `dogs`, `vaccinations` and `dog_docs`, then marks the row approved. From that moment the household can check in by phone. Records are created *before* the row is marked, so a failure part-way leaves it visibly pending and safe to retry — a re-run updates the dog it already created rather than duplicating it.
+- **Decline** records a staff-only note and leaves nothing behind.
+
+A household enrolling a second dog later doesn't produce a duplicate: an existing dog name on that phone number is updated in place.
+
+Required vaccines are set by `REQUIRED_VACCINES` in [lib/enrollment.ts](lib/enrollment.ts) — rabies, DHPP and bordetella by default. Influenza and leptospirosis are collected but optional, since not every dog gets them.
+
+## Emailing clients
+
+Two messages, deliberately different in kind:
+
+- **The acknowledgement** is automatic, sent the moment a form is submitted. Off by default; turn it on under **Settings → Email**.
+- **The approve / decline message** is always written by hand. Deciding opens a compose box pre-filled from the template, and staff edit it before sending. The decision is already saved by then, so skipping the email is fine.
+
+Templates live in settings (so no deploy is needed to reword them) and support `{{owner}}`, `{{dogs}}`, `{{business}}` and `{{phone}}`.
+
+**Setup**, once per deployment:
+
+1. Create a free account at [resend.com](https://resend.com) and verify your sending domain.
+2. Put the key in `.env.local` as `RESEND_API_KEY=re_...` (and in Vercel's environment variables).
+3. Set the From address under **Settings → Email**. It has to be on the verified domain or Resend rejects the send.
+
+The key stays server-side in [app/api/email/route.ts](app/api/email/route.ts) and never reaches client JS. Leave `RESEND_API_KEY` unset and the route no-ops with `{ skipped: true }` — enrollment and approval work exactly as before, they just don't email anyone.
+
+## Boarding requests
+
+The second public form, mirroring enrollment. Same three entry points:
+
+| Route | Who it is for |
+| --- | --- |
+| `/book` | The public link for the website |
+| `/book?embed=1` | The same form with no heading, for an `<iframe>` |
+
+It asks what the old paper/Jotform version asked: name, email, phone, whether the dog is already enrolled, one or more dog names, drop-off and pick-up dates, extra services (bath before pick-up, walks, medication, nail trim), feeding instructions, and comments. Choosing medication makes the dosage box required — a stay cannot be run off "yes, medication".
+
+**Submitting does not book anything.** The calendar is untouched and the dates are not held; the request lands in `boarding_requests` as pending. Staff confirm it on **`/requests`** → **Boarding**, which is what writes the real `boardings` rows — one per dog, linked to each dog profile by phone and name.
+
+The form enforces what it can and flags the rest:
+
+- Pick-up cannot precede drop-off; drop-off cannot be in the past. Both are hard blocks.
+- Less than `NOTICE_DAYS` (2) days notice is a **warning, not a block** — the policy says "please", so staff keep the final say. The request is badged with the notice given so it can be judged at a glance.
+
+Opening a request runs an **eligibility check** against the database rather than trusting the client's own "already enrolled?" answer: for each dog it shows whether a profile exists, whether a waiver is on file, and the vaccination status, with a link straight to the profile. A dog with no profile can still be booked — sometimes that is the right call — but the reservation is flagged as unlinked in the confirmation message.
+
+Confirming and declining both open the same pre-filled, editable email compose box as enrollment, using the boarding templates on **Settings → Email** (which also accept `{{dropoff}}`, `{{pickup}}` and `{{nights}}`).
+
+The form also quotes a **live estimate** — nights at the boarding rate, plus walks at the per-walk rate once the client says how many a day. It is built from `estimateBoardingTotal`, the same function the front desk bills with, so the quote and the invoice cannot drift. The bath is deliberately left out of the total and shown as a size range instead: it is priced by size, and the form does not ask an owner to size their own dog.
+
+Answering **no** to *is your dog already enrolled?* stops the form there — the dates, services and submit button are replaced by a prompt to complete enrollment first. It is taken on trust rather than looked up, because this form is public and probing it with phone numbers should not reveal who is a client. Staff still get a real database check when they review.
+
+## Meet & greets on the calendar
+
+Approving an enrollment writes the requested date and arrival window onto the dog, and from that moment it appears on the **`/boardings`** calendar alongside reservations, in violet with a ✨.
+
+A three-way toggle above the month switches between **Everything**, **🛏️ Boardings** and **✨ Meet & greets**. Clicking a day lists both, with the arrival window and a link straight to the dog's profile.
+
+Meet & greets run **weekday mornings only**, in two arrival windows (`MEET_GREET_WINDOWS` in [types/index.ts](types/index.ts)). The enrollment form rejects a weekend date inline as it is typed as well as on submit, and requires a window once a date is chosen. Staff can change both on the dog profile.
+
+They are stored as a date on the dog rather than as their own table, which keeps them out of the reservation flow entirely — a meet & greet is not a stay, has no nights and no price. The trade-off is that a past one stays visible on its date rather than being archived; clearing the date on the profile removes it.
+
+## Staff notifications
+
+A request that nobody notices is worse than no request, so there are two channels.
+
+**Email to staff.** Set the addresses under **Settings → Notifications** (comma-separated for a shared inbox plus a manager). Every new enrollment or boarding request sends a short summary with a link straight into the queue; a boarding one is tagged `** SHORT NOTICE **` when it is inside the notice window. This is the channel that matters — it reaches someone who is not looking at the app. It needs email configured; see [Emailing clients](#emailing-clients).
+
+**In-app.** Every staff page polls both queues once a minute (two `COUNT` queries returning no rows) and on tab focus. The nav badge is the running total. When a count *rises*, a toast appears bottom-right with a "Review now" link, and — if enabled — a desktop notification.
+
+Desktop alerts are turned on per device under **Settings → Notifications**, because the browser owns the permission and the front-desk iPad wanting them says nothing about a manager's laptop. There is a "Show a test" button, and the control reports honestly when the browser has blocked notifications rather than silently doing nothing.
+
+The rise detection deliberately stays quiet on a first load, so opening the app with nine pending requests does not announce nine "new" ones, and it never fires when a count *drops* after an approval.
+
+## Naming: dogs vs clients
+
+One row per **dog**, not per client. The table is `dogs`, the type is `Dog`, and every foreign key pointing at it is `dog_id`.
+
+It was originally called `clients`, which was wrong and quietly confusing — a "client" row had a breed and a vaccination history. Renamed in one pass across the schema and the code; see [rename-clients-to-dogs.sql](rename-clients-to-dogs.sql) and its [rollback](rollback-dogs-to-clients.sql).
+
+The word **client** is still correct in the app, and still used, for the *human*: `owners` is the household keyed by phone, client-facing email is email to a person, and "Client phone number" on the front desk means exactly that. The distinction is now load-bearing rather than accidental:
+
+| Thing | Means |
+| --- | --- |
+| `dogs` / `Dog` / `dog_id` | the animal |
+| `owners` | the household, keyed by phone |
+| "client" in prose and UI copy | the person paying |
+
+Two known leftovers, both deliberate: `packages.client_name` actually holds the owner name, and `last_name` on a dog row is the owner surname. Renaming those touches three more tables and ~110 call sites, and was left for a separate pass.
 
 ## How packages work
 
 1. On `/packages`, add a client's package: name, phone number, days it covers, and now an **optional dog name**. Leave the dog name blank for a package shared across every dog on that phone number; set it to tie a package to one specific dog when a family's dogs don't share the same package.
 2. On the kiosk, when someone types a phone number that matches, each selected dog shows its own package badge — a dog-specific package takes priority; a phone-only (no dog name) package is used as the shared fallback.
 3. If the visit is a **daycare drop-off** and a package is found for that dog, one day is deducted automatically on submit. Pick-ups just display the remaining count, they don't deduct. With multiple dogs selected, each dog's own package (if any) is checked and deducted independently.
-   - **A visit only ever consumes a day from one package**, even when a household owns several. Which one is decided by `eligiblePackagesFor()` in [lib/clients.ts](lib/clients.ts): packages with days remaining rank above used-up ones, and within that, a package bought for this specific dog ranks above a shared one, newest first.
+   - **A visit only ever consumes a day from one package**, even when a household owns several. Which one is decided by `eligiblePackagesFor()` in [lib/dogs.ts](lib/dogs.ts): packages with days remaining rank above used-up ones, and within that, a package bought for this specific dog ranks above a shared one, newest first.
    - **Choosing between a household's packages is staff-only.** The lobby kiosk always takes the default above and just notes how many packages are on file — parents don't get a picker. To spend a day from a specific package, sign the dog out from the **front desk** panel (see below), whose per-dog **Package to draw from** dropdown lists each one with its remaining days ("Bella · 6 of 10 left", "Shared · 2 of 5 left"); used-up packages appear but can't be selected.
 4. Phone numbers are auto-formatted as `(555) 123-4567` everywhere — the kiosk and the packages page both format as-you-type, so matching is reliable without staff needing to type it a specific way.
 
@@ -311,7 +423,7 @@ Not every client uses the lobby kiosk. **`/records` → "🚗 Sign a dog in / ou
 - For a pick-up, the service is locked to however the dog came in, and the panel says up front whether signing out now will spend a package day — and if not, why (under four hours, or not a daycare visit).
 - Staff enter their own name, recorded as the drop-off/pick-up person, and the row is tagged `by_staff` so the records list can tell a front-desk entry from a client's own kiosk check-in.
 
-**Both paths write through the same code.** `performSignIn()` in [lib/signin.ts](lib/signin.ts) is the single place a sign-in row is created, and [components/KioskForm.tsx](components/KioskForm.tsx) and [components/StaffCheckIn.tsx](components/StaffCheckIn.tsx) both call it — so package deduction, pricing, the usage ledger, and the PetExec push can't drift apart between the lobby and the front desk. The phone lookup is shared the same way via `loadPhoneContext()`.
+**Both paths write through the same code.** `performSignIn()` in [lib/signin.ts](lib/signin.ts) is the single place a sign-in row is created, and [components/KioskForm.tsx](components/KioskForm.tsx) and [components/StaffCheckIn.tsx](components/StaffCheckIn.tsx) both call it — so package deduction, pricing, and the usage ledger can't drift apart between the lobby and the front desk. The phone lookup is shared the same way via `loadPhoneContext()`.
 5. `/packages` lets you edit a package's total day count anytime (Edit button), or manually nudge the used-days count up/down for corrections.
 
 ## Service locking and walk-in pricing
@@ -358,11 +470,11 @@ Two staff-only hub pages, reached by **clicking a dog's name anywhere in the app
 
 **`/owners/[phone]` — the owner profile**
 
-`clients` is one row per *dog*, so owner-level details live in their own `owners` table keyed by phone (created the first time you save one).
+`dogs` is one row per *dog*, so owner-level details live in their own `owners` table keyed by phone (created the first time you save one).
 
 - Contact details (name, email, address) and a full **emergency contact** (name, phone, relationship) plus staff notes.
 - **Every dog on that number**, as photo cards linking to their profiles — and this is where staff **add, edit, or remove a dog** on the account. "+ Add a dog" takes a name, owner surname (pre-filled from the household), and usual drop-off person; Edit changes those three inline; Delete removes the dog.
-- A dog added here has **no signed signature** — the `/signup` flow is what captures one. The add/edit form has a **"Waiver signed and on file"** checkbox for waivers signed elsewhere (on paper, or at another location); ticking it clears the flag without fabricating a signature, and the card then reads *Waiver on file (paper)* to keep the two cases distinguishable. Untouched, the dog shows *No waiver on file* on both its card and its profile header. `hasWaiver()` in [lib/clients.ts](lib/clients.ts) is the single check — a real signature counts on its own.
+- A dog added here has **no signed signature** — the `/signup` flow is what captures one. The add/edit form has a **"Waiver signed and on file"** checkbox for waivers signed elsewhere (on paper, or at another location); ticking it clears the flag without fabricating a signature, and the card then reads *Waiver on file (paper)* to keep the two cases distinguishable. Untouched, the dog shows *No waiver on file* on both its card and its profile header. `hasWaiver()` in [lib/dogs.ts](lib/dogs.ts) is the single check — a real signature counts on its own.
 - **Renaming a dog carries across to its reservations and packages.** Those are matched by name rather than by id, so a rename that didn't cascade would silently orphan a dog's stays and package days. The update is scoped to that phone number.
 - **Deleting a dog** removes its profile, photo, and vaccine records. Past sign-ins and reservations stay in the records for bookkeeping but stop being linked to a profile — the confirmation says so, and names how many reservations are affected, before you commit.
 - **Upcoming reservations across all their dogs**, and every package on the number.
@@ -394,6 +506,65 @@ Two staff-only hub pages, reached by **clicking a dog's name anywhere in the app
 - Visits covered by a package are excluded from revenue, since no money changed hands.
 - If the total differs from what was actually charged at pick-up, the page says so and explains why — boarding accrues per night rather than at checkout, and staff can hand-edit a price on `/records`.
 - The charts are plain inline SVG (no charting library), so they print exactly as they render.
+
+## Running this for another business
+
+The goal is a **new deployment with no code changes** — one Supabase project and one deploy per business, configured entirely from `/settings`.
+
+Everything per-business lives in the `settings` row: business name, tagline, logo, brand colour, printed-report colour, every price, the add-on catalog, service labels, and package tiers.
+
+- **Nothing hardcodes the business any more.** The name used to be baked into the three print headers and the browser tab title, so a second business would set its name in settings and still print the first one's on every report. The print headers now read it from settings, and `SettingsProvider` sets the tab title at runtime — the `<title>` in `app/layout.tsx` is a placeholder only. `lib/business-config.ts`, a dead env-var version of the same idea, has been removed so there's one answer to "where does branding come from".
+- **Colours are runtime, not compile-time.** Tailwind's `accent-*` and `paper-*` colours resolve `rgb(var(--…) / <alpha-value>)`, and `SettingsProvider` writes those variables onto `<html>` from the saved settings. The opacity modifiers (`bg-accent-500/40`) keep working because the variables hold raw `R G B` triples rather than hex.
+- **Staff pick two colours, not twelve.** A brand colour and a print colour; the lighter/darker steps either side are derived in [lib/theme.ts](lib/theme.ts) by mixing toward white and black. `500` is exactly the colour chosen. Asking a front desk to hand-pick `accent-400` is how off-brand tints creep in.
+- **Printed reports theme too.** The old amber palette was 40 hardcoded utility classes and 9 hex literals across five files. They're now role-named (`paper-line`, `paper-rule`, `paper-band`, `paper-tint`, `paper-ink`) so the class names don't lie about the colour when a business prints in blue.
+- Defaults live in `app/globals.css`, so the app renders correctly before settings load and a fresh install looks finished.
+
+**Not multi-tenant.** The `settings` table is a singleton (`check (id = 1)`), so one deployment serves one business. Serving many businesses from a single deploy would need a `business_id` on all tables, RLS isolation, and real per-user auth in place of the shared passcode — a much larger change, and only worth it for self-serve signup.
+
+## Dark mode
+
+A **per-device staff preference**, not a business setting — one shop can have a bright front desk and a dim back office. Toggle is in the staff nav (🌙/☀️), stored in `localStorage`, and it follows the OS preference until someone picks explicitly.
+
+- **The lobby kiosk and signup form stay light**, whatever staff chose. They're parent-facing on a device the business doesn't sit at, so a staff preference shouldn't change what a client walks up to. Because client navigation reuses the same document, `ThemeProvider` actively *removes* the class on those routes rather than just skipping it.
+- **Printed reports are always light.** `@media print` resets the tokens for `:root` *and* `.dark`, so a dark screen still prints black-on-white instead of a page of ink.
+- **It's driven by semantic tokens, not `dark:` variants.** `surface / surface-2 / surface-3`, `line / line-soft`, `ink / ink-2 / ink-3` are CSS variables that components reference by role (`bg-surface`, `text-ink-2`). One `.dark` block in [app/globals.css](app/globals.css) flips the whole app — that's why this was ~700 class replacements across 18 files once, rather than a `dark:` variant on every element forever.
+- **The chart follows too.** SVG `fill` can't take a Tailwind class, so [components/BarChart.tsx](components/BarChart.tsx) uses `rgb(var(--surface-3))` and friends directly — otherwise the bar tracks stay frozen in light slate and glare on a dark page.
+
+## Choosing which package a visit draws from
+
+A household can hold several packages of the same kind — two daycare blocks, or a walk block bought before the last ran out. There are three places to control which one gets spent, in increasing order of how permanent the choice is.
+
+**1. Pin a default on the dog's profile.** The packages table has a *Use next* column; pinning one makes every future visit draw from it (`clients.default_package_id` / `default_walk_package_id`, one per kind). An exhausted pin is ignored rather than blocking the visit — staff pinned a block, not a dead end. Click the pinned one again to unpin.
+
+**2. Override for one visit at the front desk** (`/records` → **🚗 Sign a dog in / out**). One picker per kind, each listing only its own packages with the right unit (`8 of 10 days left` vs `9 of 10 walks left`). The two are keyed by `clientId|kind`, so a visit can draw one of each and the selections don't disturb one another. Exhausted packages stay listed but disabled, so a spent block reads as spent rather than missing.
+
+**3. Correct it afterwards on the records row.** Editing a visit shows which package it actually spent, and changing it **re-attributes the day**: refunds the old block, deducts the new one, and repoints the ledger row so history stays truthful. "No package used" removes the deduction entirely.
+
+Precedence is: this visit's front-desk pick → the dog's pinned default → the standard rule (own before shared, remaining before exhausted).
+
+**Uses are tied to a specific visit.** `package_uses.signin_id` now records which sign-in spent the day, so re-attribution is unambiguous even when a dog visits twice in one day. Rows written before that fall back to matching on dog + date.
+
+The kiosk deliberately has no picker — it takes the default and reports which one it landed on. Choosing which of the family's packages to spend isn't a parent's call.
+
+## Balances and payments
+
+- **A balance belongs to the household, not the dog.** One family pays one bill covering every dog on the number, so balances are keyed by phone and a payment settles charges across all of them. The dog profile shows its household's balance as a badge that links to the owner profile — it doesn't invent a per-dog split, because payments aren't taken per dog.
+- **The owner profile is where money is handled**: charged / paid / outstanding at the top, a *Record payment* form (amount, method, note — with a one-click "pay full balance"), and an expandable ledger listing every charge and every payment.
+- **Charges come from two places, counted once.** A visit's charge is its saved pick-up price; a package sale is its price. But a package sale is *folded into the visit it was paid on* (see `packagesSold` in `estimatePrice`), so `computeBalance()` in [lib/billing.ts](lib/billing.ts) skips it as a separate line rather than billing it twice.
+- **A package sale belongs to exactly one visit** — the *earliest priced pick-up at or after the moment it was sold*, resolved by `packageBillingPickUp()` in [lib/dogs.ts](lib/dogs.ts). The looser "any visit that day" rule is wrong three ways, and all three cost real money:
+  - a dog that comes back for a **second visit the same day** gets charged for the package again;
+  - a **later** visit can steal the charge from the visit that actually paid it, so the package vanishes off the right receipt;
+  - a package **sold after the day's last pick-up** looks billed when no saved price could contain it, silently dropping the charge.
+  A package bought on an earlier day never re-applies to a later visit — those days are already paid for. If it went unpaid it stays in **outstanding** on the owner profile, which is where an unpaid balance belongs; it is not re-added to the next visit's total.
+- **Payments never break a profile.** Reads are wrapped so a missing or unreachable `payments` table means "no payments known" rather than a failed page — the profile still shows its dogs, stays, packages, and vaccines. Billing is additive; it shouldn't be able to take a profile down.
+- Balances are rounded to cents, so floating-point noise can't leave a settled account showing a fraction of a penny owed.
+
+## How boarding is billed and counted
+
+- **Nothing is billed until the dog leaves.** A boarding stay's whole total — nights *and* add-ons — lands as revenue on the day of check-out, not spread across the nights. A stay still running shows separately as **projected**, which is a forecast and is deliberately excluded from the revenue total.
+- **Add-ons are broken out, not lumped in.** At check-out a stay's total is split across the same categories a daycare visit uses: the **Boarding nights** line is the nightly rate only, and that stay's walks, bath, nail trim, and medication land under **Walks / Baths / Nail trims / Medication**. So grooming and walk revenue is visible wherever it came from, instead of being invisible inside a boarding figure.
+- **Boarding add-ons are counted once, from the reservation.** The kiosk copies a stay's add-ons onto its drop-off row so the parent can see them at the door, so `lib/daily.ts` skips boarding drop-offs in the walk-in add-on tally — counting both places would bill each boarding walk twice, and at the walk-in rate rather than the per-walk boarding rate.
+- The split comes from `boardingAddonAmounts()` in [lib/pricing.ts](lib/pricing.ts), which is also what builds the line-by-line breakdown on the printed stay report — so the report and the invoice can't drift apart.
 
 ## Records and daily PDF
 

@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { AppSettings, DEFAULT_SETTINGS, getSettings, loadSettings } from "@/lib/settings";
+import { applyTheme } from "@/lib/theme";
 
 const SettingsContext = createContext<{ settings: AppSettings; refresh: () => Promise<void> }>({
   settings: DEFAULT_SETTINGS,
@@ -27,6 +28,16 @@ export default function SettingsProvider({ children }: { children: React.ReactNo
   useEffect(() => {
     refresh();
   }, []);
+
+  // Paint the brand and print colours onto <html>, and put the business name
+  // in the tab title. Both used to be baked in at build time, which is what
+  // made the app one-business-only.
+  useEffect(() => {
+    applyTheme(settings.business.accentColor, settings.business.printColor);
+    if (settings.business.name) {
+      document.title = `${settings.business.name} — sign in`;
+    }
+  }, [settings.business.accentColor, settings.business.printColor, settings.business.name]);
 
   return (
     <SettingsContext.Provider value={{ settings, refresh }}>{children}</SettingsContext.Provider>

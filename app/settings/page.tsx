@@ -1,7 +1,15 @@
 "use client";
 
 import { ChangeEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { fileToResizedDataUrl } from "@/lib/image";
+import { renderTemplate, sendEmail } from "@/lib/email";
+import {
+  desktopAlertsOn,
+  enableDesktopAlerts,
+  setDesktopAlerts,
+  showDesktopAlert,
+} from "@/lib/notify";
 import {
   AppSettings,
   CatalogItem,
@@ -40,6 +48,10 @@ function Settings() {
     setDraft((d) => ({ ...d, pricing: { ...d.pricing, ...patch } }));
   }
 
+  function patchEmail(patch: Partial<AppSettings["email"]>) {
+    setDraft((d) => ({ ...d, email: { ...d.email, ...patch } }));
+  }
+
   async function save() {
     setSaving(true);
     setError("");
@@ -75,8 +87,8 @@ function Settings() {
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl font-semibold text-slate-900">Settings</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="font-display text-2xl font-semibold text-ink">Settings</h1>
+          <p className="text-sm text-ink-3">
             Prices and add-ons here drive every estimate, sign-out total, and report.
           </p>
         </div>
@@ -122,6 +134,30 @@ function Settings() {
           </Field>
         </div>
 
+        {/* Colours */}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <Field label="Brand colour (buttons, links, highlights)">
+            <ColorInput
+              value={draft.business.accentColor}
+              onChange={(v) =>
+                setDraft({ ...draft, business: { ...draft.business, accentColor: v } })
+              }
+            />
+          </Field>
+          <Field label="Printed report colour (header, table rules)">
+            <ColorInput
+              value={draft.business.printColor}
+              onChange={(v) =>
+                setDraft({ ...draft, business: { ...draft.business, printColor: v } })
+              }
+            />
+          </Field>
+        </div>
+        <p className="mt-1.5 text-[11px] text-ink-3">
+          Pick one colour each — the lighter and darker shades used across the app and on printed
+          reports are derived from them. Changes preview live once saved.
+        </p>
+
         <div className="mt-3 flex items-center gap-3">
           {draft.business.logoData ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -131,7 +167,7 @@ function Settings() {
               className="h-16 w-16 rounded-xl object-contain"
             />
           ) : (
-            <span className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-100 text-2xl">
+            <span className="flex h-16 w-16 items-center justify-center rounded-xl bg-surface-3 text-2xl">
               🐾
             </span>
           )}
@@ -145,12 +181,12 @@ function Settings() {
                 onClick={() =>
                   setDraft({ ...draft, business: { ...draft.business, logoData: null } })
                 }
-                className="ml-3 text-xs text-slate-400 hover:text-slate-600"
+                className="ml-3 text-xs text-ink-3 hover:text-ink-2"
               >
                 Remove
               </button>
             )}
-            <p className="mt-0.5 text-[11px] text-slate-400">
+            <p className="mt-0.5 text-[11px] text-ink-3">
               Falls back to the bundled logo when empty.
             </p>
           </div>
@@ -203,7 +239,7 @@ function Settings() {
             />
           </Field>
         </div>
-        <p className="mt-2 text-[11px] text-slate-400">
+        <p className="mt-2 text-[11px] text-ink-3">
           A visit longer than the cutoff bills as a full day, and only a full day is covered by a
           package. The late fee is charged once, on the day a boarding dog actually goes home.
         </p>
@@ -246,6 +282,7 @@ function Settings() {
         <PackageTierEditor
           tiers={draft.packageTiers}
           fullDay={draft.pricing.daycareFullDay}
+          walkPrice={draft.pricing.addons.walk ?? 0}
           onChange={(packageTiers) => setDraft({ ...draft, packageTiers })}
         />
       </Section>
@@ -282,6 +319,176 @@ function Settings() {
         />
       </Section>
 
+      {/* Email */}
+      <Section
+        title="Email"
+        blurb="Messages to clients about their enrollment. Sending needs RESEND_API_KEY in .env.local and a From address on your verified domain — leave it unset and the app simply doesn't email anyone."
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="From name">
+            <input
+              value={draft.email.fromName}
+              onChange={(e) => patchEmail({ fromName: e.target.value })}
+              placeholder={draft.business.name}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="From address">
+            <input
+              value={draft.email.fromAddress}
+              onChange={(e) => patchEmail({ fromAddress: e.target.value })}
+              placeholder="hello@yourdomain.com"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Reply-to (optional)">
+            <input
+              value={draft.email.replyTo}
+              onChange={(e) => patchEmail({ replyTo: e.target.value })}
+              placeholder="frontdesk@yourdomain.com"
+              className={inputClass}
+            />
+          </Field>
+        </div>
+
+        <p className="mt-4 text-[11px] text-ink-3">
+          Templates can use{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{owner}}"}</code>,{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{dogs}}"}</code>,{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{business}}"}</code> and{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{phone}}"}</code>.
+        </p>
+
+        {/* The sandbox sender only delivers to the address on the Resend
+            account, so an automatic acknowledgement to a real client fails
+            silently — the client never hears back and nothing on screen
+            says so, since submission deliberately survives a failed email. */}
+        {draft.email.autoAcknowledge && /resend\.dev\s*$/i.test(draft.email.fromAddress.trim()) && (
+          <p className="mt-3 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
+            ⚠️ You are sending from Resend&apos;s sandbox address, which only delivers to your own
+            Resend account. Automatic acknowledgements to real clients will not arrive. Fine for
+            testing — turn this off, or verify a domain, before going live.
+          </p>
+        )}
+
+        <label className="mt-3 flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.email.autoAcknowledge}
+            onChange={(e) => patchEmail({ autoAcknowledge: e.target.checked })}
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Email an acknowledgement automatically when a form is submitted
+            <span className="block text-[11px] text-ink-3">
+              Sent straight away, with no staff involvement. The approve and decline messages
+              below are always written by hand before sending.
+            </span>
+          </span>
+        </label>
+
+        <EmailTemplate
+          label="Automatic acknowledgement"
+          subject={draft.email.ackSubject}
+          body={draft.email.ackBody}
+          onSubject={(v) => patchEmail({ ackSubject: v })}
+          onBody={(v) => patchEmail({ ackBody: v })}
+        />
+        <EmailTemplate
+          label="After approving"
+          subject={draft.email.approvedSubject}
+          body={draft.email.approvedBody}
+          onSubject={(v) => patchEmail({ approvedSubject: v })}
+          onBody={(v) => patchEmail({ approvedBody: v })}
+        />
+        <EmailTemplate
+          label="After declining"
+          subject={draft.email.declinedSubject}
+          body={draft.email.declinedBody}
+          onSubject={(v) => patchEmail({ declinedSubject: v })}
+          onBody={(v) => patchEmail({ declinedBody: v })}
+        />
+
+        <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+          Boarding requests
+        </p>
+        <p className="mb-1 text-[11px] text-ink-3">
+          These can also use <code className="rounded bg-surface-3 px-1">{"{{dropoff}}"}</code>,{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{pickup}}"}</code> and{" "}
+          <code className="rounded bg-surface-3 px-1">{"{{nights}}"}</code>.
+        </p>
+
+        <EmailTemplate
+          label="Automatic acknowledgement"
+          subject={draft.email.boardingAckSubject}
+          body={draft.email.boardingAckBody}
+          onSubject={(v) => patchEmail({ boardingAckSubject: v })}
+          onBody={(v) => patchEmail({ boardingAckBody: v })}
+        />
+        <EmailTemplate
+          label="After confirming"
+          subject={draft.email.boardingConfirmedSubject}
+          body={draft.email.boardingConfirmedBody}
+          onSubject={(v) => patchEmail({ boardingConfirmedSubject: v })}
+          onBody={(v) => patchEmail({ boardingConfirmedBody: v })}
+        />
+        <EmailTemplate
+          label="After declining"
+          subject={draft.email.boardingDeclinedSubject}
+          body={draft.email.boardingDeclinedBody}
+          onSubject={(v) => patchEmail({ boardingDeclinedSubject: v })}
+          onBody={(v) => patchEmail({ boardingDeclinedBody: v })}
+        />
+
+        <EmailPreview email={draft.email} businessName={draft.business.name} />
+      </Section>
+
+      {/* Public forms */}
+      <Section
+        title="Online forms"
+        blurb="The links clients use. Send them directly, or embed them on your own website."
+      >
+        <OnlineForms />
+      </Section>
+
+      {/* Notifications */}
+      <Section
+        title="Notifications"
+        blurb="How staff find out a client sent something in. Separate from the client-facing email above."
+      >
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.email.notifyOnNewRequest}
+            onChange={(e) => patchEmail({ notifyOnNewRequest: e.target.checked })}
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Email staff when a new request arrives
+            <span className="block text-[11px] text-ink-3">
+              Covers both new-client enrollments and boarding requests.
+            </span>
+          </span>
+        </label>
+
+        <div className="mt-3">
+          <Field label="Send staff notifications to">
+            <input
+              value={draft.email.notifyAddresses}
+              onChange={(e) => patchEmail({ notifyAddresses: e.target.value })}
+              placeholder="frontdesk@yourdomain.com, manager@yourdomain.com"
+              className={inputClass}
+            />
+          </Field>
+          <p className="mt-1 text-[11px] text-ink-3">
+            Separate several with commas. Leave blank and no staff email is sent — the in-app
+            badge and alerts below still work.
+          </p>
+        </div>
+
+        <DesktopAlerts />
+      </Section>
+
       <div className="mb-10 flex items-center gap-3">
         <button
           onClick={save}
@@ -296,7 +503,7 @@ function Settings() {
               setDraft(DEFAULT_SETTINGS);
             }
           }}
-          className="text-xs font-medium text-slate-400 hover:text-slate-600"
+          className="text-xs font-medium text-ink-3 hover:text-ink-2"
         >
           Reset to defaults
         </button>
@@ -355,7 +562,7 @@ function CatalogEditor({
               next[i] = { ...item, icon: e.target.value };
               update(next);
             }}
-            className="w-14 rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-center text-sm outline-none focus:border-accent-500"
+            className="w-14 rounded-xl border border-line bg-surface-2 px-2 py-2 text-center text-sm outline-none focus:border-accent-500"
           />
           <input
             value={item.label}
@@ -364,11 +571,11 @@ function CatalogEditor({
               next[i] = { ...item, label: e.target.value };
               update(next);
             }}
-            className="min-w-[8rem] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-sm outline-none focus:border-accent-500"
+            className="min-w-[8rem] flex-1 rounded-xl border border-line bg-surface-2 px-3.5 py-2 text-sm outline-none focus:border-accent-500"
           />
           {prices && !priceless.includes(item.key) && (
             <div className="flex items-center gap-1">
-              <span className="text-sm text-slate-400">$</span>
+              <span className="text-sm text-ink-3">$</span>
               <input
                 type="number"
                 min="0"
@@ -377,15 +584,15 @@ function CatalogEditor({
                 onChange={(e) =>
                   update(items, { ...prices, [item.key]: parseFloat(e.target.value) || 0 })
                 }
-                className="w-24 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-accent-500"
+                className="w-24 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent-500"
               />
             </div>
           )}
           {prices && priceless.includes(item.key) && (
-            <span className="text-[11px] text-slate-400">priced by size above</span>
+            <span className="text-[11px] text-ink-3">priced by size above</span>
           )}
           {item.builtin ? (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+            <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-medium text-ink-3">
               built in
             </span>
           ) : (
@@ -400,21 +607,21 @@ function CatalogEditor({
       ))}
 
       {allowAdd && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
           <input
             value={newIcon}
             onChange={(e) => setNewIcon(e.target.value)}
-            className="w-14 rounded-xl border border-slate-200 bg-white px-2 py-2 text-center text-sm outline-none focus:border-accent-500"
+            className="w-14 rounded-xl border border-line bg-surface px-2 py-2 text-center text-sm outline-none focus:border-accent-500"
           />
           <input
             value={newLabel}
             onChange={(e) => setNewLabel(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && add()}
             placeholder="New add-on name"
-            className="min-w-[10rem] flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500"
+            className="min-w-[10rem] flex-1 rounded-xl border border-line bg-surface px-3.5 py-2 text-sm outline-none focus:border-accent-500"
           />
           <div className="flex items-center gap-1">
-            <span className="text-sm text-slate-400">$</span>
+            <span className="text-sm text-ink-3">$</span>
             <input
               type="number"
               min="0"
@@ -422,13 +629,13 @@ function CatalogEditor({
               value={newPrice}
               onChange={(e) => setNewPrice(e.target.value)}
               placeholder="0.00"
-              className="w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500"
+              className="w-24 rounded-xl border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent-500"
             />
           </div>
           <button
             onClick={add}
             disabled={!newLabel.trim()}
-            className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:border-accent-300 disabled:opacity-50"
+            className="rounded-xl border border-line px-4 py-2 text-sm font-medium text-ink-2 hover:border-accent-300 disabled:opacity-50"
           >
             + Add
           </button>
@@ -444,12 +651,15 @@ function CatalogEditor({
 function PackageTierEditor({
   tiers,
   fullDay,
+  walkPrice,
   onChange,
 }: {
   tiers: PackageTier[];
   fullDay: number;
+  walkPrice: number;
   onChange: (tiers: PackageTier[]) => void;
 }) {
+  const [newKind, setNewKind] = useState<"daycare" | "walk">("daycare");
   const [newDays, setNewDays] = useState("");
   const [newPrice, setNewPrice] = useState("");
 
@@ -457,8 +667,13 @@ function PackageTierEditor({
     const days = parseInt(newDays);
     const price = parseFloat(newPrice);
     if (!days || days < 1 || Number.isNaN(price)) return;
-    if (tiers.some((t) => t.days === days)) return; // one tier per day count
-    onChange([...tiers, { days, price }].sort((a, b) => a.days - b.days));
+    // One tier per (kind, count) — 10 daycare days and 10 walks coexist.
+    if (tiers.some((t) => t.days === days && (t.kind ?? "daycare") === newKind)) return;
+    onChange(
+      [...tiers, { kind: newKind, days, price }].sort(
+        (a, b) => (a.kind ?? "daycare").localeCompare(b.kind ?? "daycare") || a.days - b.days
+      )
+    );
     setNewDays("");
     setNewPrice("");
   }
@@ -467,9 +682,12 @@ function PackageTierEditor({
     <div className="space-y-2">
       {tiers.map((tier, i) => {
         const perDay = tier.days > 0 ? tier.price / tier.days : 0;
-        const saves = fullDay - perDay;
+        // Compare against whatever a single one costs walk-in: a daycare day
+        // or a walk, depending on the tier.
+        const walkIn = (tier.kind ?? "daycare") === "walk" ? walkPrice : fullDay;
+        const saves = walkIn - perDay;
         return (
-          <div key={tier.days} className="flex flex-wrap items-center gap-2">
+          <div key={`${tier.kind ?? "daycare"}-${tier.days}`} className="flex flex-wrap items-center gap-2">
             <input
               type="number"
               min={1}
@@ -479,11 +697,23 @@ function PackageTierEditor({
                 next[i] = { ...tier, days: Math.max(1, parseInt(e.target.value) || 1) };
                 onChange(next);
               }}
-              className="w-20 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-accent-500"
+              className="w-20 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent-500"
             />
-            <span className="text-sm text-slate-500">days for</span>
+            <select
+              value={tier.kind ?? "daycare"}
+              onChange={(e) => {
+                const next = [...tiers];
+                next[i] = { ...tier, kind: e.target.value as "daycare" | "walk" };
+                onChange(next);
+              }}
+              className="rounded-xl border border-line bg-surface-2 px-2 py-2 text-sm outline-none focus:border-accent-500"
+            >
+              <option value="daycare">daycare days</option>
+              <option value="walk">walks</option>
+            </select>
+            <span className="text-sm text-ink-3">for</span>
             <div className="flex items-center gap-1">
-              <span className="text-sm text-slate-400">$</span>
+              <span className="text-sm text-ink-3">$</span>
               <input
                 type="number"
                 min="0"
@@ -494,14 +724,14 @@ function PackageTierEditor({
                   next[i] = { ...tier, price: parseFloat(e.target.value) || 0 };
                   onChange(next);
                 }}
-                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-accent-500"
+                className="w-28 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent-500"
               />
             </div>
-            <span className="text-[11px] text-slate-400">
+            <span className="text-[11px] text-ink-3">
               ${perDay.toFixed(2)}/day
               {saves > 0 ? (
                 <span className="ml-1 font-medium text-emerald-600">
-                  saves ${saves.toFixed(2)}/day
+                  saves ${saves.toFixed(2)} each
                 </span>
               ) : (
                 // Worth flagging — a tier priced at or above the walk-in rate
@@ -519,18 +749,26 @@ function PackageTierEditor({
         );
       })}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
         <input
           type="number"
           min={1}
           value={newDays}
           onChange={(e) => setNewDays(e.target.value)}
           placeholder="10"
-          className="w-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500"
+          className="w-20 rounded-xl border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent-500"
         />
-        <span className="text-sm text-slate-500">days for</span>
+        <select
+          value={newKind}
+          onChange={(e) => setNewKind(e.target.value as "daycare" | "walk")}
+          className="rounded-xl border border-line bg-surface px-2 py-2 text-sm outline-none focus:border-accent-500"
+        >
+          <option value="daycare">daycare days</option>
+          <option value="walk">walks</option>
+        </select>
+        <span className="text-sm text-ink-3">for</span>
         <div className="flex items-center gap-1">
-          <span className="text-sm text-slate-400">$</span>
+          <span className="text-sm text-ink-3">$</span>
           <input
             type="number"
             min="0"
@@ -539,13 +777,13 @@ function PackageTierEditor({
             onChange={(e) => setNewPrice(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && add()}
             placeholder="600.00"
-            className="w-28 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-accent-500"
+            className="w-28 rounded-xl border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-accent-500"
           />
         </div>
         <button
           onClick={add}
           disabled={!newDays || !newPrice}
-          className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:border-accent-300 disabled:opacity-50"
+          className="rounded-xl border border-line px-4 py-2 text-sm font-medium text-ink-2 hover:border-accent-300 disabled:opacity-50"
         >
           + Add tier
         </button>
@@ -559,8 +797,33 @@ function PackageTierEditor({
   );
 }
 
+// A colour swatch plus the hex, so it can be picked or pasted from a brand
+// guide. Invalid text is simply not committed rather than blanking the theme.
+function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-10 w-14 cursor-pointer rounded-xl border border-line bg-surface p-1"
+      />
+      <input
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value.trim();
+          if (/^#?[0-9a-fA-F]{0,6}$/.test(v)) {
+            onChange(v.startsWith("#") ? v : `#${v}`);
+          }
+        }}
+        className="w-28 rounded-xl border border-line bg-surface-2 px-3 py-2 font-mono text-sm outline-none focus:border-accent-500"
+      />
+    </div>
+  );
+}
+
 const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+  "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
 
 function Money({
   label,
@@ -574,7 +837,7 @@ function Money({
   return (
     <Field label={label}>
       <div className="flex items-center gap-1">
-        <span className="text-sm text-slate-400">$</span>
+        <span className="text-sm text-ink-3">$</span>
         <input
           type="number"
           min="0"
@@ -588,10 +851,305 @@ function Money({
   );
 }
 
+// Desktop alerts are a per-DEVICE choice, not a business setting: the
+// browser owns the permission, and the front-desk iPad wanting them says
+// nothing about the manager's laptop. So this lives in localStorage rather
+// than in the settings row.
+function DesktopAlerts() {
+  const [state, setState] = useState<"unsupported" | "off" | "on" | "blocked">("off");
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setState("unsupported");
+    } else if (Notification.permission === "denied") {
+      setState("blocked");
+    } else {
+      setState(desktopAlertsOn() ? "on" : "off");
+    }
+  }, []);
+
+  async function turnOn() {
+    const ok = await enableDesktopAlerts();
+    if (!ok) {
+      setState(Notification.permission === "denied" ? "blocked" : "off");
+      return;
+    }
+    setState("on");
+    showDesktopAlert("Alerts are on", "You'll see new requests here as they arrive.");
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-line-soft p-3.5">
+      <p className="text-sm font-medium text-ink-2">Desktop alerts on this device</p>
+      <p className="mt-0.5 text-[11px] text-ink-3">
+        Pops up a notification while a staff page is open, checked once a minute. Set separately on
+        every device — the browser owns the permission.
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {state === "unsupported" && (
+          <span className="text-xs text-ink-3">This browser doesn&apos;t support notifications.</span>
+        )}
+        {state === "blocked" && (
+          <span className="text-xs text-rose-500">
+            Blocked in the browser — allow notifications for this site in its address-bar settings,
+            then reload.
+          </span>
+        )}
+        {state === "off" && (
+          <button
+            onClick={turnOn}
+            className="rounded-xl border border-line px-4 py-2 text-sm font-medium text-ink-2 transition hover:border-accent-300"
+          >
+            Turn on
+          </button>
+        )}
+        {state === "on" && (
+          <>
+            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+              On for this device
+            </span>
+            <button
+              onClick={() => {
+                setDesktopAlerts(false);
+                setState("off");
+              }}
+              className="text-xs font-medium text-ink-3 hover:text-ink-2"
+            >
+              Turn off
+            </button>
+            <button
+              onClick={() => showDesktopAlert("Test alert", "This is what a new request looks like.")}
+              className="text-xs font-medium text-accent-600 hover:underline"
+            >
+              Show a test
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Stand-in answers, so a template can be previewed before any real client
+// has ever submitted one.
+const SAMPLE = {
+  owner: "Alex",
+  dogs: "Buki and Mochi",
+  phone: "(415) 555-0132",
+  dropoff: "Fri, Aug 14",
+  pickup: "Mon, Aug 17",
+  nights: "3",
+};
+
+type PreviewKey = "ack" | "approved" | "declined" | "back" | "bconfirmed" | "bdeclined";
+
+const PREVIEW_TABS: { key: PreviewKey; label: string }[] = [
+  { key: "ack", label: "Enroll · ack" },
+  { key: "approved", label: "Enroll · approved" },
+  { key: "declined", label: "Enroll · declined" },
+  { key: "back", label: "Boarding · ack" },
+  { key: "bconfirmed", label: "Boarding · confirmed" },
+  { key: "bdeclined", label: "Boarding · declined" },
+];
+
+// Shows what a template actually turns into, and sends it somewhere real.
+// Reads the DRAFT rather than saved settings, so wording can be checked
+// before committing it — including the From address, which is the setting
+// most likely to be wrong on a first run.
+function EmailPreview({
+  email,
+  businessName,
+}: {
+  email: AppSettings["email"];
+  businessName: string;
+}) {
+  const [tab, setTab] = useState<PreviewKey>("ack");
+  const [to, setTo] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const vars = { ...SAMPLE, business: businessName };
+  const BY_TAB: Record<PreviewKey, { subject: string; body: string }> = {
+    ack: { subject: email.ackSubject, body: email.ackBody },
+    approved: { subject: email.approvedSubject, body: email.approvedBody },
+    declined: { subject: email.declinedSubject, body: email.declinedBody },
+    back: { subject: email.boardingAckSubject, body: email.boardingAckBody },
+    bconfirmed: { subject: email.boardingConfirmedSubject, body: email.boardingConfirmedBody },
+    bdeclined: { subject: email.boardingDeclinedSubject, body: email.boardingDeclinedBody },
+  };
+  const picked = BY_TAB[tab];
+
+  const subject = renderTemplate(picked.subject, vars);
+  const body = renderTemplate(picked.body, vars);
+  const fromLine = `${email.fromName || businessName} <${email.fromAddress || "not set"}>`;
+
+  async function sendTest() {
+    if (!to.trim()) {
+      setResult({ ok: false, text: "Enter an address to send the test to." });
+      return;
+    }
+    setSending(true);
+    setResult(null);
+    try {
+      const r = await sendEmail({
+        to: to.trim(),
+        subject: `[Test] ${subject}`,
+        body,
+        from: {
+          fromName: email.fromName,
+          fromAddress: email.fromAddress,
+          replyTo: email.replyTo,
+        },
+      });
+      if (r.skipped) {
+        setResult({
+          ok: false,
+          text: "Email is not configured — add RESEND_API_KEY to .env.local and restart the server.",
+        });
+      } else if (r.error) {
+        // The overwhelmingly common first-run failure. Resend only sends
+        // from a domain you control the DNS for, so a personal gmail/
+        // outlook address can never be verified — say so, and point at the
+        // sandbox sender that works without a domain.
+        const unverified = /not verified|verify your domain/i.test(r.error);
+        setResult({
+          ok: false,
+          text: unverified
+            ? `${r.error}\n\nTo test right now, set the From address to onboarding@resend.dev — Resend's sandbox sender, which only delivers to the address on your Resend account. For real dogs, add your own domain at resend.com/domains and send from that. Your personal address still works as the Reply-to.`
+            : r.error,
+        });
+      } else {
+        setResult({ ok: true, text: `Sent to ${to.trim()}. Check the inbox (and spam).` });
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-line-soft p-3.5">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+        Preview &amp; test
+      </p>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        {PREVIEW_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`rounded-xl px-3 py-1.5 text-xs font-medium transition ${
+              tab === t.key
+                ? "bg-accent-500 text-white shadow-card"
+                : "border border-line bg-surface text-ink-2 hover:border-accent-300"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Rendered with sample answers so the placeholders resolve. */}
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="border-b border-line-soft bg-surface-2 px-3.5 py-2 text-[11px] text-ink-3">
+          <p>
+            <span className="text-ink-3">From</span>{" "}
+            <span className={email.fromAddress ? "text-ink-2" : "font-medium text-rose-500"}>
+              {fromLine}
+            </span>
+          </p>
+          <p className="mt-0.5 text-sm font-medium text-ink">{subject}</p>
+        </div>
+        <div className="whitespace-pre-wrap px-3.5 py-3 text-sm leading-relaxed text-ink-2">
+          {body}
+        </div>
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-ink-3">
+        Filled in with sample answers — {SAMPLE.owner}, {SAMPLE.dogs}, {SAMPLE.phone},{" "}
+        {SAMPLE.dropoff} to {SAMPLE.pickup}.
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <input
+          type="email"
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          placeholder="your@email.com"
+          className={`${inputClass} sm:w-64`}
+        />
+        <button
+          onClick={sendTest}
+          disabled={sending}
+          className="whitespace-nowrap rounded-xl border border-line px-4 py-2.5 text-sm font-medium text-ink-2 transition hover:border-accent-300 disabled:opacity-60"
+        >
+          {sending ? "Sending…" : "Send test"}
+        </button>
+      </div>
+      {result && (
+        <p
+          className={`mt-2 whitespace-pre-wrap text-xs font-medium ${
+            result.ok ? "text-emerald-600" : "text-rose-500"
+          }`}
+        >
+          {result.text}
+        </p>
+      )}
+      <p className="mt-1.5 text-[11px] text-ink-3">
+        The test uses the addresses typed above, saved or not. The From address has to be on the
+        domain you verified with Resend, or it will be rejected.
+      </p>
+    </div>
+  );
+}
+
+// One editable message. Collapsed by default — three full templates open at
+// once would bury the rest of the section.
+function EmailTemplate({
+  label,
+  subject,
+  body,
+  onSubject,
+  onBody,
+}: {
+  label: string;
+  subject: string;
+  body: string;
+  onSubject: (v: string) => void;
+  onBody: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3 rounded-xl border border-line-soft">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left"
+      >
+        <span className="text-sm font-medium text-ink-2">{label}</span>
+        <span className="ml-auto text-xs text-ink-3">{open ? "Hide" : "Edit"}</span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-line-soft p-3.5">
+          <Field label="Subject">
+            <input value={subject} onChange={(e) => onSubject(e.target.value)} className={inputClass} />
+          </Field>
+          <Field label="Message">
+            <textarea
+              value={body}
+              onChange={(e) => onBody(e.target.value)}
+              rows={12}
+              className={`${inputClass} leading-relaxed`}
+            />
+          </Field>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-[11px] text-slate-400">{label}</label>
+      <label className="mb-1 block text-[11px] text-ink-3">{label}</label>
       {children}
     </div>
   );
@@ -607,11 +1165,117 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h2>
-      {blurb && <p className="mb-3 mt-1 text-[11px] text-slate-400">{blurb}</p>}
+    <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-3">{title}</h2>
+      {blurb && <p className="mb-3 mt-1 text-[11px] text-ink-3">{blurb}</p>}
       {!blurb && <div className="mb-3" />}
       {children}
     </section>
+  );
+}
+
+// The public forms are only useful if the business can find their
+// addresses, so the links and iframe snippets live where staff already are
+// rather than buried in a settings page.
+const PUBLIC_FORMS: { path: string; label: string; blurb: string; queue: string }[] = [
+  {
+    path: "/enroll",
+    label: "New client enrollment",
+    blurb: "Full profile, waiver and vaccinations for a first-time client.",
+    queue: "/requests?tab=enrollments",
+  },
+  {
+    path: "/book",
+    label: "Boarding request",
+    blurb: "Existing clients asking for stay dates.",
+    queue: "/requests?tab=boarding",
+  },
+];
+
+function OnlineForms() {
+  const [origin, setOrigin] = useState("");
+
+  // Read after mount — there's no window during the server render.
+  useEffect(() => setOrigin(window.location.origin), []);
+
+  return (
+    <>
+      <p className="mb-3 text-[11px] text-ink-3">
+        Everything submitted through these waits for your approval — nothing books itself.
+      </p>
+      <div className="space-y-4">
+        {PUBLIC_FORMS.map((f) => (
+          <ShareRow key={f.path} form={f} origin={origin} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ShareRow({
+  form,
+  origin,
+}: {
+  form: (typeof PUBLIC_FORMS)[number];
+  origin: string;
+}) {
+  const [copied, setCopied] = useState("");
+
+  const url = `${origin}${form.path}`;
+  const snippet = `<iframe src="${origin}${form.path}?embed=1" title="${form.label}" style="width:100%;height:1200px;border:0" loading="lazy"></iframe>`;
+
+  async function copy(what: "link" | "embed", text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(what);
+      setTimeout(() => setCopied(""), 2000);
+    } catch {
+      setCopied("");
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-line-soft p-3.5">
+      <p className="text-sm font-medium text-ink">{form.label}</p>
+      <p className="mb-2 text-[11px] text-ink-3">
+        {form.blurb} Goes to{" "}
+        <Link href={form.queue} className="text-accent-600 hover:underline">
+          {form.queue}
+        </Link>
+        .
+      </p>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <code className="min-w-0 flex-1 overflow-x-auto rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs text-ink-2">
+            {url || "…"}
+          </code>
+          <button
+            onClick={() => copy("link", url)}
+            className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink-2 hover:border-accent-300"
+          >
+            {copied === "link" ? "Copied ✓" : "Copy link"}
+          </button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink-2 hover:border-accent-300"
+          >
+            Preview →
+          </a>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs text-ink-3">
+            {snippet}
+          </code>
+          <button
+            onClick={() => copy("embed", snippet)}
+            className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink-2 hover:border-accent-300"
+          >
+            {copied === "embed" ? "Copied ✓" : "Copy embed"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

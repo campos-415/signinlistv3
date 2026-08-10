@@ -6,20 +6,31 @@ import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { estimatePrice } from "@/lib/pricing";
 import { prettyDateKey, todayKey } from "@/lib/dates";
-import { daysLeft, eligiblePackagesFor, packageBoughtOn } from "@/lib/clients";
-import { OpenVisit, loadPhoneContext, packageApplies, performSignIn } from "@/lib/signin";
+import {
+  daysLeft,
+  eligiblePackagesFor,
+  findPackageFor,
+  packageBillingPickUp,
+  packageKind,
+  packagesBoughtOn,
+  preferredPackageId,
+} from "@/lib/dogs";
+import { OpenVisit, loadPhoneContext, packageApplies, performSignIn, walkPackageApplies } from "@/lib/signin";
+import { Balance, computeBalance, loadPayments, unpaidCharges } from "@/lib/billing";
+import { prettyDateKey as prettyDay } from "@/lib/dates";
 import {
   ADDONS,
   AddonKey,
   BathSize,
   Boarding,
   BOARDING_ADDONS,
-  Client,
+  Dog,
   Package,
   PICKUP_WINDOWS,
   SERVICE_TYPES,
   ServiceType,
   SignAction,
+  SignInRecord,
 } from "@/types";
 import lombardlogo from "@/public/lombardlogo.avif";
 import { useSettings } from "@/components/SettingsProvider";
@@ -61,14 +72,14 @@ export default function KioskForm() {
   const [boardings, setBoardings] = useState<Boarding[]>([]);
 
   // All dogs (clients) on file for the entered phone number.
-  const [matches, setMatches] = useState<Client[]>([]);
+  const [matches, setMatches] = useState<Dog[]>([]);
   // Which of those dogs are checking in for this visit — supports more
   // than one at once (e.g. two dogs from the same family together).
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [clientLoading, setClientLoading] = useState(false);
-  const [clientChecked, setClientChecked] = useState(false);
+  const [dogsLoading, setDogsLoading] = useState(false);
+  const [dogsChecked, setDogsChecked] = useState(false);
 
-  // client_id -> their currently-open visit (a drop-off with no pick-up
+  // dog_id -> their currently-open visit (a drop-off with no pick-up
   // after it yet), whenever it started — not limited to today, since a
   // boarding stay can span several days. Drives the "signed in" badge,
   // locks pick-up to the same service the dog was dropped off under, and
@@ -85,38 +96,71 @@ export default function KioskForm() {
   // never overwrites a change the parent made afterwards.
   const seededFromBoarding = useRef<Set<string>>(new Set());
 
-  // client_id -> bath size, seeded from a boarding reservation that already
+  // dog_id -> bath size, seeded from a boarding reservation that already
   // booked one. A walk-in bath has no size here — staff assign it (and its
   // price) on /records.
   const [bathSizeByDog, setBathSizeByDog] = useState<Record<string, BathSize>>({});
 
-  const selectedDogs: Client[] = matches.filter((m) => m.id && selectedIds.includes(m.id));
+  // This number's sign-in history, used to tell whether a package sale was
+  // already billed to an earlier visit today.
+  const [history, setHistory] = useState<Partial<SignInRecord>[]>([]);
+
+  // What the household still owes from before today, so it can be settled at
+  // the desk instead of quietly accumulating.
+  const [balance, setBalance] = useState<Balance | null>(null);
+
+  const selectedDogs: Dog[] = matches.filter((m) => m.id && selectedIds.includes(m.id));
 
   // Every package on this number that could cover the dog. A visit only
   // ever consumes a day from one of them.
-  function eligiblePackages(dog: Client): Package[] {
+  function eligiblePackages(dog: Dog): Package[] {
     return eligiblePackagesFor(packages, phone.trim(), dog.dog_name);
   }
 
   // The package this dog's visit draws from. The kiosk always takes the
   // default — choosing between a household's packages is a staff call, made
   // on the front-desk panel (components/StaffCheckIn.tsx).
-  function packageFor(dog: Client): Package | null {
-    return eligiblePackages(dog)[0] ?? null;
+  function packageFor(dog: Dog): Package | null {
+    return findPackageFor(
+      packages,
+      phone.trim(),
+      dog.dog_name,
+      "daycare",
+      preferredPackageId(dog, "daycare")
+    );
   }
 
   // A package bought today is money owed on today's visit. One bought
   // earlier isn't — its days are already paid for.
-  function soldToday(dog: Client): { days: number; price: number } | null {
-    const sold = packageBoughtOn(packages, phone.trim(), dog.dog_name, todayKey());
-    return sold ? { days: sold.total_days, price: sold.price ?? 0 } : null;
+  function soldToday(dog: Dog): { days: number; price: number; unit: string }[] {
+    const pricedPickUps = history.filter((h) => h.action === "pick_up" && h.price != null);
+    return packagesBoughtOn(packages, phone.trim(), dog.dog_name, todayKey())
+      // The pick-up about to be written hasn't happened yet, so a sale that
+      // some earlier pick-up already claimed isn't owed again on this visit.
+      .filter((p) => packageBillingPickUp(p, pricedPickUps) === null)
+      .map((p) => ({
+      days: p.total_days,
+      price: p.price ?? 0,
+      unit: packageKind(p) === "walk" ? "walks" : "days",
+    }));
+  }
+
+  // The walk package this dog's walk add-on would draw from.
+  function walkPackageFor(dog: Dog): Package | null {
+    return findPackageFor(
+      packages,
+      phone.trim(),
+      dog.dog_name,
+      "walk",
+      preferredPackageId(dog, "walk")
+    );
   }
 
   // A boarding reservation for this dog that covers today — staff add
   // these in advance on /boardings. A boarding drop-off with no such
   // reservation is blocked (see handleSubmit) rather than silently
   // creating an unplanned stay.
-  function activeBoardingFor(dog: Client): Boarding | null {
+  function activeBoardingFor(dog: Dog): Boarding | null {
     const today = todayKey();
     const forDog = boardings.filter(
       (b) => b.dog_name.trim().toLowerCase() === dog.dog_name.trim().toLowerCase()
@@ -127,7 +171,7 @@ export default function KioskForm() {
   // The soonest reservation still ahead of this dog — shown for
   // information only when there's no stay running today, so a parent
   // checking in for daycare still sees their upcoming boarding dates.
-  function upcomingBoardingFor(dog: Client): Boarding | null {
+  function upcomingBoardingFor(dog: Dog): Boarding | null {
     const today = todayKey();
     return (
       boardings
@@ -156,7 +200,7 @@ export default function KioskForm() {
   // boarding — the stay is already booked, so it can't be signed in as a
   // daycare visit — otherwise it's whatever the selector says. Decided
   // per dog, so one dog boarding doesn't force its housemate to.
-  function effectiveService(dog: Client): ServiceType {
+  function effectiveService(dog: Dog): ServiceType {
     if (action === "pick_up" && dog.id) {
       const open = openVisits.get(dog.id);
       if (open) return open.serviceType;
@@ -167,8 +211,12 @@ export default function KioskForm() {
 
   // Whether a package covers this dog's visit right now — full daycare days
   // only, so it depends on how long the dog has actually been here.
-  function packageAppliesNow(dog: Client, open: OpenVisit | undefined, pkg: Package | null, now: Date): boolean {
+  function packageAppliesNow(dog: Dog, open: OpenVisit | undefined, pkg: Package | null, now: Date): boolean {
     return packageApplies(effectiveService(dog), open, pkg, now);
+  }
+
+  function walkAppliesNow(dog: Dog, open: OpenVisit | undefined): boolean {
+    return walkPackageApplies(open, walkPackageFor(dog));
   }
 
   useEffect(() => {
@@ -179,21 +227,32 @@ export default function KioskForm() {
       setMatches([]);
       setSelectedIds([]);
       setOpenVisits(new Map());
+      setHistory([]);
+      setBalance(null);
       setBoardings([]);
-      setClientChecked(false);
+      setDogsChecked(false);
       return;
     }
     lookupTimer.current = setTimeout(async () => {
       setPkgLoading(true);
-      setClientLoading(true);
-      setClientChecked(false);
+      setDogsLoading(true);
+      setDogsChecked(false);
       try {
         // Same lookup the staff front-desk panel runs — see lib/signin.ts.
         const ctx = await loadPhoneContext(phone);
         setPackages(ctx.packages);
         setBoardings(ctx.boardings);
         setOpenVisits(ctx.openVisits);
-        const found = ctx.clients;
+        setHistory(ctx.history);
+        // Non-fatal: an unreachable payments table shouldn't stop a check-in.
+        try {
+          const pays = await loadPayments(phone.trim());
+          setBalance(computeBalance(ctx.history as SignInRecord[], ctx.packages, pays));
+        } catch (e) {
+          console.error("Loading balance failed:", e);
+          setBalance(null);
+        }
+        const found = ctx.dogs;
         setMatches(found);
 
         // A single dog on file auto-selects itself; with more than one,
@@ -209,8 +268,8 @@ export default function KioskForm() {
         console.error("Lookup failed:", e);
       } finally {
         setPkgLoading(false);
-        setClientLoading(false);
-        setClientChecked(true);
+        setDogsLoading(false);
+        setDogsChecked(true);
       }
     }, 500);
   }, [phone]);
@@ -288,8 +347,10 @@ export default function KioskForm() {
     setMatches([]);
     setSelectedIds([]);
     setOpenVisits(new Map());
+    setHistory([]);
+    setBalance(null);
     setBoardings([]);
-    setClientChecked(false);
+    setDogsChecked(false);
     setBreakdownOpenFor(null);
   }
 
@@ -299,7 +360,7 @@ export default function KioskForm() {
       setError(
         matches.length > 1
           ? "Select which dog (or dogs) are checking in."
-          : "Look up a phone number with a completed signup before signing in."
+          : "Look up a phone number with an approved profile before signing in."
       );
       return;
     }
@@ -351,7 +412,8 @@ export default function KioskForm() {
           bathSize: dog.id ? (bathSizeByDog[dog.id] ?? null) : null,
           openVisit: dog.id ? (openVisits.get(dog.id) ?? null) : null,
           pkg: packageFor(dog),
-          packageSold: soldToday(dog),
+          packagesSold: soldToday(dog),
+          walkPkg: walkPackageFor(dog),
           now,
         });
         results.push({
@@ -382,7 +444,7 @@ export default function KioskForm() {
         </div>
         <div className="space-y-1.5">
           {confirmed.map((c) => (
-            <p key={c.dogName} className="text-lg font-medium text-slate-800">
+            <p key={c.dogName} className="text-lg font-medium text-ink">
               {c.dogName} {action === "drop_off" ? "dropped off" : "picked up"}
               {c.daysLeft !== null && (
                 <span className="ml-2 text-sm font-medium text-accent-600">
@@ -390,7 +452,7 @@ export default function KioskForm() {
                 </span>
               )}
               {c.priceDue !== null && (
-                <span className="ml-2 text-sm font-medium text-emerald-600">· ${c.priceDue.toFixed(2)} due</span>
+                <span className="ml-2 text-sm font-medium text-emerald-600">· ${c.priceDue.toFixed(2)} Paid today</span>
               )}
             </p>
           ))}
@@ -401,7 +463,7 @@ export default function KioskForm() {
 
   const digits = phone.replace(/\D/g, "");
   const phoneEntered = digits.length >= 7;
-  const showNoProfile = phoneEntered && clientChecked && !clientLoading && matches.length === 0;
+  const showNoProfile = phoneEntered && dogsChecked && !dogsLoading && matches.length === 0;
   const showDogPicker = matches.length > 1;
   const now = new Date();
   const hasDuplicateDropOff =
@@ -440,20 +502,20 @@ export default function KioskForm() {
             )}
           </span>
         </div>
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-slate-900">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
           {business.name}
         </h1>
-        <p className="mt-1 text-sm text-slate-500">{business.tagline}</p>
+        <p className="mt-1 text-sm text-ink-3">{business.tagline}</p>
       </div>
 
-      <div className="rounded-3xl bg-white p-6 shadow-card sm:p-8">
+      <div className="rounded-3xl bg-surface p-6 shadow-card sm:p-8">
         <div className="mb-6 grid grid-cols-2 gap-3">
           <button
             onClick={() => selectAction("drop_off")}
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
               action === "drop_off"
                 ? "border-accent-500 bg-accent-500 text-white shadow-card"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
             🚗 Drop off
           </button>
@@ -462,14 +524,14 @@ export default function KioskForm() {
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
               action === "pick_up"
                 ? "border-accent-500 bg-accent-500 text-white shadow-card"
-                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
             🏠 Pick up
           </button>
         </div>
 
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-slate-500">
+          <label className="mb-1.5 block text-xs font-medium text-ink-3">
             Phone number
           </label>
           <input
@@ -478,24 +540,28 @@ export default function KioskForm() {
             placeholder="(123) 456-7890"
             inputMode="numeric"
             autoFocus
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-base text-slate-900 outline-none transition focus:border-accent-500 focus:bg-white focus:ring-2 focus:ring-accent-100"
+            className="w-full rounded-xl border border-line bg-surface-2 px-4 py-3 text-base text-ink outline-none transition focus:border-accent-500 focus:bg-surface focus:ring-2 focus:ring-accent-100"
           />
 
-          {phoneEntered && clientLoading && (
-            <p className="mt-2 text-xs text-slate-400">Looking you up…</p>
+          {phoneEntered && dogsLoading && (
+            <p className="mt-2 text-xs text-ink-3">Looking you up…</p>
           )}
 
           {showNoProfile && (
             <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               <p className="font-medium">No profile found for this number.</p>
               <p className="mt-1 text-xs text-amber-700">
-                First time here? Complete the one-time signup and waiver, then
-                come back and enter your phone number to check in.
+                First time here? Fill in the enrollment form. We&apos;ll review it and confirm by
+                email — after that, your phone number is all you need to check in.
+              </p>
+              <p className="mt-1 text-xs text-amber-700">
+                Already sent one in? It may still be waiting for approval — please check with the
+                front desk.
               </p>
               <Link
                 href="/signup"
                 className="mt-2 inline-block rounded-xl bg-amber-600 px-4 py-2 text-xs font-medium text-white transition hover:bg-amber-700">
-                New client signup
+                Start enrollment
               </Link>
             </div>
           )}
@@ -521,7 +587,7 @@ export default function KioskForm() {
                       className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
                         selected
                           ? "border-accent-500 bg-accent-500 text-white"
-                          : "border-accent-200 bg-white text-accent-700 hover:border-accent-400"
+                          : "border-accent-200 bg-surface text-accent-700 hover:border-accent-400"
                       }`}>
                       {selected ? "✓ " : "🐕 "}
                       {m.dog_name}
@@ -536,6 +602,32 @@ export default function KioskForm() {
                 className="mt-2 inline-block text-xs font-medium text-accent-600 hover:text-accent-800">
                 Add another dog to this number
               </Link>
+            </div>
+          )}
+
+          {/* Anything owed on this number, oldest charge first. Shown for the
+              household rather than per dog, since that's how it's paid — and
+              it includes today's charges, not just older ones. */}
+          {balance && balance.outstanding > 0.005 && (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <p className="text-sm font-semibold text-amber-900">
+                💰 ${balance.outstanding.toFixed(2)} outstanding on this number
+              </p>
+              <ul className="mt-1.5 space-y-0.5">
+                {unpaidCharges(balance).map((c) => (
+                  <li key={c.key} className="flex justify-between gap-4 text-xs text-amber-800">
+                    <span>
+                      {prettyDay(c.date)} · {c.label}
+                    </span>
+                    <span className="whitespace-nowrap font-medium">
+                      ${c.remaining.toFixed(2)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-[11px] text-amber-700">
+                Please settle with a staff member.
+              </p>
             </div>
           )}
 
@@ -565,6 +657,7 @@ export default function KioskForm() {
                         open.bathSize,
                         true,
                         soldToday(dog),
+                        walkAppliesNow(dog, open),
                       )
                     : null;
                 const showBreakdown = breakdownOpenFor === dog.id;
@@ -587,7 +680,7 @@ export default function KioskForm() {
                           className="h-14 w-14 rounded-full object-cover ring-2 ring-white"
                         />
                       ) : (
-                        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-xl ring-2 ring-white">
+                        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface text-xl ring-2 ring-white">
                           🐕
                         </div>
                       )}
@@ -601,12 +694,12 @@ export default function KioskForm() {
                         </span>
                       )}
                       {action === "pick_up" && open && (
-                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-accent-700">
+                        <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-semibold text-accent-700">
                           {serviceLabel?.icon} {serviceLabel?.label}
                         </span>
                       )}
                       {action === "drop_off" && !isIn && reservation && (
-                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-accent-700">
+                        <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-semibold text-accent-700">
                           🛏️ Boarding · reserved
                         </span>
                       )}
@@ -617,21 +710,38 @@ export default function KioskForm() {
                       </p>
                     ) : pkg ? (
                       <>
-                        <span className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-accent-700">
-                          📦 {daysLeft(pkg)} of {pkg.total_days} days left
+                        {/* The package this visit will actually draw from —
+                            the one pinned on the dog's profile when there is
+                            one, marked so it's clear the choice was
+                            deliberate rather than arbitrary. Which package a
+                            visit spends stays a staff decision; the kiosk
+                            only reports it. */}
+                        <span className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-accent-700">
+                          {preferredPackageId(dog, "daycare") === pkg.id ? "📌" : "📦"}{" "}
+                          {daysLeft(pkg)} of {pkg.total_days} days left
                           {pkg.dog_name ? "" : " (shared)"}
                           {action === "pick_up" &&
                             open &&
                             !usingPackage &&
                             " — today's visit was 4hrs or less, half day rate applies"}
                         </span>
-                        {/* Which package a visit draws from is a staff
-                            decision, made on the front-desk panel — the
-                            kiosk just uses the default and says which one
-                            it landed on. */}
+                        {(() => {
+                          const wp = walkPackageFor(dog);
+                          if (!wp) return null;
+                          return (
+                            <span className="ml-1.5 mt-1 inline-flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-emerald-700">
+                              {preferredPackageId(dog, "walk") === wp.id ? "📌" : "🚶"}{" "}
+                              {daysLeft(wp)} of {wp.total_days} walks left
+                              {wp.dog_name ? "" : " (shared)"}
+                            </span>
+                          );
+                        })()}
                         {dogPackages.length > 1 && (
                           <p className="mt-1 text-[11px] text-accent-500">
-                            {dogPackages.length} packages on file — this visit uses the one above.
+                            {dogPackages.length} daycare packages on file — this visit uses the
+                            {preferredPackageId(dog, "daycare") === pkg.id
+                              ? " one set as default."
+                              : " one above."}
                           </p>
                         )}
                       </>
@@ -639,16 +749,16 @@ export default function KioskForm() {
                       <p className="mt-1 text-xs text-accent-600">
                         No package on file for {dog.dog_name}
                       </p>
-                    )}
+                        )}
                     {shownReservation && (
-                      <div className="mt-2 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                      <div className="mt-2 rounded-xl bg-surface px-3 py-2 text-xs text-ink-2">
                         <p className="font-medium text-accent-800">
                           🛏️ {upcoming ? "Upcoming boarding reservation" : "Boarding reservation on file"}
                         </p>
                         <p className="mt-0.5">
                           {prettyDateKey(shownReservation.start_date)} →{" "}
                           {prettyDateKey(shownReservation.end_date)}
-                          <span className="text-slate-400">
+                          <span className="text-ink-3">
                             {" "}
                             · pick up {prettyDateKey(shownReservation.end_date)}
                           </span>
@@ -671,7 +781,7 @@ export default function KioskForm() {
                           </p>
                         )}
                         {/* {shownReservation.feeding_instructions && (
-                          <p className="mt-0.5 text-slate-500">🍽️ {shownReservation.feeding_instructions}</p>
+                          <p className="mt-0.5 text-ink-3">🍽️ {shownReservation.feeding_instructions}</p>
                         )} */}
                       </div>
                     )}
@@ -680,7 +790,7 @@ export default function KioskForm() {
                         <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent-500">
                           Add-ons for {dog.dog_name} (optional)
                           {reservation && (
-                            <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">
+                            <span className="ml-1 font-normal normal-case tracking-normal text-ink-3">
                               — pre-filled from the reservation, tap to change
                             </span>
                           )}
@@ -695,7 +805,7 @@ export default function KioskForm() {
                                 className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
                                   active
                                     ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                                    : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                    : "border-line bg-surface text-ink-3 hover:border-line"
                                 }`}>
                                 {a.icon} {a.label}
                               </button>
@@ -706,7 +816,7 @@ export default function KioskForm() {
                         {/* A bath takes most of the day, so grooming needs to
                             know when the dog is expected back out front. */}
                         {!!dog.id && (addonsByDog[dog.id] ?? []).includes("bath") && (
-                          <div className="mt-2 rounded-xl bg-white px-3 py-2">
+                          <div className="mt-2 rounded-xl bg-surface px-3 py-2">
                             <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent-500">
                               🛁 What time will you pick {dog.dog_name} up?
                             </p>
@@ -725,7 +835,7 @@ export default function KioskForm() {
                                     className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
                                       active
                                         ? "border-sky-500 bg-sky-50 text-sky-700"
-                                        : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                        : "border-line bg-surface text-ink-3 hover:border-line"
                                     }`}>
                                     {w}
                                   </button>
@@ -745,12 +855,12 @@ export default function KioskForm() {
                             )
                           }
                           className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-200">
-                          💵 ${priceEstimate.amount.toFixed(2)} due —{" "}
-                          {priceEstimate.label}
+                          💵 ${priceEstimate.amount.toFixed(2)} due today:{" "}
+                          {/* {priceEstimate.label} */}
                           <span className="text-emerald-500">🧾</span>
                         </button>
                         {showBreakdown && (
-                          <ul className="mt-1.5 space-y-0.5 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                          <ul className="mt-1.5 space-y-0.5 rounded-xl bg-surface px-3 py-2 text-xs text-ink-2">
                             {priceEstimate.breakdown.map((item, i) => (
                               <li
                                 key={i}
@@ -805,7 +915,7 @@ export default function KioskForm() {
           {matches.length === 1 && (
             <Link
               href="/signup"
-              className="mt-2 inline-block text-xs font-medium text-slate-400 hover:text-slate-600">
+              className="mt-2 inline-block text-xs font-medium text-ink-3 hover:text-ink-2">
               Add another dog to this number
             </Link>
           )}
@@ -814,14 +924,14 @@ export default function KioskForm() {
         {selectedDogs.length > 0 && (
           <div className="mt-6 grid gap-6 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+              <label className="mb-1.5 block text-xs font-medium text-ink-3">
                 {action === "drop_off" ? "Drop off by" : "Picked up by"}
               </label>
               <input
                 value={dropOffBy}
                 onChange={(e) => setDropOffBy(e.target.value)}
                 placeholder="Parent/guardian"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-accent-500 focus:bg-white focus:ring-2 focus:ring-accent-100"
+                className="w-full rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent-500 focus:bg-surface focus:ring-2 focus:ring-accent-100"
               />
             </div>
 
@@ -845,10 +955,10 @@ export default function KioskForm() {
                   )}
                   {unreservedDogs.length > 0 && (
                     <>
-                      <label className="mb-1.5 block text-xs font-medium text-slate-500">
+                      <label className="mb-1.5 block text-xs font-medium text-ink-3">
                         Service
                         {reservedDogs.length > 0 && (
-                          <span className="ml-1 font-normal text-slate-400">
+                          <span className="ml-1 font-normal text-ink-3">
                             for {unreservedDogs.map((d) => d.dog_name).join(", ")}
                           </span>
                         )}
@@ -861,7 +971,7 @@ export default function KioskForm() {
                             className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition ${
                               service === s.key
                                 ? "border-accent-500 bg-accent-50 text-accent-700"
-                                : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                                : "border-line bg-surface text-ink-3 hover:border-line"
                             }`}>
                             {s.icon} {s.label}
                           </button>
@@ -913,8 +1023,8 @@ export default function KioskForm() {
           </button>
           <Link
             href="/signup"
-            className="ml-auto text-xs font-medium text-slate-400 hover:text-slate-600">
-            New client signup
+            className="ml-auto text-xs font-medium text-ink-3 hover:text-ink-2">
+            New client enrollment
           </Link>
         </div>
       </div>

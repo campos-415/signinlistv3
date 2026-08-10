@@ -19,9 +19,11 @@ const SignaturePad = forwardRef<SignaturePadHandle>((_, ref) => {
     if (!canvas) return;
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
+      // No layout box yet — measuring now would set the backing store to 0
+      // and leave it there, since every later resize would read 0 back out.
+      if (rect.width === 0 || rect.height === 0) return;
       const ratio = window.devicePixelRatio || 1;
       const ctx = canvas.getContext("2d");
-      const prev = ctx?.getImageData(0, 0, canvas.width, canvas.height);
       canvas.width = rect.width * ratio;
       canvas.height = rect.height * ratio;
       ctx?.scale(ratio, ratio);
@@ -32,8 +34,16 @@ const SignaturePad = forwardRef<SignaturePadHandle>((_, ref) => {
       }
     };
     resize();
+    // A canvas can be laid out after its effect runs — inside a section that
+    // is still sizing, or a tab that has just been shown. Watching the box
+    // catches that first real measurement instead of leaving a blank pad.
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
     window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", resize);
+    };
   }, []);
 
   function pos(e: React.PointerEvent<HTMLCanvasElement>) {
@@ -79,7 +89,7 @@ const SignaturePad = forwardRef<SignaturePadHandle>((_, ref) => {
   }));
 
   return (
-    <div className="h-48 w-full rounded-2xl border border-slate-200 bg-white">
+    <div className="h-48 w-full rounded-2xl border border-line bg-surface">
       <canvas
         ref={canvasRef}
         className="sig-canvas rounded-2xl"

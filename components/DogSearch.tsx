@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { dogHref } from "@/lib/clients";
-import { Client } from "@/types";
+import { dogHref } from "@/lib/dogs";
+import { Dog } from "@/types";
 
 // Type-ahead over every dog on file. Matches the dog's name or the owner
 // surname, so "Martinez" finds the household as readily as "Bella" finds
@@ -12,7 +12,7 @@ import { Client } from "@/types";
 export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Client[]>([]);
+  const [results, setResults] = useState<Dog[]>([]);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -35,13 +35,13 @@ export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }
         // the query can't break out of the filter expression.
         const safe = q.replace(/[,()]/g, " ").trim();
         const { data, error } = await supabase
-          .from("clients")
+          .from("dogs")
           .select("*")
           .or(`dog_name.ilike.%${safe}%,last_name.ilike.%${safe}%`)
           .order("dog_name", { ascending: true })
           .limit(12);
         if (error) throw error;
-        setResults((data as Client[]) ?? []);
+        setResults((data as Dog[]) ?? []);
         setHighlight(0);
         setOpen(true);
       } catch (e) {
@@ -61,7 +61,7 @@ export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }
     return () => document.removeEventListener("mousedown", onClickAway);
   }, []);
 
-  function go(dog: Client) {
+  function go(dog: Dog) {
     if (!dog.id) return;
     setOpen(false);
     setQuery("");
@@ -93,13 +93,13 @@ export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }
         onKeyDown={onKeyDown}
         autoFocus={autoFocus}
         placeholder="🔍 Search a dog by name or owner…"
-        className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+        className="w-full rounded-xl border border-line bg-surface px-4 py-2.5 text-sm outline-none transition focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
       />
 
       {open && (
-        <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-80 overflow-y-auto rounded-2xl border border-slate-200 bg-white py-1 shadow-lg">
+        <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-80 overflow-y-auto rounded-2xl border border-line bg-surface py-1 shadow-lg">
           {results.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-slate-400">
+            <p className="px-4 py-3 text-sm text-ink-3">
               {searching ? "Searching…" : `No dog matches "${query.trim()}".`}
             </p>
           ) : (
@@ -109,20 +109,20 @@ export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }
                 onMouseEnter={() => setHighlight(i)}
                 onClick={() => go(c)}
                 className={`flex w-full items-center gap-3 px-3 py-2 text-left transition ${
-                  i === highlight ? "bg-accent-50" : "hover:bg-slate-50"
+                  i === highlight ? "bg-accent-50" : "hover:bg-surface-2"
                 }`}
               >
                 {c.photo_data ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={c.photo_data} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover" />
                 ) : (
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-base">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-3 text-base">
                     🐕
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-slate-800">{c.dog_name}</span>
-                  <span className="block truncate text-xs text-slate-500">
+                  <span className="block truncate text-sm font-medium text-ink">{c.dog_name}</span>
+                  <span className="block truncate text-xs text-ink-3">
                     {c.last_name} · {c.phone}
                   </span>
                 </span>

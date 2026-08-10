@@ -12,10 +12,10 @@ import { isBaseCoveredByPackage } from "@/lib/pricing";
 import {
   ADDON_PRICES,
   BATH_PRICES,
-  BOARDING_ADDON_PRICES,
   PRICING,
+  boardingAddonAmounts,
   isFullDayVisit,
-  estimateBoardingTotal,
+  nightsBetweenKeys,
 } from "@/lib/pricing";
 
 export interface DailyTotals {
@@ -59,13 +59,15 @@ export function computeDailyTotals({
   let bathCount = 0;
   let nails = 0;
   let nailCount = 0;
+  let medication = 0;
+  let medicationCount = 0;
 
   for (const p of pickUps) {
     if (p.service_type !== "daycare") continue;
     const drop = dropOffs.find(
       (d) =>
-        d.client_id &&
-        d.client_id === p.client_id &&
+        d.dog_id &&
+        d.dog_id === p.dog_id &&
         d.service_type === "daycare",
     );
     const full =
@@ -76,7 +78,7 @@ export function computeDailyTotals({
     // A package only covers the FULL-day rate — a half-day visit is
     // always charged, package or not.
     const hasPackage = packageUses.some(
-      (u) => u.client_id && u.client_id === p.client_id,
+      (u) => u.dog_id && u.dog_id === p.dog_id,
     );
     if (hasPackage && full) continue;
 
@@ -112,15 +114,15 @@ export function computeDailyTotals({
   }
 
   // Boarding stays starting today that haven't been dropped off yet.
-  const arrivedClientIds = new Set(
+  const arrivedDogIds = new Set(
     dropOffs
       .filter((d) => d.service_type === "boarding")
-      .map((d) => d.client_id),
+      .map((d) => d.dog_id),
   );
   const scheduledToArrive = boardings.filter(
     (b) =>
       b.start_date === /* selectedDate, needs to be passed in */ dateKey &&
-      !arrivedClientIds.has(b.client_id),
+      !arrivedDogIds.has(b.dog_id),
   ).length;
 
   // Boarding revenue is realized at checkout, not accrued nightly. A stay
@@ -135,21 +137,36 @@ export function computeDailyTotals({
   let projectedCount = 0;
 
   for (const b of boardings) {
-    const total = estimateBoardingTotal(b.start_date, b.end_date, {
+    const addonInput = {
       addons: b.addons ?? [],
       walksPerDay: b.walks_per_day ?? null,
       bathSize: b.bath_size ?? null,
-    }).amount;
+    };
+    const nights = nightsBetweenKeys(b.start_date, b.end_date);
+    const base = nights * PRICING.boardingPerNight;
+    const extras = boardingAddonAmounts(addonInput, nights);
 
     const pickedUpToday = boardingPickUps.some(
-      (p) => p.client_id && p.client_id === b.client_id,
+      (p) => p.dog_id && p.dog_id === b.dog_id,
     );
 
     if (pickedUpToday) {
-      boardingActual += total;
+      // Nothing is billed until the dog leaves, and then the whole stay
+      // lands at once. Split across categories rather than shown as one
+      // boarding lump, so grooming and walk revenue is visible wherever it
+      // came from — the Boarding line is the nightly rate only.
+      boardingActual += base;
       boardingActualCount++;
+      walks += extras.walks;
+      walkCount += extras.walkCount;
+      baths += extras.bath;
+      bathCount += extras.bathCount;
+      nails += extras.nailTrim;
+      nailCount += extras.nailTrimCount;
+      medication += extras.medication;
+      medicationCount += extras.medicationCount;
     } else {
-      projectedRevenue += total;
+      projectedRevenue += base + extras.total;
       projectedCount++;
     }
   }
@@ -173,7 +190,7 @@ export function computeDailyTotals({
     },
     {
       key: "boarding",
-      label: "Boarding (picked up)",
+      label: "Boarding nights (checked out)",
       amount: boardingActual,
       count: boardingActualCount,
       color: "#0EA5E9",
@@ -199,6 +216,13 @@ export function computeDailyTotals({
       amount: nails,
       count: nailCount,
       color: "#F97316",
+    },
+    {
+      key: "medication",
+      label: "Medication",
+      amount: medication,
+      count: medicationCount,
+      color: "#EF4444",
     },
     // Selling a package IS the revenue — the client pays the package price
     // up front instead of a daycare fee, and the visits it later covers are
@@ -334,10 +358,10 @@ export interface DailyInput {
 //   // point its length, and so its rate, is known.
 //   for (const p of pickUps) {
 //     if (p.service_type !== "daycare") continue;
-//     const covered = packageUses.some((u) => u.client_id && u.client_id === p.client_id);
+//     const covered = packageUses.some((u) => u.dog_id && u.dog_id === p.dog_id);
 //     if (covered) continue;
 //     const drop = dropOffs.find(
-//       (d) => d.client_id && d.client_id === p.client_id && d.service_type === "daycare"
+//       (d) => d.dog_id && d.dog_id === p.dog_id && d.service_type === "daycare"
 //     );
 //     const full =
 //       drop && drop.created_at && p.created_at
@@ -376,8 +400,8 @@ export interface DailyInput {
 //     if (p.service_type !== "daycare") continue;
 //     const drop = dropOffs.find(
 //       (d) =>
-//         d.client_id &&
-//         d.client_id === p.client_id &&
+//         d.dog_id &&
+//         d.dog_id === p.dog_id &&
 //         d.service_type === "daycare",
 //     );
 //     const full =
@@ -386,7 +410,7 @@ export interface DailyInput {
 //         : true;
 
 //     const hasPackage = packageUses.some(
-//       (u) => u.client_id && u.client_id === p.client_id,
+//       (u) => u.dog_id && u.dog_id === p.dog_id,
 //     );
 //     // A package only covers the FULL-day rate. A half-day visit is always
 //     // charged, package or not, per the rule in lib/pricing.ts.

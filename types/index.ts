@@ -36,7 +36,7 @@ export interface SignInRecord {
   addons: string[];
   bath_size?: BathSize | null; // set later on /records, not at drop-off — see lib/pricing.ts
   package_id?: string | null;
-  client_id?: string | null;
+  dog_id?: string | null;
   price?: number | null; // charge for this visit when no package covers it — set at pick-up, staff-editable after (e.g. to add bath charges)
   signature_data: string; // base64 PNG, may be empty if the client's waiver is on file from signup
   // Daycare walk log — filled in on /records for a drop-off with the
@@ -54,8 +54,19 @@ export interface SignInRecord {
 // grooming knows when the dog is expected back at the front.
 export const PICKUP_WINDOWS: string[] = ["11am–1pm", "1–3pm", "3–5pm", "5–7pm"];
 
+// What a package buys. Daycare packages cover a full-day base rate; walk
+// packages cover the walk add-on on a visit. Same mechanics either way —
+// a block of prepaid uses that a visit draws one from.
+export type PackageKind = "daycare" | "walk";
+
+export const PACKAGE_KINDS: { key: PackageKind; label: string; unit: string; icon: string }[] = [
+  { key: "daycare", label: "Daycare days", unit: "days", icon: "🐕" },
+  { key: "walk", label: "Walks", unit: "walks", icon: "🚶" },
+];
+
 export interface Package {
   id?: string;
+  kind?: PackageKind; // defaults to daycare for rows written before walks existed
   client_name: string;
   dog_name?: string;
   phone: string;
@@ -68,9 +79,90 @@ export interface Package {
   created_at?: string;
 }
 
+// The enrollment questionnaire's fixed answer lists. Free text is allowed
+// everywhere alongside these — a value that isn't in the list is stored
+// verbatim and rendered as "Other", so the lists can be extended later
+// without stranding existing rows. See lib/enrollment.ts.
+export const FLEA_PROGRAMS = ["Simparica", "Frontline", "Trifexis"];
+
+export const ACTIVITY_RESTRICTIONS = ["No jumping", "No running", "No hard play"];
+
+export const ALLERGENS = ["Peanut butter", "Treats", "Chicken", "Shampoo"];
+
+export const BEHAVIOR_TRAITS = [
+  "Quiet",
+  "Digger",
+  "Fence climber",
+  "Food possessive",
+  "Leash aggression",
+  "Shy",
+  "Jumper",
+  "People aggressive",
+  "Eats foreign objects",
+  "Friendly",
+  "Escapist",
+  "Noisy",
+  "Submissive",
+  "Toy possessive",
+  "Excessive barker",
+  "Energetic",
+  "Destructive",
+  "Poop eater",
+  "Whiner",
+];
+
+export const PLAY_STYLES = [
+  "Rough player",
+  "Gentle player",
+  "Vocal player",
+  "Submissive",
+  "Fearful",
+  "Not interested",
+  "Likes any dog",
+  "Prefers big dogs",
+  "Small dogs",
+  "Prefers opposite sex",
+  "Dislikes other dogs",
+  "Dog aggressive",
+  "Toy possessive",
+  "Food possessive",
+  "Humps",
+  "Fetch",
+];
+
+export const ATTENDANCE_PLANS = [
+  "Daycare often",
+  "Boarding often",
+  "Both often",
+  "Daycare occasionally",
+  "Boarding occasionally",
+  "Just visiting",
+];
+
+export const BIG_DOG_RESPONSES = ["Does well", "Doesn't do well", "Doesn't care"];
+
+export const HEARD_ABOUT = ["Google", "Yelp", "Friend", "Walk-by"];
+
+export const PACKAGE_INTEREST = ["Yes", "No", "Maybe"];
+
+// Meet & greets run weekday mornings only, split into two arrival windows.
+// A client picks a date and a window; staff confirm the exact time when
+// they approve the enrollment.
+export const MEET_GREET_WINDOWS = ["8:00–10:30 am", "10:30 am–1:00 pm"];
+
+export const MEET_GREET_HOURS = "Monday to Friday, 8am–1pm";
+
+/** True for Mon–Fri. Meet & greets are not offered at weekends. */
+export function isMeetGreetDay(dateKey: string): boolean {
+  if (!dateKey) return false;
+  // Parsed at local noon so a timezone offset can't shift the weekday.
+  const day = new Date(`${dateKey}T12:00:00`).getDay();
+  return day >= 1 && day <= 5;
+}
+
 // A one-time signup profile. Waiver is signed once here; daily kiosk
 // check-in just looks this up by phone instead of re-collecting it.
-export interface Client {
+export interface Dog {
   id?: string;
   phone: string;
   dog_name: string;
@@ -86,6 +178,40 @@ export interface Client {
   birthdate?: string | null; // "YYYY-MM-DD"
   weight_lb?: number | null;
   vet?: string | null;
+  // ---- Enrollment questionnaire ----------------------------------------
+  // Everything below comes from the full enrollment form (/enroll). All
+  // optional: dogs added by staff from an owner profile, or imported from a
+  // previous system, never answered any of it.
+  color?: string | null;
+  flea_program?: string | null; // a FLEA_PROGRAMS entry, or free text
+  fixed_scheduled_on?: string | null; // "YYYY-MM-DD" — when a not-fixed dog is booked in
+  dog_source?: string | null; // where the dog came from (breeder, rescue…)
+  // Incident history. null means "never asked", which is different from a
+  // recorded "no" — the profile shows the two differently.
+  growled?: boolean | null;
+  growled_note?: string | null;
+  bitten?: boolean | null;
+  bitten_note?: string | null;
+  climbed_fence?: boolean | null;
+  fence_height?: string | null;
+  dog_fight?: boolean | null;
+  dog_fight_note?: string | null;
+  health_problems?: boolean | null;
+  health_notes?: string | null;
+  activity_restrictions?: string[] | null;
+  allergies?: string[] | null;
+  sensitive_areas?: boolean | null;
+  sensitive_areas_note?: string | null;
+  behavior_traits?: string[] | null;
+  play_style?: string[] | null;
+  attendance_plan?: string | null;
+  big_dog_response?: string | null;
+  crate_trained?: boolean | null;
+  kennel_trained?: boolean | null;
+  package_interest?: string | null;
+  meet_greet_on?: string | null; // "YYYY-MM-DD" — requested meet & greet (weekdays only)
+  meet_greet_window?: string | null; // a MEET_GREET_WINDOWS entry
+  enrolled_at?: string | null; // set when the enrollment form was submitted
   // Who else may collect this dog, beyond the usual drop_off_by person.
   authorized_pickup?: string | null;
   notes?: string | null;
@@ -93,6 +219,11 @@ export interface Client {
   // an import can be reconciled or re-run against the source export.
   external_id?: string | null;
   photo_filename?: string | null;
+  // The package new visits should draw from, per kind, when staff have
+  // pinned one. Without these the default rule picks (own before shared,
+  // remaining before exhausted) — see findPackageFor in lib/clients.ts.
+  default_package_id?: string | null;
+  default_walk_package_id?: string | null;
   // Set by staff when a waiver was signed outside the kiosk (on paper, or
   // at another location) so a dog added from the owner profile isn't
   // flagged as unsigned forever. A real signature in signature_data counts
@@ -132,7 +263,7 @@ export interface Boarding {
   dog_name: string;
   last_name: string;
   phone: string;
-  client_id?: string | null;
+  dog_id?: string | null;
   start_date: string; // "YYYY-MM-DD"
   end_date: string; // "YYYY-MM-DD"
   feeding_instructions?: string;
@@ -182,6 +313,29 @@ export interface WalkLog {
   created_at?: string;
 }
 
+export type PaymentMethod = "cash" | "card" | "check" | "other";
+
+export const PAYMENT_METHODS: { key: PaymentMethod; label: string; icon: string }[] = [
+  { key: "card", label: "Card", icon: "💳" },
+  { key: "cash", label: "Cash", icon: "💵" },
+  { key: "check", label: "Check", icon: "🧾" },
+  { key: "other", label: "Other", icon: "•" },
+];
+
+// Money taken from a client. Recorded against the phone number, since
+// that's the household that pays — a payment can settle charges across
+// several of their dogs at once.
+export interface Payment {
+  id?: string;
+  phone: string;
+  dog_id?: string | null; // set when the payment was clearly for one dog
+  amount: number;
+  method?: PaymentMethod | null;
+  note?: string | null;
+  paid_on: string; // "YYYY-MM-DD"
+  created_at?: string;
+}
+
 // The person behind a phone number. `clients` is one row per DOG, so this
 // is where owner-level details live — keyed by phone, the same key every
 // lookup in the app already uses. Created lazily the first time staff save
@@ -199,7 +353,86 @@ export interface Owner {
   emergency_name?: string | null;
   emergency_phone?: string | null;
   emergency_relation?: string | null;
+  // The household's vet, asked once on the enrollment form. A dog with its
+  // own vet overrides this on its profile — see `vet` on Client.
+  vet_name?: string | null;
+  vet_phone?: string | null;
+  vet_address?: string | null;
+  heard_about?: string | null; // a HEARD_ABOUT entry, or free text
   notes?: string | null;
+  created_at?: string;
+}
+
+// A file a client uploaded with their enrollment — in practice vaccination
+// paperwork. Kept in its own table rather than a column on `clients`,
+// because a multi-megabyte base64 PDF on a row that every list page selects
+// would be dragged into memory on screens that never display it.
+export interface DogDoc {
+  id?: string;
+  dog_id: string;
+  kind: string; // "vaccination" today; room for others later
+  file_name: string;
+  mime_type: string;
+  data: string; // data URL
+  created_at?: string;
+}
+
+// Extras a client can ask for when requesting a stay. Deliberately plainer
+// than BOARDING_ADDONS: an owner picks "walk", staff decide how many a day
+// and what a bath costs by size when they confirm the reservation.
+export const BOARDING_SERVICES: { key: BoardingAddonKey; label: string }[] = [
+  { key: "bath", label: "Bath before pick-up" },
+  { key: "walk", label: "Walks" },
+  { key: "medication", label: "Medication" },
+  { key: "nail_trim", label: "Nail trim" },
+];
+
+export type EnrollmentStatus = "pending" | "approved" | "rejected";
+
+// A submitted enrollment form, awaiting staff review. The public form is
+// reachable by anyone with the link, so a submission is a request — nothing
+// becomes a client, and nothing is bookable, until it's approved.
+//
+// `data` holds the whole submitted draft (see EnrollmentDraft in
+// lib/enrollment.ts) plus the signature, rather than being spread across
+// columns: the review screen shows exactly what was sent, and adding a
+// question to the form doesn't need a migration.
+export interface Enrollment {
+  id?: string;
+  phone: string;
+  owner_name: string;
+  last_name: string;
+  dog_names: string[];
+  status: EnrollmentStatus;
+  source?: "kiosk" | "web" | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any;
+  review_note?: string | null;
+  reviewed_at?: string | null;
+  created_at?: string;
+}
+
+// A client asking for a stay. Same shape of idea as Enrollment: the public
+// form is open to anyone, so a submission is a request for dates, not a
+// booking. Approving is what writes real `boardings` rows — until then the
+// dates are not held and nothing shows on the calendar.
+export interface BoardingRequest {
+  id?: string;
+  phone: string;
+  owner_name: string;
+  last_name: string;
+  email?: string | null;
+  dog_names: string[];
+  // Promoted out of `data` so the review list can sort and filter by date
+  // without loading every submission body.
+  start_date: string; // "YYYY-MM-DD"
+  end_date: string;
+  status: EnrollmentStatus;
+  source?: "kiosk" | "web" | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any;
+  review_note?: string | null;
+  reviewed_at?: string | null;
   created_at?: string;
 }
 
@@ -209,7 +442,7 @@ export type VaccineKey = "rabies" | "dhpp" | "bordetella" | "influenza" | "lepto
 // in dates, so records stay comparable across dogs.
 export interface Vaccination {
   id?: string;
-  client_id: string;
+  dog_id: string;
   vaccine: VaccineKey;
   given_on?: string | null; // "YYYY-MM-DD"
   expires_on?: string | null; // "YYYY-MM-DD"
@@ -230,7 +463,7 @@ export const VACCINES: { key: VaccineKey; label: string }[] = [
 export interface PackageUse {
   id?: string;
   package_id: string;
-  client_id?: string | null;
+  dog_id?: string | null;
   signin_id?: string | null;
   dog_name?: string | null;
   used_on: string; // "YYYY-MM-DD"

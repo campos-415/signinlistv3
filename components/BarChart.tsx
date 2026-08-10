@@ -23,7 +23,7 @@ export default function BarChart({
   const height = data.length * rowHeight;
 
   if (data.every((d) => d.amount === 0)) {
-    return <p className="text-sm text-slate-400">Nothing recorded for this day.</p>;
+    return <p className="text-sm text-ink-3">Nothing recorded for this day.</p>;
   }
 
   return (
@@ -55,7 +55,7 @@ export default function BarChart({
                 y={y + rowHeight / 2}
                 dominantBaseline="middle"
                 fontSize="12"
-                fill={clickable ? "#334155" : "#475569"}
+                fill={clickable ? "rgb(var(--ink-2))" : "rgb(var(--ink-3))"}
                 className={clickable ? "group-hover:underline" : undefined}
               >
                 {d.label}
@@ -66,7 +66,7 @@ export default function BarChart({
                 width={barArea}
                 height={rowHeight - 14}
                 rx={4}
-                fill="#F1F5F9"
+                fill="rgb(var(--surface-3))"
               />
               <rect
                 x={labelWidth}
@@ -84,7 +84,7 @@ export default function BarChart({
                 textAnchor="end"
                 fontSize="12"
                 fontWeight="600"
-                fill="#1E293B"
+                fill="rgb(var(--ink))"
               >
                 {format(d.amount)}
               </text>

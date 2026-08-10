@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
-import { daysLeft, findClient } from "@/lib/clients";
+import { daysLeft, findDog, packageKind } from "@/lib/dogs";
 import { prettyDateKey, todayKey } from "@/lib/dates";
-import { PRICING } from "@/lib/pricing";
-import { Client, Package, PackageUse } from "@/types";
+import { ADDON_PRICES, PRICING } from "@/lib/pricing";
+import { Dog, Package, PACKAGE_KINDS, PackageKind, PackageUse } from "@/types";
 import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
@@ -24,7 +24,7 @@ export default function PackagesPage() {
 function Packages() {
   const [packages, setPackages] = useState<Package[]>([]);
   const [uses, setUses] = useState<PackageUse[]>([]);
-  const [allClients, setAllClients] = useState<Client[]>([]);
+  const [allDogs, setAllDogs] = useState<Dog[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -32,7 +32,10 @@ function Packages() {
   // New-package form: look the number up, then pick which dogs it's for.
   const [phone, setPhone] = useState("");
   const { settings } = useSettings();
-  const tiers = settings.packageTiers;
+  // What's being sold. Tiers, the unit word, and the saved row all key off it.
+  const [kind, setKind] = useState<PackageKind>("daycare");
+  const tiers = settings.packageTiers.filter((t) => (t.kind ?? "daycare") === kind);
+  const unit = kind === "walk" ? "walks" : "days";
   const [days, setDays] = useState(10);
   // What the client paid. Kept as a string so the field can start empty
   // rather than showing a misleading 0.
@@ -42,16 +45,17 @@ function Packages() {
 
   // Preselect the first tier once settings land, so the common case is one
   // tap — but never stomp on a choice already made.
-  const seededTier = useRef(false);
   useEffect(() => {
-    if (seededTier.current || custom || !tiers.length) return;
-    seededTier.current = true;
+    if (custom || !tiers.length) return;
     setDays(tiers[0].days);
     setPrice(String(tiers[0].price));
-  }, [tiers, custom]);
-  const [clientMatches, setClientMatches] = useState<Client[]>([]);
-  const [clientLoading, setClientLoading] = useState(false);
-  const [clientChecked, setClientChecked] = useState(false);
+    // Keyed on kind so switching between daycare and walks re-seeds the
+    // default rather than leaving the previous kind's price in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, settings.packageTiers]);
+  const [dogMatches, setDogMatches] = useState<Dog[]>([]);
+  const [dogsLoading, setDogsLoading] = useState(false);
+  const [dogsChecked, setDogsChecked] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   // A shared package has no dog_name, so it covers every dog on the number.
   const [shared, setShared] = useState(false);
@@ -71,17 +75,17 @@ function Packages() {
     setLoading(true);
     try {
       const supabase = getSupabase();
-      const [pkgRes, useRes, clientRes] = await Promise.all([
+      const [pkgRes, useRes, dogRes] = await Promise.all([
         supabase.from("packages").select("*").order("created_at", { ascending: false }),
         supabase.from("package_uses").select("*").order("used_on", { ascending: false }).limit(1000),
-        supabase.from("clients").select("*"),
+        supabase.from("dogs").select("*"),
       ]);
       if (pkgRes.error) throw pkgRes.error;
       if (useRes.error) throw useRes.error;
-      if (clientRes.error) throw clientRes.error;
+      if (dogRes.error) throw dogRes.error;
       setPackages((pkgRes.data as Package[]) ?? []);
       setUses((useRes.data as PackageUse[]) ?? []);
-      setAllClients((clientRes.data as Client[]) ?? []);
+      setAllDogs((dogRes.data as Dog[]) ?? []);
     } catch (e) {
       console.error("Loading packages failed:", e);
       setError("Could not load packages.");
@@ -97,33 +101,33 @@ function Packages() {
     setSelectedIds([]);
     const digits = phone.replace(/\D/g, "");
     if (digits.length < 7) {
-      setClientMatches([]);
-      setClientChecked(false);
+      setDogMatches([]);
+      setDogsChecked(false);
       return;
     }
     lookupTimer.current = setTimeout(async () => {
-      setClientLoading(true);
+      setDogsLoading(true);
       try {
         const supabase = getSupabase();
         const { data, error: err } = await supabase
-          .from("clients")
+          .from("dogs")
           .select("*")
           .eq("phone", phone.trim())
           .order("created_at", { ascending: true });
         if (err) throw err;
-        const found = (data as Client[]) ?? [];
-        setClientMatches(found);
+        const found = (data as Dog[]) ?? [];
+        setDogMatches(found);
         if (found.length === 1 && found[0].id) setSelectedIds([found[0].id]);
       } catch (e) {
-        console.error("Client lookup failed:", e);
+        console.error("Dog lookup failed:", e);
       } finally {
-        setClientLoading(false);
-        setClientChecked(true);
+        setDogsLoading(false);
+        setDogsChecked(true);
       }
     }, 400);
   }, [phone]);
 
-  const selectedDogs = clientMatches.filter((c) => c.id && selectedIds.includes(c.id));
+  const selectedDogs = dogMatches.filter((c) => c.id && selectedIds.includes(c.id));
 
   function toggleDog(id?: string) {
     if (!id) return;
@@ -150,7 +154,7 @@ function Packages() {
       const supabase = getSupabase();
       // The owner surname on file is the closest thing to a client name;
       // it's only used as a label on the list.
-      const clientName = clientMatches[0]?.last_name?.trim() || phone.trim();
+      const clientName = dogMatches[0]?.last_name?.trim() || phone.trim();
       const rows: {
         client_name: string;
         dog_name: string | null;
@@ -158,6 +162,7 @@ function Packages() {
         total_days: number;
         days_used: number;
         price: number;
+        kind: PackageKind;
       }[] = shared
         ? [
             {
@@ -167,6 +172,7 @@ function Packages() {
               total_days: days,
               days_used: 0,
               price: parsedPrice,
+              kind,
             },
           ]
         : selectedDogs.map((d) => ({
@@ -178,6 +184,7 @@ function Packages() {
             // Price is per package, so two dogs each getting their own
             // package is two sales at this amount.
             price: parsedPrice,
+            kind,
           }));
       const { error: err } = await supabase.from("packages").insert(rows);
       if (err) throw err;
@@ -189,8 +196,8 @@ function Packages() {
       setPrice(tiers[0] ? String(tiers[0].price) : "");
       setSelectedIds([]);
       setShared(false);
-      setClientMatches([]);
-      setClientChecked(false);
+      setDogMatches([]);
+      setDogsChecked(false);
       load();
     } catch (e) {
       console.error("Adding package failed:", e);
@@ -287,7 +294,7 @@ function Packages() {
   const usedUp = filteredPackages.filter((p) => daysLeft(p) <= 0);
 
   const rowProps = {
-    allClients,
+    allDogs,
     usesByPackage,
     historyOpenId,
     setHistoryOpenId,
@@ -304,14 +311,14 @@ function Packages() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
       <StaffNav current="/packages" />
-      <h1 className="font-display mb-6 text-xl font-semibold text-slate-900">Daycare packages</h1>
+      <h1 className="font-display mb-6 text-xl font-semibold text-ink">Daycare packages</h1>
 
       {/* New package */}
-      <div className="mb-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-        <p className="mb-4 text-sm font-medium text-slate-700">Sell a package</p>
+      <div className="mb-8 rounded-2xl border border-line bg-surface p-5 shadow-card">
+        <p className="mb-4 text-sm font-medium text-ink-2">Sell a package</p>
 
         <div className="max-w-xs">
-          <label className="mb-1 block text-[11px] text-slate-400">Phone number</label>
+          <label className="mb-1 block text-[11px] text-ink-3">Phone number</label>
           <input
             value={phone}
             onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
@@ -324,7 +331,30 @@ function Packages() {
         {/* Tiers come from /settings, so the price list is set once rather
             than retyped per sale. Custom covers the odd one-off. */}
         <div className="mt-3">
-          <label className="mb-1 block text-[11px] text-slate-400">Package</label>
+          <label className="mb-1 block text-[11px] text-ink-3">What are they buying?</label>
+          <div className="flex flex-wrap gap-2">
+            {PACKAGE_KINDS.map((k) => (
+              <button
+                key={k.key}
+                type="button"
+                onClick={() => {
+                  setKind(k.key);
+                  setCustom(false);
+                }}
+                className={`rounded-full border px-4 py-1.5 text-xs font-medium transition ${
+                  kind === k.key
+                    ? "border-accent-500 bg-accent-500 text-white"
+                    : "border-line bg-surface text-ink-3 hover:border-line"
+                }`}
+              >
+                {k.icon} {k.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <label className="mb-1 block text-[11px] text-ink-3">Package</label>
           <div className="flex flex-wrap gap-2">
             {tiers.map((t) => {
               const active = !custom && days === t.days && price === String(t.price);
@@ -340,17 +370,17 @@ function Packages() {
                   className={`rounded-2xl border px-4 py-2.5 text-left transition ${
                     active
                       ? "border-accent-500 bg-accent-50"
-                      : "border-slate-200 bg-white hover:border-slate-300"
+                      : "border-line bg-surface hover:border-line"
                   }`}
                 >
                   <span
-                    className={`block text-sm font-medium ${active ? "text-accent-800" : "text-slate-700"}`}
+                    className={`block text-sm font-medium ${active ? "text-accent-800" : "text-ink-2"}`}
                   >
-                    {t.days} days
+                    {t.days} {unit}
                   </span>
                   <span className="block text-xs text-emerald-700">${t.price.toFixed(2)}</span>
-                  <span className="block text-[10px] text-slate-400">
-                    ${(t.price / t.days).toFixed(2)}/day
+                  <span className="block text-[10px] text-ink-3">
+                    ${(t.price / t.days).toFixed(2)}/{unit.slice(0, -1)}
                   </span>
                 </button>
               );
@@ -361,7 +391,7 @@ function Packages() {
               className={`rounded-2xl border px-4 py-2.5 text-sm font-medium transition ${
                 custom
                   ? "border-accent-500 bg-accent-50 text-accent-800"
-                  : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+                  : "border-line bg-surface text-ink-3 hover:border-line"
               }`}
             >
               Custom…
@@ -381,7 +411,9 @@ function Packages() {
         {custom && (
           <div className="mt-3 grid max-w-md gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1 block text-[11px] text-slate-400">Days</label>
+              <label className="mb-1 block text-[11px] text-ink-3">
+              {kind === "walk" ? "Walks" : "Days"}
+            </label>
               <input
                 type="number"
                 min={1}
@@ -391,7 +423,7 @@ function Packages() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-[11px] text-slate-400">Price paid</label>
+              <label className="mb-1 block text-[11px] text-ink-3">Price paid</label>
               <input
                 type="number"
                 step="0.01"
@@ -407,37 +439,37 @@ function Packages() {
 
         {/* The sale is the revenue event, so it has to be recorded here —
             the visits this package covers are $0 later on. */}
-        <p className="mt-2 text-[11px] text-slate-400">
+        <p className="mt-2 text-[11px] text-ink-3">
           The price counts as revenue on the day the package is sold. Visits it covers are then $0,
           since the money was already taken here.
           {days > 0 && price.trim() !== "" && !Number.isNaN(parseFloat(price)) && (
             <>
               {" "}
-              <span className="font-medium text-slate-500">
+              <span className="font-medium text-ink-3">
                 ${(parseFloat(price) / days).toFixed(2)} per day
               </span>{" "}
-              vs ${PRICING.daycareFullDay.toFixed(2)} walk-in.
+              vs ${(kind === "walk" ? ADDON_PRICES.walk : PRICING.daycareFullDay).toFixed(2)} each.
             </>
           )}
         </p>
 
-        {clientLoading && <p className="mt-2 text-xs text-slate-400">Looking up…</p>}
+        {dogsLoading && <p className="mt-2 text-xs text-ink-3">Looking up…</p>}
 
-        {!clientLoading && clientChecked && clientMatches.length === 0 && (
+        {!dogsLoading && dogsChecked && dogMatches.length === 0 && (
           <p className="mt-2 text-xs text-amber-700">
-            No dog on file for that number — the client needs to complete the one-time signup first.
+            No dog on file for that number — the client needs an approved enrollment first.
           </p>
         )}
 
-        {clientMatches.length > 0 && (
+        {dogMatches.length > 0 && (
           <div className="mt-3">
-            <p className="mb-1 text-[11px] text-slate-400">
+            <p className="mb-1 text-[11px] text-ink-3">
               {shared
                 ? "Shared package — covers every dog on this number"
                 : "Who is this package for? Tap all that apply."}
             </p>
             <div className="flex flex-wrap gap-2">
-              {clientMatches.map((c) => {
+              {dogMatches.map((c) => {
                 const isSelected = !!c.id && selectedIds.includes(c.id);
                 return (
                   <button
@@ -448,7 +480,7 @@ function Packages() {
                     className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
                       isSelected && !shared
                         ? "border-accent-500 bg-accent-500 text-white"
-                        : "border-accent-200 bg-white text-accent-700 hover:border-accent-400"
+                        : "border-accent-200 bg-surface text-accent-700 hover:border-accent-400"
                     }`}
                   >
                     {isSelected && !shared ? "✓ " : "🐕 "}
@@ -457,12 +489,12 @@ function Packages() {
                 );
               })}
             </div>
-            <label className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+            <label className="mt-2 flex items-center gap-2 text-xs text-ink-3">
               <input
                 type="checkbox"
                 checked={shared}
                 onChange={(e) => setShared(e.target.checked)}
-                className="rounded border-slate-300"
+                className="rounded border-line"
               />
               One shared package across every dog on this number
             </label>
@@ -486,7 +518,7 @@ function Packages() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-ink-3">Loading…</p>
       ) : (
         <>
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -495,26 +527,26 @@ function Packages() {
               onChange={(e) => setSearch(formatPhoneInput(e.target.value))}
               placeholder="Search by phone number…"
               inputMode="numeric"
-              className="w-full max-w-xs rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+              className="w-full max-w-xs rounded-xl border border-line bg-surface px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
             />
             {search && (
-              <span className="whitespace-nowrap text-xs text-slate-400">
+              <span className="whitespace-nowrap text-xs text-ink-3">
                 {filteredPackages.length} of {packages.length}
               </span>
             )}
           </div>
 
-          <p className="mb-2 text-sm font-medium text-slate-700">Active packages</p>
+          <p className="mb-2 text-sm font-medium text-ink-2">Active packages</p>
           <div className="mb-8 space-y-2">
             {active.map((p) => (
               <PackageRow key={p.id} pkg={p} {...rowProps} />
             ))}
-            {active.length === 0 && <p className="text-sm text-slate-400">No active packages.</p>}
+            {active.length === 0 && <p className="text-sm text-ink-3">No active packages.</p>}
           </div>
 
           {usedUp.length > 0 && (
             <details>
-              <summary className="mb-3 cursor-pointer text-sm font-medium text-slate-500">
+              <summary className="mb-3 cursor-pointer text-sm font-medium text-ink-3">
                 Used-up packages ({usedUp.length})
               </summary>
               <div className="space-y-2">
@@ -531,11 +563,11 @@ function Packages() {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+  "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
 
 function PackageRow({
   pkg,
-  allClients,
+  allDogs,
   usesByPackage,
   historyOpenId,
   setHistoryOpenId,
@@ -549,7 +581,7 @@ function PackageRow({
   deletingId,
 }: {
   pkg: Package;
-  allClients: Client[];
+  allDogs: Dog[];
   usesByPackage: Map<string, PackageUse[]>;
   historyOpenId: string | null;
   setHistoryOpenId: (id: string | null) => void;
@@ -566,28 +598,37 @@ function PackageRow({
   const history = pkg.id ? (usesByPackage.get(pkg.id) ?? []) : [];
   const isEditing = editingId === pkg.id;
   const showHistory = historyOpenId === pkg.id;
-  const client = pkg.dog_name
-    ? findClient(allClients, { dogName: pkg.dog_name, phone: pkg.phone })
+  const dog = pkg.dog_name
+    ? findDog(allDogs, { dogName: pkg.dog_name, phone: pkg.phone })
     : null;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white px-5 py-3.5 shadow-card">
+    <div className="rounded-2xl border border-line bg-surface px-5 py-3.5 shadow-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-800">
+          <p className="text-sm font-medium text-ink">
             {pkg.dog_name ? (
               <DogLink
-                client={client}
+                dog={dog}
                 name={pkg.dog_name}
                 badges={{ packageDaysLeft: left }}
-                className="font-medium text-slate-800"
+                className="font-medium text-ink"
               />
             ) : (
-              <span className="text-slate-500">Shared across all dogs</span>
+              <span className="text-ink-3">Shared across all dogs</span>
             )}
-            <span className="ml-1.5 font-normal text-slate-400">· {pkg.client_name}</span>
+            <span className="ml-1.5 font-normal text-ink-3">· {pkg.client_name}</span>
+            <span
+              className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                packageKind(pkg) === "walk"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-accent-50 text-accent-700"
+              }`}
+            >
+              {packageKind(pkg) === "walk" ? "🚶 Walks" : "🐕 Daycare"}
+            </span>
           </p>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-ink-3">
             {pkg.phone}
             {pkg.created_at && ` · bought ${pkg.created_at.slice(0, 10)}`}
             {pkg.price != null ? (
@@ -608,7 +649,7 @@ function PackageRow({
                 min={1}
                 value={editTotal}
                 onChange={(e) => setEditTotal(Math.max(1, parseInt(e.target.value) || 1))}
-                className="w-20 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                className="w-20 rounded-lg border border-line px-2 py-1 text-xs outline-none focus:border-accent-500"
               />
               <button
                 onClick={() => saveEditTotal(pkg)}
@@ -618,7 +659,7 @@ function PackageRow({
               </button>
               <button
                 onClick={() => setEditingId(null)}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-500 hover:border-slate-300"
+                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-3 hover:border-line"
               >
                 Cancel
               </button>
@@ -630,18 +671,18 @@ function PackageRow({
                   left <= 0 ? "bg-rose-50 text-rose-600" : "bg-accent-50 text-accent-700"
                 }`}
               >
-                {left} of {pkg.total_days} left
+                {left} of {pkg.total_days} {packageKind(pkg) === "walk" ? "walks" : "days"} left
               </span>
               <button
                 onClick={() => adjustUsed(pkg, 1)}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:border-slate-300"
+                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
                 title="Consume one day"
               >
                 Use a day
               </button>
               <button
                 onClick={() => adjustUsed(pkg, -1)}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:border-slate-300"
+                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
                 title="Give a day back"
               >
                 Undo
@@ -651,13 +692,13 @@ function PackageRow({
                   setEditingId(pkg.id ?? null);
                   setEditTotal(pkg.total_days);
                 }}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:border-slate-300"
+                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
               >
                 Edit total
               </button>
               <button
                 onClick={() => setHistoryOpenId(showHistory ? null : (pkg.id ?? null))}
-                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:border-slate-300"
+                className="rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:border-line"
               >
                 🗓️ {history.length} used
               </button>
@@ -674,18 +715,18 @@ function PackageRow({
       </div>
 
       {showHistory && (
-        <div className="mt-3 rounded-xl bg-slate-50 px-3.5 py-2.5">
+        <div className="mt-3 rounded-xl bg-surface-2 px-3.5 py-2.5">
           {history.length === 0 ? (
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-ink-3">
               No days recorded yet. Days consumed before this history existed aren&apos;t listed —
               the count above is still correct.
             </p>
           ) : (
-            <ul className="space-y-1 text-xs text-slate-600">
+            <ul className="space-y-1 text-xs text-ink-2">
               {history.map((u) => (
                 <li key={u.id ?? `${u.package_id}-${u.used_on}`} className="flex justify-between gap-3">
                   <span>{prettyDateKey(u.used_on)}</span>
-                  <span className="text-slate-400">{u.dog_name ?? "—"}</span>
+                  <span className="text-ink-3">{u.dog_name ?? "—"}</span>
                 </li>
               ))}
             </ul>

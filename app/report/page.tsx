@@ -6,22 +6,26 @@ import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { dateRange, prettyDateKey } from "@/lib/dates";
 import { estimateBoardingTotal } from "@/lib/pricing";
-import { dogHref } from "@/lib/clients";
-import { Boarding, Client, MEAL_TYPES, MealLog, MealType, SignInRecord, WalkLog } from "@/types";
+import { dogHref } from "@/lib/dogs";
+import { Boarding, Dog, MEAL_TYPES, MealLog, MealType, SignInRecord, WalkLog } from "@/types";
 import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
 import StaffNav from "@/components/StaffNav";
+import { useSettings } from "@/components/SettingsProvider";
 
 const PASSCODE = process.env.NEXT_PUBLIC_RECORDS_PASSCODE;
 
 export default function ReportPage() {
+  const { settings } = useSettings();
+  const business = settings.business;
+
   const [unlocked, setUnlocked] = useState(false);
   const [entered, setEntered] = useState("");
   const [error, setError] = useState("");
 
   const [phone, setPhone] = useState("");
   const [searching, setSearching] = useState(false);
-  const [matches, setMatches] = useState<Client[]>([]);
-  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [matches, setMatches] = useState<Dog[]>([]);
+  const [selectedDog, setSelectedDog] = useState<Dog | null>(null);
 
   const [boardingsForDog, setBoardingsForDog] = useState<Boarding[]>([]);
   const [selectedBoardingId, setSelectedBoardingId] = useState<string | null>(null);
@@ -59,28 +63,28 @@ export default function ReportPage() {
   // Dogs on this number that actually have a stay — this report is about a
   // boarding reservation, so a daycare-only dog has nothing to show here
   // and is sent to its profile instead.
-  const [dogsWithoutStays, setDogsWithoutStays] = useState<Client[]>([]);
+  const [dogsWithoutStays, setDogsWithoutStays] = useState<Dog[]>([]);
 
   async function searchPhone() {
     setSearching(true);
     setError("");
     try {
       const supabase = getSupabase();
-      const [clientRes, boardingRes] = await Promise.all([
-        supabase.from("clients").select("*").eq("phone", phone.trim()),
+      const [dogRes, boardingRes] = await Promise.all([
+        supabase.from("dogs").select("*").eq("phone", phone.trim()),
         supabase.from("boardings").select("dog_name").eq("phone", phone.trim()),
       ]);
-      if (clientRes.error) throw clientRes.error;
+      if (dogRes.error) throw dogRes.error;
       if (boardingRes.error) throw boardingRes.error;
 
-      const found = (clientRes.data as Client[]) ?? [];
+      const found = (dogRes.data as Dog[]) ?? [];
       const staying = new Set(
         ((boardingRes.data as { dog_name: string }[]) ?? []).map((b) => b.dog_name.trim().toLowerCase())
       );
       setMatches(found.filter((c) => staying.has(c.dog_name.trim().toLowerCase())));
       setDogsWithoutStays(found.filter((c) => !staying.has(c.dog_name.trim().toLowerCase())));
     } catch (e) {
-      console.error("Client search failed:", e);
+      console.error("Dog search failed:", e);
       setError("Could not search for that phone number.");
     } finally {
       setSearching(false);
@@ -103,21 +107,21 @@ export default function ReportPage() {
         const { data, error: err } = await supabase.from("boardings").select("*").eq("id", boardingId).single();
         if (err) throw err;
         const boarding = data as Boarding;
-        const { data: clientMatches } = await supabase
-          .from("clients")
+        const { data: dogMatches } = await supabase
+          .from("dogs")
           .select("*")
           .eq("phone", boarding.phone)
           .ilike("dog_name", boarding.dog_name);
-        const client: Client =
-          (clientMatches as Client[] | null)?.[0] ??
+        const dog: Dog =
+          (dogMatches as Dog[] | null)?.[0] ??
           ({
             phone: boarding.phone,
             dog_name: boarding.dog_name,
             last_name: boarding.last_name,
             drop_off_by: "",
             signature_data: "",
-          } as Client);
-        await selectClient(client);
+          } as Dog);
+        await selectDog(dog);
         setSelectedBoardingId(boarding.id ?? null);
       } catch (e) {
         console.error("Loading boarding for print failed:", e);
@@ -129,8 +133,8 @@ export default function ReportPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked]);
 
-  async function selectClient(client: Client) {
-    setSelectedClient(client);
+  async function selectDog(dog: Dog) {
+    setSelectedDog(dog);
     setLoadingDetail(true);
     setError("");
     setSelectedBoardingId(null);
@@ -141,13 +145,13 @@ export default function ReportPage() {
         supabase
           .from("signins")
           .select("*")
-          .eq("client_id", client.id)
+          .eq("dog_id", dog.id)
           .order("created_at", { ascending: true }),
         supabase
           .from("boardings")
           .select("*")
-          .eq("phone", client.phone)
-          .ilike("dog_name", client.dog_name)
+          .eq("phone", dog.phone)
+          .ilike("dog_name", dog.dog_name)
           .order("start_date", { ascending: false }),
       ]);
       if (signinsRes.error) throw signinsRes.error;
@@ -314,14 +318,14 @@ export default function ReportPage() {
   if (!unlocked) {
     return (
       <div className="mx-auto mt-28 flex max-w-xs flex-col gap-3 px-5">
-        <h1 className="font-display text-xl font-semibold text-slate-900">Staff stay report</h1>
+        <h1 className="font-display text-xl font-semibold text-ink">Staff stay report</h1>
         <input
           type="password"
           value={entered}
           onChange={(e) => setEntered(e.target.value)}
           placeholder="Passcode"
           onKeyDown={(e) => e.key === "Enter" && checkPasscode()}
-          className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+          className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
         />
         <button
           onClick={checkPasscode}
@@ -341,7 +345,7 @@ export default function ReportPage() {
           @page { margin: 0.5in; size: portrait; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .print-header {
-            background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+            background: linear-gradient(135deg, rgb(var(--print-from)) 0%, rgb(var(--print-to)) 100%);
             border-radius: 20px;
           }
         }
@@ -350,10 +354,10 @@ export default function ReportPage() {
       <StaffNav current="/report" />
 
       <div className="mb-6 flex items-center justify-between print:hidden">
-        <h1 className="font-display text-xl font-semibold text-slate-900">
+        <h1 className="font-display text-xl font-semibold text-ink">
           Boarding stay report
         </h1>
-        {selectedClient && (
+        {selectedDog && (
           <button
             onClick={() => window.print()}
             className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600">
@@ -362,10 +366,10 @@ export default function ReportPage() {
         )}
       </div>
 
-      {!selectedClient && (
+      {!selectedDog && (
         <div className="print:hidden">
-          <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-            <label className="mb-1.5 block text-xs font-medium text-slate-500">
+          <div className="mb-4 rounded-2xl border border-line bg-surface p-5 shadow-card">
+            <label className="mb-1.5 block text-xs font-medium text-ink-3">
               Search by phone number
             </label>
             <input
@@ -373,10 +377,10 @@ export default function ReportPage() {
               onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
               placeholder="(123) 456-7890"
               inputMode="numeric"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+              className="w-full rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
             />
             {searching && (
-              <p className="mt-2 text-xs text-slate-400">Searching…</p>
+              <p className="mt-2 text-xs text-ink-3">Searching…</p>
             )}
             {error && (
               <p className="mt-2 text-xs font-medium text-rose-500">{error}</p>
@@ -388,15 +392,15 @@ export default function ReportPage() {
               {matches.map((c) => (
                 <button
                   key={c.id}
-                  onClick={() => selectClient(c)}
-                  className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-left shadow-card hover:border-accent-300">
-                  <span className="text-sm font-medium text-slate-800">
+                  onClick={() => selectDog(c)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-line bg-surface px-5 py-3.5 text-left shadow-card hover:border-accent-300">
+                  <span className="text-sm font-medium text-ink">
                     🐕 {c.dog_name}{" "}
-                    <span className="font-normal text-slate-500">
+                    <span className="font-normal text-ink-3">
                       · {c.last_name}
                     </span>
                   </span>
-                  <span className="text-xs text-slate-400">{c.phone}</span>
+                  <span className="text-xs text-ink-3">{c.phone}</span>
                 </button>
               ))}
             </div>
@@ -405,14 +409,14 @@ export default function ReportPage() {
               point staff at the profile, which is where their daycare
               history and details live. */}
           {!searching && dogsWithoutStays.length > 0 && (
-            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="text-xs font-medium text-slate-500">No boarding stay on file</p>
+            <div className="mt-3 rounded-2xl border border-line bg-surface-2 px-4 py-3">
+              <p className="text-xs font-medium text-ink-3">No boarding stay on file</p>
               <div className="mt-1.5 flex flex-wrap gap-2">
                 {dogsWithoutStays.map((c) => (
                   <Link
                     key={c.id}
                     href={c.id ? dogHref(c.id) : "#"}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-accent-300"
+                    className="rounded-full border border-line bg-surface px-3 py-1 text-xs text-ink-2 hover:border-accent-300"
                   >
                     🐕 {c.dog_name} — open profile →
                   </Link>
@@ -425,24 +429,24 @@ export default function ReportPage() {
             phone.replace(/\D/g, "").length >= 7 &&
             matches.length === 0 &&
             dogsWithoutStays.length === 0 && (
-              <p className="text-sm text-slate-400">
+              <p className="text-sm text-ink-3">
                 No dog on file for that number.
               </p>
             )}
         </div>
       )}
 
-      {selectedClient && (
+      {selectedDog && (
         <>
           {boardingsForDog.length > 1 && (
             <div className="mb-4 print:hidden">
-              <label className="mb-1.5 block text-xs font-medium text-slate-500">
+              <label className="mb-1.5 block text-xs font-medium text-ink-3">
                 Boarding stay
               </label>
               <select
                 value={selectedBoardingId ?? ""}
                 onChange={(e) => setSelectedBoardingId(e.target.value || null)}
-                className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100">
+                className="rounded-xl border border-line bg-surface px-3.5 py-2 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100">
                 {boardingsForDog.map((b) => (
                   <option key={b.id} value={b.id}>
                     {b.start_date} → {b.end_date}
@@ -454,20 +458,20 @@ export default function ReportPage() {
 
           <button
             onClick={() => {
-              setSelectedClient(null);
+              setSelectedDog(null);
               setMatches([]);
               setPhone("");
             }}
-            className="mb-4 text-xs font-medium text-slate-400 hover:text-slate-600 print:hidden">
+            className="mb-4 text-xs font-medium text-ink-3 hover:text-ink-2 print:hidden">
             ← Search a different number
           </button>
 
           <div className="print-header mb-5 hidden px-6 py-5 print:block">
             <h2 className="font-display text-2xl font-bold text-white">
-              🐾 Lombard Doggy Daycare
+              🐾 {business.name}
             </h2>
             <p className="text-base font-medium text-white/90">
-              Boarding stay — {selectedClient.dog_name}
+              Boarding stay — {selectedDog.dog_name}
               {selectedBoarding && (
                 <>
                   {" · "}
@@ -479,33 +483,33 @@ export default function ReportPage() {
           </div>
 
           {loadingDetail ? (
-            <p className="text-sm text-slate-500 print:hidden">Loading…</p>
+            <p className="text-sm text-ink-3 print:hidden">Loading…</p>
           ) : (
             <div className="space-y-5">
               {/* Who the stay is for. Read-only — the dog's details, photo,
                   vaccines, and history all live on its profile now. */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+              <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
                 <div className="flex items-center gap-4">
-                  {selectedClient.photo_data ? (
+                  {selectedDog.photo_data ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={selectedClient.photo_data}
-                      alt={`${selectedClient.dog_name}'s photo`}
+                      src={selectedDog.photo_data}
+                      alt={`${selectedDog.dog_name}'s photo`}
                       className="h-16 w-16 shrink-0 rounded-xl object-cover print:h-20 print:w-20"
                     />
                   ) : (
-                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-2xl text-slate-300 print:hidden">
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-surface-3 text-2xl text-ink-3 print:hidden">
                       🐕
                     </div>
                   )}
                   <div className="min-w-0">
-                    <p className="text-lg font-semibold text-slate-900">{selectedClient.dog_name}</p>
-                    <p className="text-sm text-slate-600">
-                      {selectedClient.last_name} · {selectedClient.phone}
+                    <p className="text-lg font-semibold text-ink">{selectedDog.dog_name}</p>
+                    <p className="text-sm text-ink-2">
+                      {selectedDog.last_name} · {selectedDog.phone}
                     </p>
-                    {selectedClient.id && (
+                    {selectedDog.id && (
                       <Link
-                        href={dogHref(selectedClient.id)}
+                        href={dogHref(selectedDog.id)}
                         className="text-xs font-medium text-accent-600 hover:underline print:hidden"
                       >
                         Full profile, vaccines &amp; history →
@@ -517,8 +521,8 @@ export default function ReportPage() {
 
               {/* Stay details */}
               {selectedBoarding && (
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
                     Stay
                   </h3>
                   <div className="flex items-start gap-3">
@@ -526,26 +530,26 @@ export default function ReportPage() {
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={selectedBoarding.photo_data}
-                        alt={`${selectedClient.dog_name} during this stay`}
+                        alt={`${selectedDog.dog_name} during this stay`}
                         className="h-14 w-14 shrink-0 rounded-lg object-cover"
                       />
                     )}
                     <div>
-                      <p className="text-sm text-slate-800">
+                      <p className="text-sm text-ink">
                         {selectedBoarding.start_date} →{" "}
                         {selectedBoarding.end_date}
                       </p>
                       {selectedBoarding.feeding_instructions && (
-                        <p className="mt-2 text-sm text-slate-600">
-                          <span className="font-medium text-slate-700">
+                        <p className="mt-2 text-sm text-ink-2">
+                          <span className="font-medium text-ink-2">
                             🍽️ Feeding instructions:
                           </span>{" "}
                           {selectedBoarding.feeding_instructions}
                         </p>
                       )}
                       {selectedBoarding.notes && (
-                        <p className="mt-1 text-sm text-slate-600">
-                          <span className="font-medium text-slate-700">
+                        <p className="mt-1 text-sm text-ink-2">
+                          <span className="font-medium text-ink-2">
                             Notes:
                           </span>{" "}
                           {selectedBoarding.notes}
@@ -554,8 +558,8 @@ export default function ReportPage() {
                       {(selectedBoarding.addons ?? []).includes(
                         "medication",
                       ) && (
-                        <p className="mt-1 text-sm text-slate-600">
-                          <span className="font-medium text-slate-700">
+                        <p className="mt-1 text-sm text-ink-2">
+                          <span className="font-medium text-ink-2">
                             💊 Medication:
                           </span>{" "}
                           {selectedBoarding.medication_instructions ||
@@ -563,8 +567,8 @@ export default function ReportPage() {
                         </p>
                       )}
                       {(selectedBoarding.addons ?? []).includes("walk") && (
-                        <p className="mt-1 text-sm text-slate-600">
-                          <span className="font-medium text-slate-700">
+                        <p className="mt-1 text-sm text-ink-2">
+                          <span className="font-medium text-ink-2">
                             🚶 Walks requested:
                           </span>{" "}
                           {selectedBoarding.walks_per_day ?? 1} per day
@@ -579,13 +583,13 @@ export default function ReportPage() {
               {selectedBoarding &&
                 (selectedBoarding.addons ?? []).includes("walk") &&
                 chartDays.length > 0 && (
-                  <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
                       Walk log — {selectedBoarding.walks_per_day ?? 1}×/day
                     </h3>
                     <table className="w-full border-collapse text-left text-xs">
                       <thead>
-                        <tr className="border-b border-slate-200 text-slate-500">
+                        <tr className="border-b border-line text-ink-3">
                           <th className="py-1.5 pr-2 font-medium">Date</th>
                           {Array.from(
                             { length: selectedBoarding.walks_per_day ?? 1 },
@@ -601,7 +605,7 @@ export default function ReportPage() {
                         {chartDays.map((day) => (
                           <tr
                             key={day}
-                            className="border-b border-slate-100 text-slate-700">
+                            className="border-b border-line-soft text-ink-2">
                             <td className="py-1.5 pr-2 whitespace-nowrap">
                               {prettyDateKey(day)}
                             </td>
@@ -642,7 +646,7 @@ export default function ReportPage() {
                         ))}
                       </tbody>
                     </table>
-                    <p className="mt-2 text-[10px] text-slate-400 print:hidden">
+                    <p className="mt-2 text-[10px] text-ink-3 print:hidden">
                       Saves as you type. Anything left blank prints as a line to
                       fill in by hand.
                     </p>
@@ -651,20 +655,20 @@ export default function ReportPage() {
 
               {/* Meal chart */}
               {selectedBoarding && chartDays.length > 0 && (
-                <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
                     Meal log
                   </h3>
                   <table className="w-full border-collapse text-left text-xs">
                     <thead>
-                      <tr className="border-b border-slate-200">
-                        <th className="py-1.5 pr-2 font-medium text-slate-500">
+                      <tr className="border-b border-line">
+                        <th className="py-1.5 pr-2 font-medium text-ink-3">
                           Date
                         </th>
                         {MEAL_TYPES.map((m) => (
                           <th
                             key={m.key}
-                            className="py-1.5 px-2 text-center font-medium text-slate-500">
+                            className="py-1.5 px-2 text-center font-medium text-ink-3">
                             {m.label}
                           </th>
                         ))}
@@ -672,8 +676,8 @@ export default function ReportPage() {
                     </thead>
                     <tbody>
                       {chartDays.map((day) => (
-                        <tr key={day} className="border-b border-slate-100">
-                          <td className="py-1.5 pr-2 text-slate-700">
+                        <tr key={day} className="border-b border-line-soft">
+                          <td className="py-1.5 pr-2 text-ink-2">
                             {prettyDateKey(day)}
                           </td>
                           {MEAL_TYPES.map((m) => {
@@ -690,12 +694,12 @@ export default function ReportPage() {
                                   className={`inline-flex h-5 w-5 items-center justify-center rounded-md border text-[11px] print:border-slate-400 ${
                                     fed
                                       ? "border-emerald-500 bg-emerald-100 text-emerald-700"
-                                      : "border-slate-200 bg-white text-transparent hover:border-slate-300"
+                                      : "border-line bg-surface text-transparent hover:border-line"
                                   }`}>
                                   ✓
                                 </button>
                                 {fed && log?.fed_by && (
-                                  <div className="mt-0.5 text-[9px] leading-none text-slate-400">
+                                  <div className="mt-0.5 text-[9px] leading-none text-ink-3">
                                     {log.fed_by}
                                   </div>
                                 )}
@@ -706,26 +710,26 @@ export default function ReportPage() {
                       ))}
                     </tbody>
                   </table>
-                  <p className="mt-2 text-[10px] text-slate-400 print:hidden">
+                  <p className="mt-2 text-[10px] text-ink-3 print:hidden">
                     Tap a box to mark a meal fed.
                   </p>
                 </section>
               )}
 
               {/* Sign in/out times */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
                   Sign in / out times
                 </h3>
                 {relevantSignins.length === 0 ? (
-                  <p className="text-sm text-slate-400">
+                  <p className="text-sm text-ink-3">
                     No sign-in records{selectedBoarding ? " for this stay" : ""}
                     .
                   </p>
                 ) : (
                   <table className="w-full border-collapse text-left text-xs">
                     <thead>
-                      <tr className="border-b border-slate-200 text-slate-500">
+                      <tr className="border-b border-line text-ink-3">
                         <th className="py-1.5 pr-2 font-medium">Date</th>
                         <th className="py-1.5 px-2 font-medium">Action</th>
                         <th className="py-1.5 px-2 font-medium">Time</th>
@@ -736,7 +740,7 @@ export default function ReportPage() {
                       {relevantSignins.map((s) => (
                         <tr
                           key={s.id}
-                          className="border-b border-slate-100 text-slate-700">
+                          className="border-b border-line-soft text-ink-2">
                           <td className="py-1.5 pr-2">
                             {s.created_at?.slice(0, 10)}
                           </td>
@@ -761,17 +765,17 @@ export default function ReportPage() {
               </section>
 
               {/* Add-ons + total */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
                   {selectedBoarding ? "Charges" : "Add-ons"}
                 </h3>
                 {!selectedBoarding && (
-                  <p className="text-sm text-slate-700">
+                  <p className="text-sm text-ink-2">
                     {addonsUsed.length ? addonsUsed.join(", ") : "None"}
                   </p>
                 )}
                 {selectedBoarding && boardingEstimate && (
-                  <ul className="mt-1 space-y-0.5 text-xs text-slate-500">
+                  <ul className="mt-1 space-y-0.5 text-xs text-ink-3">
                     {boardingEstimate.breakdown.map((item, i) => (
                       <li key={i} className="flex justify-between">
                         <span>{item.label}</span>
@@ -780,8 +784,8 @@ export default function ReportPage() {
                     ))}
                   </ul>
                 )}
-                <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-                  <span className="text-sm font-medium text-slate-700">
+                <div className="mt-3 flex items-center justify-between border-t border-line-soft pt-3">
+                  <span className="text-sm font-medium text-ink-2">
                     Total for{" "}
                     {selectedBoarding ? "the stay" : "charges on file"}
                   </span>
@@ -822,7 +826,7 @@ function WalkInput({
       onBlur={(e) => {
         if (e.target.value.trim() !== value.trim()) onSave(e.target.value);
       }}
-      className={`${width} rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:border-accent-500 print:w-12 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
+      className={`${width} rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] outline-none focus:border-accent-500 print:w-12 print:rounded-none print:border-0 print:border-b print:border-dotted print:border-slate-400 print:bg-transparent print:p-0 print:placeholder:text-transparent`}
     />
   );
 }

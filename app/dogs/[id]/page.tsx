@@ -5,7 +5,14 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fileToResizedDataUrl } from "@/lib/image";
-import { daysLeft, findPackageFor, hasWaiver, ownerHref } from "@/lib/clients";
+import {
+  daysLeft,
+  findPackageFor,
+  hasWaiver,
+  ownerHref,
+  packageKind,
+  preferredPackageId,
+} from "@/lib/dogs";
 import { dateRange, prettyDateKey, todayKey } from "@/lib/dates";
 import {
   STATUS_CLASSES,
@@ -14,12 +21,22 @@ import {
   vaccineStatus,
 } from "@/lib/vaccines";
 import {
+  ACTIVITY_RESTRICTIONS,
+  ALLERGENS,
+  ATTENDANCE_PLANS,
+  BEHAVIOR_TRAITS,
+  BIG_DOG_RESPONSES,
   Boarding,
-  Client,
+  Dog,
+  DogDoc,
   DOG_SEXES,
   DogSex,
   FIXED_STATUSES,
+  FLEA_PROGRAMS,
   FixedStatus,
+  MEET_GREET_WINDOWS,
+  PACKAGE_INTEREST,
+  PLAY_STYLES,
   Package,
   SignInRecord,
   VACCINES,
@@ -27,8 +44,13 @@ import {
   Vaccination,
   WalkLog,
 } from "@/types";
+import { Balance, loadBalanceFor } from "@/lib/billing";
+import { ageFromBirthdate } from "@/lib/enrollment";
+import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
+import DateField from "@/components/DateField";
+import { CheckGrid, ChoiceWithOther, YesNo, YesNoDetail } from "@/components/FormBits";
 
 export default function DogProfilePage() {
   return (
@@ -50,20 +72,27 @@ interface WalkRow {
 
 function DogProfile() {
   const params = useParams<{ id: string }>();
-  const clientId = params?.id;
+  const dogId = params?.id;
 
-  const [client, setClient] = useState<Client | null>(null);
+  const [dog, setDog] = useState<Dog | null>(null);
   const [packages, setPackages] = useState<Package[]>([]);
   const [signins, setSignins] = useState<SignInRecord[]>([]);
   const [boardings, setBoardings] = useState<Boarding[]>([]);
   const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
   const [vaccinations, setVaccinations] = useState<Vaccination[]>([]);
+  // Balances are per household, so this is the whole number's balance, not
+  // just this dog's — the badge links through to where it can be settled.
+  const [balance, setBalance] = useState<Balance | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [savingInfo, setSavingInfo] = useState(false);
   const [infoSaved, setInfoSaved] = useState(false);
 
-  // Editable basic-info draft, seeded from the loaded profile.
+  const [docs, setDocs] = useState<DogDoc[]>([]);
+
+  // Editable draft, seeded from the loaded profile. Covers the basics plus
+  // every enrollment answer, so staff can correct anything a client typed
+  // without sending them back through the form.
   const [form, setForm] = useState({
     dog_name: "",
     last_name: "",
@@ -75,22 +104,53 @@ function DogProfile() {
     weight_lb: "",
     vet: "",
     authorized_pickup: "",
+    color: "",
+    flea_program: "",
+    fixed_scheduled_on: "",
+    dog_source: "",
+    growled: null as boolean | null,
+    growled_note: "",
+    bitten: null as boolean | null,
+    bitten_note: "",
+    climbed_fence: null as boolean | null,
+    fence_height: "",
+    dog_fight: null as boolean | null,
+    dog_fight_note: "",
+    health_problems: null as boolean | null,
+    health_notes: "",
+    activity_restrictions: [] as string[],
+    allergies: [] as string[],
+    sensitive_areas: null as boolean | null,
+    sensitive_areas_note: "",
+    behavior_traits: [] as string[],
+    play_style: [] as string[],
+    attendance_plan: "",
+    big_dog_response: "",
+    crate_trained: null as boolean | null,
+    kennel_trained: null as boolean | null,
+    package_interest: "",
+    meet_greet_on: "",
+    meet_greet_window: "",
   });
 
+  function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
+    setForm((f) => ({ ...f, [key]: value }));
+  }
+
   const load = useCallback(async () => {
-    if (!clientId) return;
+    if (!dogId) return;
     setLoading(true);
     setError("");
     try {
       const supabase = getSupabase();
-      const { data: clientRow, error: clientErr } = await supabase
-        .from("clients")
+      const { data: dogRow, error: dogErr } = await supabase
+        .from("dogs")
         .select("*")
-        .eq("id", clientId)
+        .eq("id", dogId)
         .single();
-      if (clientErr) throw clientErr;
-      const dog = clientRow as Client;
-      setClient(dog);
+      if (dogErr) throw dogErr;
+      const dog = dogRow as Dog;
+      setDog(dog);
       setForm({
         dog_name: dog.dog_name ?? "",
         last_name: dog.last_name ?? "",
@@ -102,17 +162,44 @@ function DogProfile() {
         weight_lb: dog.weight_lb != null ? String(dog.weight_lb) : "",
         vet: dog.vet ?? "",
         authorized_pickup: dog.authorized_pickup ?? "",
+        color: dog.color ?? "",
+        flea_program: dog.flea_program ?? "",
+        fixed_scheduled_on: dog.fixed_scheduled_on ?? "",
+        dog_source: dog.dog_source ?? "",
+        growled: dog.growled ?? null,
+        growled_note: dog.growled_note ?? "",
+        bitten: dog.bitten ?? null,
+        bitten_note: dog.bitten_note ?? "",
+        climbed_fence: dog.climbed_fence ?? null,
+        fence_height: dog.fence_height ?? "",
+        dog_fight: dog.dog_fight ?? null,
+        dog_fight_note: dog.dog_fight_note ?? "",
+        health_problems: dog.health_problems ?? null,
+        health_notes: dog.health_notes ?? "",
+        activity_restrictions: dog.activity_restrictions ?? [],
+        allergies: dog.allergies ?? [],
+        sensitive_areas: dog.sensitive_areas ?? null,
+        sensitive_areas_note: dog.sensitive_areas_note ?? "",
+        behavior_traits: dog.behavior_traits ?? [],
+        play_style: dog.play_style ?? [],
+        attendance_plan: dog.attendance_plan ?? "",
+        big_dog_response: dog.big_dog_response ?? "",
+        crate_trained: dog.crate_trained ?? null,
+        kennel_trained: dog.kennel_trained ?? null,
+        package_interest: dog.package_interest ?? "",
+        meet_greet_on: dog.meet_greet_on ?? "",
+        meet_greet_window: dog.meet_greet_window ?? "",
       });
 
       // Everything else keys off the dog we just loaded — its id for
       // sign-ins and vaccines, its phone + name for packages and stays,
-      // which predate client_id on some rows.
+      // which predate dog_id on some rows.
       const [pkgRes, signinRes, boardingRes, vaxRes] = await Promise.all([
         supabase.from("packages").select("*").eq("phone", dog.phone),
         supabase
           .from("signins")
           .select("*")
-          .eq("client_id", clientId)
+          .eq("dog_id", dogId)
           .order("created_at", { ascending: false })
           .limit(400),
         supabase
@@ -121,7 +208,7 @@ function DogProfile() {
           .eq("phone", dog.phone)
           .ilike("dog_name", dog.dog_name)
           .order("start_date", { ascending: false }),
-        supabase.from("vaccinations").select("*").eq("client_id", clientId),
+        supabase.from("vaccinations").select("*").eq("dog_id", dogId),
       ]);
       if (pkgRes.error) throw pkgRes.error;
       if (signinRes.error) throw signinRes.error;
@@ -130,9 +217,31 @@ function DogProfile() {
 
       setPackages((pkgRes.data as Package[]) ?? []);
       setSignins((signinRes.data as SignInRecord[]) ?? []);
+
+      // Non-fatal, and metadata only: the file itself is fetched on demand
+      // when staff click through, so a multi-megabyte scan of a vet record
+      // isn't pulled just to open a profile.
+      try {
+        const { data: docData, error: docErr } = await supabase
+          .from("dog_docs")
+          .select("id, dog_id, kind, file_name, mime_type, created_at")
+          .eq("dog_id", dogId)
+          .order("created_at", { ascending: false });
+        if (docErr) throw docErr;
+        setDocs((docData as DogDoc[]) ?? []);
+      } catch (e) {
+        console.error("Loading client documents failed:", e);
+      }
       const stays = (boardingRes.data as Boarding[]) ?? [];
       setBoardings(stays);
       setVaccinations((vaxRes.data as Vaccination[]) ?? []);
+
+      // Non-fatal: a profile is still useful without a balance on it.
+      try {
+        setBalance(await loadBalanceFor(dog.phone));
+      } catch (e) {
+        console.error("Loading balance failed:", e);
+      }
 
       const stayIds = stays.map((b) => b.id).filter(Boolean) as string[];
       if (stayIds.length) {
@@ -151,14 +260,14 @@ function DogProfile() {
     } finally {
       setLoading(false);
     }
-  }, [clientId]);
+  }, [dogId]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   async function saveInfo() {
-    if (!client?.id) return;
+    if (!dog?.id) return;
     setSavingInfo(true);
     setError("");
     try {
@@ -176,10 +285,42 @@ function DogProfile() {
         weight_lb: form.weight_lb.trim() === "" ? null : Number(form.weight_lb),
         vet: form.vet.trim() || null,
         authorized_pickup: form.authorized_pickup.trim() || null,
+        color: form.color.trim() || null,
+        flea_program: form.flea_program.trim() || null,
+        // Only meaningful while the dog is still intact — clearing it once
+        // the status changes stops a past appointment reading as upcoming.
+        fixed_scheduled_on:
+          form.fixed_status === "intact" ? form.fixed_scheduled_on || null : null,
+        dog_source: form.dog_source.trim() || null,
+        growled: form.growled,
+        growled_note: form.growled ? form.growled_note.trim() || null : null,
+        bitten: form.bitten,
+        bitten_note: form.bitten ? form.bitten_note.trim() || null : null,
+        climbed_fence: form.climbed_fence,
+        fence_height: form.climbed_fence ? form.fence_height.trim() || null : null,
+        dog_fight: form.dog_fight,
+        dog_fight_note: form.dog_fight ? form.dog_fight_note.trim() || null : null,
+        health_problems: form.health_problems,
+        health_notes: form.health_problems ? form.health_notes.trim() || null : null,
+        activity_restrictions: form.activity_restrictions,
+        allergies: form.allergies,
+        sensitive_areas: form.sensitive_areas,
+        sensitive_areas_note: form.sensitive_areas
+          ? form.sensitive_areas_note.trim() || null
+          : null,
+        behavior_traits: form.behavior_traits,
+        play_style: form.play_style,
+        attendance_plan: form.attendance_plan.trim() || null,
+        big_dog_response: form.big_dog_response.trim() || null,
+        crate_trained: form.crate_trained,
+        kennel_trained: form.kennel_trained,
+        package_interest: form.package_interest.trim() || null,
+        meet_greet_on: form.meet_greet_on || null,
+        meet_greet_window: form.meet_greet_on ? form.meet_greet_window || null : null,
       };
-      const { error: err } = await supabase.from("clients").update(patch).eq("id", client.id);
+      const { error: err } = await supabase.from("dogs").update(patch).eq("id", dog.id);
       if (err) throw err;
-      setClient({ ...client, ...patch });
+      setDog({ ...dog, ...patch });
       setInfoSaved(true);
       setTimeout(() => setInfoSaved(false), 2000);
     } catch (e) {
@@ -190,32 +331,123 @@ function DogProfile() {
     }
   }
 
+  // Pins a package as the one new visits draw from. Clicking the pinned one
+  // again unpins it, handing the choice back to the default rule.
+  async function setDefaultPackage(pkg: Package) {
+    if (!dog?.id || !pkg.id) return;
+    const field = packageKind(pkg) === "walk" ? "default_walk_package_id" : "default_package_id";
+    const current = (dog as unknown as Record<string, string | null>)[field];
+    const next = current === pkg.id ? null : pkg.id;
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("dogs").update({ [field]: next }).eq("id", dog.id);
+      if (err) throw err;
+      setDog({ ...dog, [field]: next });
+    } catch (e) {
+      console.error("Pinning package failed:", e);
+      setError("Could not set that as the default package.");
+    }
+  }
+
   async function handlePhotoChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !client?.id) return;
+    if (!file || !dog?.id) return;
     try {
       const dataUrl = await fileToResizedDataUrl(file);
       const supabase = getSupabase();
       const { error: err } = await supabase
-        .from("clients")
+        .from("dogs")
         .update({ photo_data: dataUrl })
-        .eq("id", client.id);
+        .eq("id", dog.id);
       if (err) throw err;
-      setClient({ ...client, photo_data: dataUrl });
+      setDog({ ...dog, photo_data: dataUrl });
     } catch (e) {
       console.error("Saving dog photo failed:", e);
       setError("Could not save that photo — try a different file.");
     }
   }
 
+  // Documents are listed by metadata only; the bytes are fetched here, on
+  // the click. Opened through a blob URL because browsers refuse to
+  // top-level navigate to a data: URL.
+  async function openDoc(doc: DogDoc) {
+    try {
+      const supabase = getSupabase();
+      const { data, error: err } = await supabase
+        .from("dog_docs")
+        .select("data")
+        .eq("id", doc.id)
+        .single();
+      if (err) throw err;
+      const res = await fetch((data as { data: string }).data);
+      const url = URL.createObjectURL(await res.blob());
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      console.error("Opening document failed:", e);
+      setError("Could not open that document.");
+    }
+  }
+
+  async function deleteDoc(doc: DogDoc) {
+    if (!doc.id || !window.confirm(`Remove "${doc.file_name}"? This can't be undone.`)) return;
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("dog_docs").delete().eq("id", doc.id);
+      if (err) throw err;
+      setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    } catch (e) {
+      console.error("Deleting document failed:", e);
+      setError("Could not remove that document.");
+    }
+  }
+
+  async function uploadDoc(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !dog?.id) return;
+    setError("");
+    try {
+      const data = file.type.startsWith("image/")
+        ? await fileToResizedDataUrl(file, 1200, 0.8)
+        : await new Promise<string>((resolve, reject) => {
+            if (file.size > 4 * 1024 * 1024) {
+              reject(new Error("too big"));
+              return;
+            }
+            const reader = new FileReader();
+            reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
+            reader.onload = () => resolve(reader.result as string);
+            reader.readAsDataURL(file);
+          });
+      const supabase = getSupabase();
+      const { data: row, error: err } = await supabase
+        .from("dog_docs")
+        .insert({
+          dog_id: dog.id,
+          kind: "vaccination",
+          file_name: file.name,
+          mime_type: file.type.startsWith("image/") ? "image/jpeg" : file.type,
+          data,
+        })
+        .select("id, dog_id, kind, file_name, mime_type, created_at")
+        .single();
+      if (err) throw err;
+      setDocs((prev) => [row as DogDoc, ...prev]);
+    } catch (e) {
+      console.error("Uploading document failed:", e);
+      setError("Could not save that file — images work best, and PDFs must be under 4 MB.");
+    }
+  }
+
   // Vaccine dates save as they're entered, one row per (dog, vaccine).
   async function saveVaccine(vaccine: VaccineKey, patch: { given_on?: string; expires_on?: string }) {
-    if (!client?.id) return;
+    if (!dog?.id) return;
     const existing = vaccinations.find((v) => v.vaccine === vaccine);
     const next: Vaccination = {
       ...existing,
-      client_id: client.id,
+      dog_id: dog.id,
       vaccine,
       given_on: patch.given_on !== undefined ? patch.given_on || null : (existing?.given_on ?? null),
       expires_on:
@@ -233,12 +465,12 @@ function DogProfile() {
         .from("vaccinations")
         .upsert(
           {
-            client_id: client.id,
+            dog_id: dog.id,
             vaccine,
             given_on: next.given_on,
             expires_on: next.expires_on,
           },
-          { onConflict: "client_id,vaccine" }
+          { onConflict: "dog_id,vaccine" }
         );
       if (err) throw err;
     } catch (e) {
@@ -247,22 +479,46 @@ function DogProfile() {
     }
   }
 
+  // One badge per kind — a dog can hold a daycare block and a walk block at
+  // the same time, and showing only the daycare one hides the other entirely.
   const dogPackage = useMemo(
-    () => (client ? findPackageFor(packages, client.phone, client.dog_name) : null),
-    [packages, client]
+    () =>
+      dog
+        ? findPackageFor(
+            packages,
+            dog.phone,
+            dog.dog_name,
+            "daycare",
+            preferredPackageId(dog, "daycare")
+          )
+        : null,
+    [packages, dog]
+  );
+  const dogWalkPackage = useMemo(
+    () =>
+      dog
+        ? findPackageFor(
+            packages,
+            dog.phone,
+            dog.dog_name,
+            "walk",
+            preferredPackageId(dog, "walk")
+          )
+        : null,
+    [packages, dog]
   );
 
   // Every package on the number that could apply to this dog — its own,
   // plus shared ones with no dog_name.
   const relevantPackages = useMemo(
     () =>
-      client
+      dog
         ? packages.filter(
             (p) =>
-              !p.dog_name || p.dog_name.trim().toLowerCase() === client.dog_name.trim().toLowerCase()
+              !p.dog_name || p.dog_name.trim().toLowerCase() === dog.dog_name.trim().toLowerCase()
           )
         : [],
-    [packages, client]
+    [packages, dog]
   );
 
   // One line per visit: a drop-off paired with the pick-up that followed.
@@ -345,16 +601,40 @@ function DogProfile() {
     return boardings.filter((b) => b.end_date >= today);
   }, [boardings]);
 
+  // The handful of answers that change how this dog is handled today. They
+  // sit at the top of the profile rather than in the questionnaire section
+  // below, because "has bitten" is not something to find by scrolling.
+  const careFlags = useMemo(() => {
+    if (!dog) return [];
+    const flags: string[] = [];
+    if (dog.bitten) flags.push(`Has bitten${dog.bitten_note ? ` — ${dog.bitten_note}` : ""}`);
+    if (dog.growled) flags.push(`Has growled${dog.growled_note ? ` — ${dog.growled_note}` : ""}`);
+    if (dog.dog_fight)
+      flags.push(`Has been in a dog fight${dog.dog_fight_note ? ` — ${dog.dog_fight_note}` : ""}`);
+    if (dog.climbed_fence)
+      flags.push(`Climbs fences${dog.fence_height ? ` (cleared ${dog.fence_height})` : ""}`);
+    if (dog.health_problems)
+      flags.push(`Health: ${dog.health_notes || "details not recorded"}`);
+    if (dog.allergies?.length) flags.push(`Allergies: ${dog.allergies.join(", ")}`);
+    if (dog.activity_restrictions?.length)
+      flags.push(`Restrictions: ${dog.activity_restrictions.join(", ")}`);
+    if (dog.sensitive_areas)
+      flags.push(
+        `Sensitive to touch${dog.sensitive_areas_note ? ` — ${dog.sensitive_areas_note}` : ""}`
+      );
+    return flags;
+  }, [dog]);
+
   if (loading) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-10">
         <StaffNav current="" />
-        <p className="text-sm text-slate-500">Loading…</p>
+        <p className="text-sm text-ink-3">Loading…</p>
       </div>
     );
   }
 
-  if (!client) {
+  if (!dog) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-10">
         <StaffNav current="" />
@@ -370,41 +650,51 @@ function DogProfile() {
       <StaffNav current="" />
 
       {/* Header */}
-      <div className="mb-6 flex flex-wrap items-start gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
+      <div className="mb-6 flex flex-wrap items-start gap-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
         <div className="shrink-0 text-center">
-          {client.photo_data ? (
+          {dog.photo_data ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={client.photo_data}
-              alt={`${client.dog_name}'s photo`}
+              src={dog.photo_data}
+              alt={`${dog.dog_name}'s photo`}
               className="h-24 w-24 rounded-2xl object-cover"
             />
           ) : (
-            <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-slate-100 text-3xl text-slate-300">
+            <div className="flex h-24 w-24 items-center justify-center rounded-2xl bg-surface-3 text-3xl text-ink-3">
               🐕
             </div>
           )}
           <label className="mt-1.5 block cursor-pointer text-[11px] font-medium text-accent-600 hover:text-accent-800">
-            {client.photo_data ? "Change photo" : "+ Add photo"}
+            {dog.photo_data ? "Change photo" : "+ Add photo"}
             <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
           </label>
         </div>
 
         <div className="min-w-0 flex-1">
-          <h1 className="font-display text-2xl font-semibold text-slate-900">{client.dog_name}</h1>
-          <p className="text-sm text-slate-500">{client.last_name}
-            <br /> {client.phone}
+          <h1 className="font-display text-2xl font-semibold text-ink">{dog.dog_name}</h1>
+          <p className="text-sm text-ink-3">{dog.last_name}
+            <br /> {dog.phone}
           </p>
-          <Link href={ownerHref(client.phone)} className="text-sm text-accent-600 hover:underline">
+          <Link href={ownerHref(dog.phone)} className="text-sm text-accent-600 hover:underline">
              Parent/Guardian's profile
           </Link>
           <div className="mt-2 flex flex-wrap gap-1.5">
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${STATUS_CLASSES[overall]}`}>
               💉 {STATUS_LABELS[overall]}
             </span>
+            {balance && (
+              <Link href={ownerHref(dog.phone)} title="Balance is for the whole household">
+                <BalanceBadge outstanding={balance.outstanding} />
+              </Link>
+            )}
+            {dogWalkPackage && (
+              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                🚶 {daysLeft(dogWalkPackage)} of {dogWalkPackage.total_days} walks left
+              </span>
+            )}
             {dogPackage && (
               <span className="rounded-full bg-accent-50 px-2.5 py-1 text-[11px] font-semibold text-accent-700">
-                📦 {daysLeft(dogPackage)} of {dogPackage.total_days} days left
+                🐕 {daysLeft(dogPackage)} of {dogPackage.total_days} days left
               </span>
             )}
             {upcomingStays.length > 0 && (
@@ -412,7 +702,7 @@ function DogProfile() {
                 🛏️ {upcomingStays.length} upcoming stay{upcomingStays.length === 1 ? "" : "s"}
               </span>
             )}
-            {!hasWaiver(client) && (
+            {!hasWaiver(dog) && (
               <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
                 ⚠️ No waiver on file
               </span>
@@ -422,6 +712,19 @@ function DogProfile() {
       </div>
 
       {error && <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>}
+
+      {careFlags.length > 0 && (
+        <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+            ⚠️ Handling notes
+          </p>
+          <ul className="list-inside list-disc space-y-0.5 text-sm text-amber-900">
+            {careFlags.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Basic info */}
       <Section title="Basic info">
@@ -487,12 +790,12 @@ function DogProfile() {
             </select>
           </Field>
 
-          <Field label="Date of birth">
-            <input
-              type="date"
+          <Field label={`Date of birth${ageFromBirthdate(form.birthdate) ? ` · ${ageFromBirthdate(form.birthdate)}` : ""}`}>
+            <DateField
               value={form.birthdate}
-              onChange={(e) => setForm({ ...form, birthdate: e.target.value })}
+              onChange={(v) => setForm({ ...form, birthdate: v })}
               className={inputClass}
+              ariaLabel="Birthdate"
             />
           </Field>
           <Field label="Weight (lb)">
@@ -505,10 +808,45 @@ function DogProfile() {
               className={inputClass}
             />
           </Field>
-          <Field label="Vet">
+          <Field label="Colour">
+            <input
+              value={form.color}
+              onChange={(e) => set("color", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Flea program">
+            <ChoiceWithOther
+              options={FLEA_PROGRAMS}
+              value={form.flea_program}
+              onChange={(v) => set("flea_program", v)}
+              ariaLabel="Flea program"
+            />
+          </Field>
+          <Field label="Where they came from">
+            <input
+              value={form.dog_source}
+              onChange={(e) => set("dog_source", e.target.value)}
+              placeholder="Breeder, shelter, rescue…"
+              className={inputClass}
+            />
+          </Field>
+
+          {form.fixed_status === "intact" && (
+            <Field label="Spay / neuter scheduled">
+              <DateField
+                value={form.fixed_scheduled_on}
+                onChange={(v) => set("fixed_scheduled_on", v)}
+                className={inputClass}
+                ariaLabel="Spay or neuter appointment"
+              />
+            </Field>
+          )}
+          <Field label="Vet (if different from the owner's)">
             <input
               value={form.vet}
               onChange={(e) => setForm({ ...form, vet: e.target.value })}
+              placeholder="Leave blank to use the household vet"
               className={inputClass}
             />
           </Field>
@@ -534,13 +872,169 @@ function DogProfile() {
           </button>
           {infoSaved && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
         </div>
-        <p className="mt-2 text-[11px] text-slate-400">
+        <p className="mt-2 text-[11px] text-ink-3">
           Phone number is the owner&apos;s — change it on the{" "}
-          <Link href={ownerHref(client.phone)} className="text-accent-600 hover:underline">
+          <Link href={ownerHref(dog.phone)} className="text-accent-600 hover:underline">
             owner profile
           </Link>
           .
         </p>
+      </Section>
+
+      {/* Health & grooming — the enrollment answers, editable */}
+      <Section title="Health &amp; grooming">
+        <div className="space-y-3">
+          <YesNoDetail
+            label="Any health problems?"
+            value={form.health_problems}
+            onChange={(v) => set("health_problems", v)}
+            detail={form.health_notes}
+            onDetailChange={(v) => set("health_notes", v)}
+            detailLabel="Details"
+          />
+          <Field label="Activity restrictions">
+            <CheckGrid
+              options={ACTIVITY_RESTRICTIONS}
+              value={form.activity_restrictions}
+              onChange={(v) => set("activity_restrictions", v)}
+              otherPlaceholder="Other restrictions, comma separated"
+            />
+          </Field>
+          <Field label="Allergies">
+            <CheckGrid
+              options={ALLERGENS}
+              value={form.allergies}
+              onChange={(v) => set("allergies", v)}
+              otherPlaceholder="Other allergies, comma separated"
+            />
+          </Field>
+          <YesNoDetail
+            label="Sensitive about being touched anywhere?"
+            value={form.sensitive_areas}
+            onChange={(v) => set("sensitive_areas", v)}
+            detail={form.sensitive_areas_note}
+            onDetailChange={(v) => set("sensitive_areas_note", v)}
+            detailLabel="Where?"
+            detailPlaceholder="Paws, ears, tail…"
+          />
+        </div>
+        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
+      </Section>
+
+      {/* Incident history */}
+      <Section title="History">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <YesNoDetail
+            label="Has growled at a person or dog?"
+            value={form.growled}
+            onChange={(v) => set("growled", v)}
+            detail={form.growled_note}
+            onDetailChange={(v) => set("growled_note", v)}
+            detailLabel="What happened?"
+          />
+          <YesNoDetail
+            label="Has bitten a person or dog?"
+            value={form.bitten}
+            onChange={(v) => set("bitten", v)}
+            detail={form.bitten_note}
+            onDetailChange={(v) => set("bitten_note", v)}
+            detailLabel="What happened?"
+          />
+          <YesNoDetail
+            label="Has climbed or jumped a fence?"
+            value={form.climbed_fence}
+            onChange={(v) => set("climbed_fence", v)}
+            detail={form.fence_height}
+            onDetailChange={(v) => set("fence_height", v)}
+            detailLabel="How high?"
+          />
+          <YesNoDetail
+            label="Has been in a fight with another dog?"
+            value={form.dog_fight}
+            onChange={(v) => set("dog_fight", v)}
+            detail={form.dog_fight_note}
+            onDetailChange={(v) => set("dog_fight_note", v)}
+            detailLabel="What happened?"
+          />
+        </div>
+        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
+      </Section>
+
+      {/* Behaviour */}
+      <Section title="Behaviour &amp; play">
+        <div className="space-y-3">
+          <Field label="Traits">
+            <CheckGrid
+              options={BEHAVIOR_TRAITS}
+              value={form.behavior_traits}
+              onChange={(v) => set("behavior_traits", v)}
+              otherPlaceholder="Anything else, comma separated"
+            />
+          </Field>
+          <Field label="At play">
+            <CheckGrid
+              options={PLAY_STYLES}
+              value={form.play_style}
+              onChange={(v) => set("play_style", v)}
+              otherPlaceholder="Anything else, comma separated"
+            />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Expected visit frequency">
+              <ChoiceWithOther
+                options={ATTENDANCE_PLANS}
+                value={form.attendance_plan}
+                onChange={(v) => set("attendance_plan", v)}
+                ariaLabel="Expected visit frequency"
+              />
+            </Field>
+            <Field label="Around big dogs">
+              <ChoiceWithOther
+                options={BIG_DOG_RESPONSES}
+                value={form.big_dog_response}
+                onChange={(v) => set("big_dog_response", v)}
+                ariaLabel="Around big dogs"
+              />
+            </Field>
+            <Field label="Crate trained">
+              <YesNo value={form.crate_trained} onChange={(v) => set("crate_trained", v)} />
+            </Field>
+            <Field label="Kennel trained">
+              <YesNo value={form.kennel_trained} onChange={(v) => set("kennel_trained", v)} />
+            </Field>
+            <Field label="Interested in a package">
+              <ChoiceWithOther
+                options={PACKAGE_INTEREST}
+                value={form.package_interest}
+                onChange={(v) => set("package_interest", v)}
+                ariaLabel="Interested in a package"
+              />
+            </Field>
+            <Field label="Meet &amp; greet date">
+              <DateField
+                value={form.meet_greet_on}
+                onChange={(v) => set("meet_greet_on", v)}
+                className={inputClass}
+                ariaLabel="Meet and greet date"
+              />
+            </Field>
+            <Field label="Meet &amp; greet window">
+              <select
+                value={form.meet_greet_window}
+                onChange={(e) => set("meet_greet_window", e.target.value)}
+                className={inputClass}
+              >
+                <option value="">Not set</option>
+                {MEET_GREET_WINDOWS.map((w) => (
+                  <option key={w} value={w}>
+                    {w}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+        <SaveBar onSave={saveInfo} saving={savingInfo} saved={infoSaved} />
       </Section>
 
       {/* Vaccines */}
@@ -548,7 +1042,7 @@ function DogProfile() {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Vaccine</th>
                 <th className="py-2 pr-3">Date given</th>
                 <th className="py-2 pr-3">Expires</th>
@@ -560,22 +1054,24 @@ function DogProfile() {
                 const record = vaccinations.find((r) => r.vaccine === v.key);
                 const status = vaccineStatus(record);
                 return (
-                  <tr key={v.key} className="border-b border-slate-50 last:border-0">
-                    <td className="py-2 pr-3 font-medium text-slate-700">{v.label}</td>
+                  <tr key={v.key} className="border-b border-line-soft last:border-0">
+                    <td className="py-2 pr-3 font-medium text-ink-2">{v.label}</td>
                     <td className="py-2 pr-3">
-                      <input
-                        type="date"
+                      <DateField
                         value={record?.given_on ?? ""}
-                        onChange={(e) => saveVaccine(v.key, { given_on: e.target.value })}
-                        className="rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                        onChange={(val) => saveVaccine(v.key, { given_on: val })}
+                        wrapperClassName="w-36"
+                        className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500"
+                        ariaLabel={`${v.label} date given`}
                       />
                     </td>
                     <td className="py-2 pr-3">
-                      <input
-                        type="date"
+                      <DateField
                         value={record?.expires_on ?? ""}
-                        onChange={(e) => saveVaccine(v.key, { expires_on: e.target.value })}
-                        className="rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-accent-500"
+                        onChange={(val) => saveVaccine(v.key, { expires_on: val })}
+                        wrapperClassName="w-36"
+                        className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent-500"
+                        ariaLabel={`${v.label} expiry`}
                       />
                     </td>
                     <td className="py-2">
@@ -591,40 +1087,125 @@ function DogProfile() {
             </tbody>
           </table>
         </div>
+
+        {/* The paperwork behind those dates — uploaded with the enrollment
+            form, or added here when a client brings an updated record in. */}
+        <div className="mt-4 border-t border-line-soft pt-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+            Uploaded records
+          </p>
+          {docs.length === 0 ? (
+            <p className="text-xs text-ink-3">Nothing on file.</p>
+          ) : (
+            <ul className="mb-2 space-y-1">
+              {docs.map((d) => (
+                <li key={d.id} className="flex flex-wrap items-center gap-2 text-xs">
+                  <button
+                    onClick={() => openDoc(d)}
+                    className="font-medium text-accent-600 hover:underline"
+                  >
+                    📎 {d.file_name}
+                  </button>
+                  <span className="text-ink-3">
+                    {(d.created_at ?? "").slice(0, 10)}
+                  </span>
+                  <button
+                    onClick={() => deleteDoc(d)}
+                    className="text-[10px] text-rose-400 hover:text-rose-600"
+                  >
+                    remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <label className="inline-block cursor-pointer rounded-xl border border-line px-3 py-1.5 text-xs font-medium text-ink-2 transition hover:border-accent-300">
+            + Upload a record
+            <input
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={uploadDoc}
+            />
+          </label>
+        </div>
       </Section>
 
       {/* Packages */}
       <Section title="Packages" count={relevantPackages.length}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+            <thead className="sticky top-0 bg-surface">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Bought</th>
+                <th className="py-2 pr-3">Type</th>
                 <th className="py-2 pr-3">For</th>
-                <th className="py-2 pr-3">Days</th>
-                <th className="py-2">Left</th>
+                <th className="py-2 pr-3">Paid</th>
+                <th className="py-2 pr-3">Left</th>
+                <th className="py-2">Use next</th>
               </tr>
             </thead>
             <tbody>
               {relevantPackages.map((p) => (
-                <tr key={p.id} className="border-b border-slate-50 last:border-0">
-                  <td className="py-2 pr-3 text-slate-600">{(p.created_at ?? "").slice(0, 10) || "—"}</td>
-                  <td className="py-2 pr-3 text-slate-600">
-                    {p.dog_name ? p.dog_name : <span className="text-slate-400">Shared</span>}
+                <tr key={p.id} className="border-b border-line-soft last:border-0">
+                  <td className="py-2 pr-3 text-ink-2">{(p.created_at ?? "").slice(0, 10) || "—"}</td>
+                  <td className="py-2 pr-3">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        packageKind(p) === "walk"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-accent-50 text-accent-700"
+                      }`}
+                    >
+                      {packageKind(p) === "walk" ? "🚶 Walks" : "🐕 Daycare"}
+                    </span>
                   </td>
-                  <td className="py-2 pr-3 text-slate-600">{p.total_days}</td>
+                  <td className="py-2 pr-3 text-ink-2">
+                    {p.dog_name ? p.dog_name : <span className="text-ink-3">Shared</span>}
+                  </td>
+                  <td className="py-2 pr-3 text-ink-2">
+                    {p.price != null ? `$${p.price.toFixed(2)}` : "—"}
+                  </td>
                   <td className="py-2">
                     <span
                       className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                         daysLeft(p) > 0 ? "bg-accent-50 text-accent-700" : "bg-rose-50 text-rose-600"
                       }`}
                     >
-                      {daysLeft(p)} of {p.total_days}
+                      {daysLeft(p)} of {p.total_days}{" "}
+                      {packageKind(p) === "walk" ? "walks" : "days"}
                     </span>
+                  </td>
+                  <td className="py-2">
+                    {(() => {
+                      const pinned =
+                        preferredPackageId(dog, packageKind(p)) === p.id && !!p.id;
+                      const spent = daysLeft(p) === 0;
+                      return (
+                        <button
+                          onClick={() => setDefaultPackage(p)}
+                          disabled={spent && !pinned}
+                          title={
+                            spent
+                              ? "This package is used up"
+                              : pinned
+                                ? "New visits draw from this one — click to unpin"
+                                : "Make this the package new visits draw from"
+                          }
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold transition disabled:opacity-40 ${
+                            pinned
+                              ? "bg-accent-500 text-white"
+                              : "border border-line text-ink-3 hover:border-accent-400"
+                          }`}
+                        >
+                          {pinned ? "📌 Default" : "Set default"}
+                        </button>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}
-              {relevantPackages.length === 0 && <EmptyRow colSpan={4}>No packages on file.</EmptyRow>}
+              {relevantPackages.length === 0 && <EmptyRow colSpan={6}>No packages on file.</EmptyRow>}
             </tbody>
           </table>
         </ScrollBox>
@@ -634,8 +1215,8 @@ function DogProfile() {
       <Section title="Boarding stays" count={boardings.length}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+            <thead className="sticky top-0 bg-surface">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Dates</th>
                 <th className="py-2 pr-3">Nights</th>
                 <th className="py-2 pr-3">Add-ons</th>
@@ -644,14 +1225,14 @@ function DogProfile() {
             </thead>
             <tbody>
               {boardings.map((b) => (
-                <tr key={b.id} className="border-b border-slate-50 last:border-0">
-                  <td className="whitespace-nowrap py-2 pr-3 text-slate-700">
+                <tr key={b.id} className="border-b border-line-soft last:border-0">
+                  <td className="whitespace-nowrap py-2 pr-3 text-ink-2">
                     {prettyDateKey(b.start_date)} → {prettyDateKey(b.end_date)}
                   </td>
-                  <td className="py-2 pr-3 text-slate-600">
+                  <td className="py-2 pr-3 text-ink-2">
                     {Math.max(1, dateRange(b.start_date, b.end_date).length - 1)}
                   </td>
-                  <td className="py-2 pr-3 text-slate-600">
+                  <td className="py-2 pr-3 text-ink-2">
                     {(b.addons ?? []).length ? (b.addons ?? []).join(", ") : "—"}
                   </td>
                   <td className="py-2">
@@ -674,8 +1255,8 @@ function DogProfile() {
       <Section title="Visits" count={visits.length}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+            <thead className="sticky top-0 bg-surface">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Date</th>
                 <th className="py-2 pr-3">Service</th>
                 <th className="py-2 pr-3">In</th>
@@ -686,17 +1267,17 @@ function DogProfile() {
             </thead>
             <tbody>
               {visits.map((v) => (
-                <tr key={v.key} className="border-b border-slate-50 last:border-0">
-                  <td className="whitespace-nowrap py-2 pr-3 text-slate-700">{v.date}</td>
-                  <td className="py-2 pr-3 capitalize text-slate-600">
+                <tr key={v.key} className="border-b border-line-soft last:border-0">
+                  <td className="whitespace-nowrap py-2 pr-3 text-ink-2">{v.date}</td>
+                  <td className="py-2 pr-3 capitalize text-ink-2">
                     {String(v.service).replace("_", " ")}
                   </td>
-                  <td className="whitespace-nowrap py-2 pr-3 text-slate-600">{timeOnly(v.dropOff)}</td>
-                  <td className="whitespace-nowrap py-2 pr-3 text-slate-600">{timeOnly(v.pickUp)}</td>
-                  <td className="py-2 pr-3 text-slate-600">
+                  <td className="whitespace-nowrap py-2 pr-3 text-ink-2">{timeOnly(v.dropOff)}</td>
+                  <td className="whitespace-nowrap py-2 pr-3 text-ink-2">{timeOnly(v.pickUp)}</td>
+                  <td className="py-2 pr-3 text-ink-2">
                     {v.addons.length ? v.addons.join(", ") : "—"}
                     {v.pickupWindow && (
-                      <span className="ml-1 text-[10px] text-slate-400">({v.pickupWindow})</span>
+                      <span className="ml-1 text-[10px] text-ink-3">({v.pickupWindow})</span>
                     )}
                   </td>
                   <td className="py-2 font-medium text-emerald-700">
@@ -714,8 +1295,8 @@ function DogProfile() {
       <Section title="Walks" count={walkRows.length}>
         <ScrollBox>
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="border-b border-slate-100 text-xs font-medium uppercase tracking-wide text-slate-400">
+            <thead className="sticky top-0 bg-surface">
+              <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Date</th>
                 <th className="py-2 pr-3">Service</th>
                 <th className="py-2 pr-3">Slot</th>
@@ -726,13 +1307,13 @@ function DogProfile() {
             </thead>
             <tbody>
               {walkRows.map((w) => (
-                <tr key={w.key} className="border-b border-slate-50 last:border-0">
-                  <td className="whitespace-nowrap py-2 pr-3 text-slate-700">{w.date}</td>
-                  <td className="py-2 pr-3 text-slate-600">{w.service}</td>
-                  <td className="py-2 pr-3 text-slate-600">{w.slot}</td>
-                  <td className="py-2 pr-3 text-slate-600">{w.out || "—"}</td>
-                  <td className="py-2 pr-3 text-slate-600">{w.back || "—"}</td>
-                  <td className="py-2 text-slate-600">{w.initials || "—"}</td>
+                <tr key={w.key} className="border-b border-line-soft last:border-0">
+                  <td className="whitespace-nowrap py-2 pr-3 text-ink-2">{w.date}</td>
+                  <td className="py-2 pr-3 text-ink-2">{w.service}</td>
+                  <td className="py-2 pr-3 text-ink-2">{w.slot}</td>
+                  <td className="py-2 pr-3 text-ink-2">{w.out || "—"}</td>
+                  <td className="py-2 pr-3 text-ink-2">{w.back || "—"}</td>
+                  <td className="py-2 text-ink-2">{w.initials || "—"}</td>
                 </tr>
               ))}
               {walkRows.length === 0 && <EmptyRow colSpan={6}>No walks logged yet.</EmptyRow>}
@@ -745,7 +1326,7 @@ function DogProfile() {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+  "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
 
 function Section({
   title,
@@ -757,10 +1338,10 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+    <section className="mb-5 rounded-2xl border border-line bg-surface p-5 shadow-card">
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-3">
         {title}
-        {count != null && <span className="ml-1.5 font-normal text-slate-300">({count})</span>}
+        {count != null && <span className="ml-1.5 font-normal text-ink-3">({count})</span>}
       </h2>
       {children}
     </section>
@@ -776,8 +1357,34 @@ function ScrollBox({ children }: { children: React.ReactNode }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-[11px] text-slate-400">{label}</label>
+      <label className="mb-1 block text-[11px] text-ink-3">{label}</label>
       {children}
+    </div>
+  );
+}
+
+// Every editable section writes the same `clients` row, so they all share one
+// save action — the button repeats so staff never have to scroll back up to
+// find it.
+function SaveBar({
+  onSave,
+  saving,
+  saved,
+}: {
+  onSave: () => void;
+  saving: boolean;
+  saved: boolean;
+}) {
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <button
+        onClick={onSave}
+        disabled={saving}
+        className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-white shadow-card hover:bg-accent-600 disabled:opacity-60"
+      >
+        {saving ? "Saving…" : "Save changes"}
+      </button>
+      {saved && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
     </div>
   );
 }
@@ -785,7 +1392,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function EmptyRow({ colSpan, children }: { colSpan: number; children: React.ReactNode }) {
   return (
     <tr>
-      <td colSpan={colSpan} className="py-5 text-center text-sm text-slate-400">
+      <td colSpan={colSpan} className="py-5 text-center text-sm text-ink-3">
         {children}
       </td>
     </tr>

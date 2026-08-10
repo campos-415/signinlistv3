@@ -2,9 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Defaults for the themeable palette. SettingsProvider overwrites these on
+   <html> from the saved settings; they're here so the app renders correctly
+   before settings load, and so a fresh install looks finished. Values are
+   space-separated RGB triples, which is what rgb(var(--x) / alpha) needs. */
+:root {
+  --accent-50: 238 244 255;
+  --accent-100: 219 230 254;
+  --accent-400: 122 156 247;
+  --accent-500: 74 114 239;
+  --accent-600: 52 87 221;
+  --accent-700: 42 68 179;
+
+  --print-from: 245 158 11;
+  --print-to: 249 115 22;
+  --print-line: 253 230 138;
+  --print-rule: 252 211 77;
+  --print-tint: 255 247 237;
+  --print-band: 254 243 199;
+  --print-ink: 180 83 9;
+
+  /* Semantic surface/ink tokens. Components reference these by role rather
+     than by hue, which is what makes one dark-mode override below flip the
+     whole app instead of needing a `dark:` variant on every element. */
+  --surface: 255 255 255;      /* cards, panels */
+  --surface-2: 248 250 252;    /* page background */
+  --surface-3: 241 245 249;    /* subtle fills, group bands */
+  --line: 226 232 240;         /* standard borders */
+  --line-soft: 241 245 249;    /* hairline dividers */
+  --ink: 15 23 42;             /* primary text */
+  --ink-2: 71 85 105;          /* secondary text */
+  --ink-3: 148 163 184;        /* muted text, placeholders */
+
+  /* Tells the browser to render native widgets — date pickers, scrollbars,
+     spinners — in the matching scheme. Without it a native calendar stays
+     blinding white on a dark page no matter what the input is styled as. */
+  color-scheme: light;
+}
+
+.dark {
+  --surface: 30 41 59;
+  --surface-2: 15 23 42;
+  --surface-3: 51 65 85;
+  --line: 51 65 85;
+  --line-soft: 40 52 71;
+  --ink: 241 245 249;
+  --ink-2: 203 213 225;
+  --ink-3: 148 163 184;
+  color-scheme: dark;
+}
+
 html,
 body {
-  @apply bg-slate-50 text-slate-900;
+  @apply bg-surface-2 text-ink;
 }
 
 .sig-canvas {
@@ -14,6 +64,19 @@ body {
 }
 
 @media print {
+  /* Paper is always light. Reset the tokens rather than fighting each rule,
+     so a dark-mode screen still prints a readable black-on-white report. */
+  :root,
+  .dark {
+    --surface: 255 255 255;
+    --surface-2: 255 255 255;
+    --surface-3: 241 245 249;
+    --line: 226 232 240;
+    --line-soft: 241 245 249;
+    --ink: 15 23 42;
+    --ink-2: 71 85 105;
+    --ink-3: 100 116 139;
+  }
   html,
   body {
     background: white !important;
