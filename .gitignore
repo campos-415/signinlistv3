@@ -4,3 +4,12 @@ out
 .env.local
 .DS_Store
 next-env.d.ts
+
+# Generated documentation.
+#
+# The PDFs are built from the app and the builders in docs/, so the source of
+# truth is the code rather than the output. Git keeps every version of a
+# binary forever, and these are ~28 MB a rebuild — a few rounds and the repo
+# is mostly superseded sales material that no clone can avoid downloading.
+# Keep them on disk, share them from wherever sales material lives.
+docs/*.pdf
