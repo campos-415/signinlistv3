@@ -4,7 +4,10 @@
 // out where the money is. Balances are per PHONE, because one household pays
 // one bill covering every dog on the number (see lib/billing.ts).
 
-import { getSupabase } from "@/lib/supabase";
+import { fetchAll } from "@/lib/fetchAll";
+
+/** Only the ordering helper is needed off the query builder. */
+type Ordered = { order: (column: string) => unknown };
 import { computeBalance, unpaidCharges } from "@/lib/billing";
 import { todayKey } from "@/lib/dates";
 import { ageFromBirthdate } from "@/lib/enrollment";
@@ -25,34 +28,38 @@ export interface ReportData {
 }
 
 export async function loadReportData(): Promise<ReportData> {
-  const supabase = getSupabase();
-  // Explicit high limits: PostgREST defaults to 1000 rows, which would
-  // silently truncate a year of sign-ins and make every total wrong.
+  // Paged, not capped.
+  //
+  // These were written as generous limits — 5,000 dogs, 20,000 sign-ins — on
+  // the assumption that asking for more than a thousand rows gets you more
+  // than a thousand rows. It does not: PostgREST caps the response at 1,000
+  // whatever the client asks for, so a limit of 20,000 and a limit of 1,000
+  // return exactly the same truncated set, silently and with no error.
+  //
+  // This database already holds 2,640 vaccination records, so the export was
+  // quietly shipping 1,000 of them. Range paging is the only thing that
+  // actually reads a whole table.
   const [dogs, owners, signins, boardings, packages, payments, vaccinations, walkLogs] =
     await Promise.all([
-      supabase.from("dogs").select("*").order("dog_name").limit(5000),
-      supabase.from("owners").select("*").limit(5000),
-      supabase.from("signins").select("*").order("created_at", { ascending: false }).limit(20000),
-      supabase.from("boardings").select("*").order("start_date", { ascending: false }).limit(5000),
-      supabase.from("packages").select("*").limit(5000),
-      supabase.from("payments").select("*").order("paid_on", { ascending: false }).limit(10000),
-      supabase.from("vaccinations").select("*").limit(20000),
-      supabase.from("walk_logs").select("*").order("date", { ascending: false }).limit(20000),
+      fetchAll<Dog>("dogs", "*", (q) => (q as never as Ordered).order("dog_name")),
+      fetchAll<Record<string, unknown>>("owners"),
+      fetchAll<SignInRecord>("signins"),
+      fetchAll<Boarding>("boardings"),
+      fetchAll<Package>("packages"),
+      fetchAll<Payment>("payments"),
+      fetchAll<Vaccination>("vaccinations"),
+      fetchAll<WalkLog>("walk_logs"),
     ]);
 
-  for (const res of [dogs, owners, signins, boardings, packages, payments, vaccinations, walkLogs]) {
-    if (res.error) throw res.error;
-  }
-
   return {
-    dogs: (dogs.data as Dog[]) ?? [],
-    owners: (owners.data as Record<string, unknown>[]) ?? [],
-    signins: (signins.data as SignInRecord[]) ?? [],
-    boardings: (boardings.data as Boarding[]) ?? [],
-    packages: (packages.data as Package[]) ?? [],
-    payments: (payments.data as Payment[]) ?? [],
-    vaccinations: (vaccinations.data as Vaccination[]) ?? [],
-    walkLogs: (walkLogs.data as WalkLog[]) ?? [],
+    dogs,
+    owners,
+    signins,
+    boardings,
+    packages,
+    payments,
+    vaccinations,
+    walkLogs,
   };
 }
 
