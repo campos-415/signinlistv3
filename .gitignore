@@ -13,3 +13,8 @@ next-env.d.ts
 # is mostly superseded sales material that no clone can avoid downloading.
 # Keep them on disk, share them from wherever sales material lives.
 docs/*.pdf
+
+# TypeScript incremental build cache. Regenerated on every typecheck, so
+# tracking it means a dirty tree after any build and a meaningless diff in
+# every commit.
+tsconfig.tsbuildinfo
