@@ -26,9 +26,10 @@ import StaffNav from "@/components/StaffNav";
 import GalleryEditor from "@/components/GalleryEditor";
 import { SinglePhotoEditor } from "@/components/SitePhotoEditors";
 import ReportsSection from "@/components/ReportsSection";
+import SecuritySection from "@/components/SecuritySection";
 import ContentEditor from "@/components/ContentEditor";
 
-type Tab = "brand" | "pricing" | "website" | "content" | "messaging" | "reports";
+type Tab = "brand" | "pricing" | "website" | "content" | "messaging" | "reports" | "security";
 
 // Thirteen sections on one page was a scroll, and the important ones (money)
 // sat below a wall of photo uploaders. Grouped by what someone came here to
@@ -40,6 +41,7 @@ const TABS: { key: Tab; label: string; blurb: string }[] = [
   { key: "content", label: "📝 Content", blurb: "The words on every public page" },
   { key: "messaging", label: "✉️ Messaging", blurb: "Client email and staff alerts" },
   { key: "reports", label: "📊 Reports", blurb: "Print, export and money owed" },
+  { key: "security", label: "🔒 Security", blurb: "Sign-in, staff roles and activity" },
 ];
 
 export default function SettingsPage() {
@@ -1233,9 +1235,12 @@ function Settings() {
 
       {tab === "reports" && <ReportsSection />}
 
-      {/* Nothing on the Reports tab is a setting, so the save bar would only
-          invite a pointless click there. */}
-      {tab !== "reports" && (
+      {tab === "security" && <SecuritySection />}
+
+      {/* Nothing on the Reports or Security tabs is a setting on this page,
+          so the save bar would only invite a pointless click there. Roles and
+          two-factor changes save themselves the moment they are made. */}
+      {tab !== "reports" && tab !== "security" && (
       <div className="mb-10 flex items-center gap-3">
         <button
           onClick={save}

@@ -6,15 +6,22 @@ import { todayKey } from "@/lib/dates";
 import { columnsOf, downloadCsv, stampedName, toCsv } from "@/lib/csv";
 import {
   AccountRow,
+  ExportDataset,
+  ExportRefused,
   ReportData,
   accountRows,
   dogDirectoryRows,
+  exportDataset,
   loadReportData,
   moneySummary,
   outstandingChargeRows,
+  recordExport,
 } from "@/lib/reports";
 import { packageTotals } from "@/lib/packageMoney";
 import { ADDON_PRICES, PRICING } from "@/lib/pricing";
+import { logRefusal } from "@/lib/audit";
+import { canExport } from "@/lib/roles";
+import useRole from "@/components/useRole";
 
 // Settings -> Reports.
 //
@@ -26,6 +33,17 @@ import { ADDON_PRICES, PRICING } from "@/lib/pricing";
 //              print itself, and a second implementation here would drift.
 //   Exported — a spreadsheet. Everything on file, for the questions nobody
 //              anticipated, and for the ones about money.
+//
+// Who sees which is a role question now. An employee gets the printable
+// reports, which are pages they can already open, and does not get the money
+// or the spreadsheets: requirement 3 says downloading the client database
+// needs specific authorisation, and aggregate receivables are the business
+// owner's figures rather than a shift's.
+//
+// The interface hiding them is not the control. Every download below goes
+// through a function in the database that refuses anybody below manager and
+// records the export in the audit log, so the answer is the same for
+// somebody who bypasses this screen entirely.
 
 const money = (n: number) =>
   n.toLocaleString(undefined, { style: "currency", currency: "USD" });
@@ -36,6 +54,13 @@ export default function ReportsSection() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [busyExport, setBusyExport] = useState("");
+  const { account, loading: roleLoading, unavailable: rolesUnavailable } = useRole();
+
+  // A database that has not run the security migrations has no roles to
+  // read, and behaving as though everybody is an employee would take the
+  // reports away from the owner on the strength of a missing table.
+  const mayExport = rolesUnavailable || canExport(account?.role ?? null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,8 +76,12 @@ export default function ReportsSection() {
   }, []);
 
   useEffect(() => {
+    // Not fetched at all without the authorisation to use it. Skipping it
+    // saves an employee a large download of records they cannot export
+    // anyway, and means the screen does not hold what it will not show.
+    if (roleLoading || !mayExport) return;
     load();
-  }, [load]);
+  }, [load, roleLoading, mayExport]);
 
   const accounts = useMemo(() => (data ? accountRows(data) : []), [data]);
   const summary = useMemo(() => moneySummary(accounts), [accounts]);
@@ -72,13 +101,63 @@ export default function ReportsSection() {
     [data]
   );
 
-  function save(stem: string, rows: Record<string, unknown>[]) {
-    if (!rows.length) {
-      setNote("Nothing to export there yet.");
-      return;
-    }
+  function write(stem: string, rows: Record<string, unknown>[]) {
     downloadCsv(stampedName(stem), toCsv(rows, columnsOf(rows)));
     setNote(`Downloaded ${stem} — ${rows.length.toLocaleString()} rows.`);
+  }
+
+  /**
+   * A refusal from the database. Shown as it arrived - those messages are
+   * written for a person - and recorded, because somebody below manager
+   * trying to download the client list is worth a line in the log even
+   * though it did not succeed.
+   */
+  async function refused(what: string, e: unknown) {
+    const message =
+      e instanceof ExportRefused ? e.message : "Could not export. Check the connection and try again.";
+    setError(message);
+    setNote("");
+    if (e instanceof ExportRefused) await logRefusal(`export ${what}`, message);
+    else console.error(`Exporting ${what} failed:`, e);
+  }
+
+  /** A table, fetched through the gate that authorises reading it in bulk. */
+  async function saveTable(stem: string, dataset: ExportDataset) {
+    setBusyExport(stem);
+    setError("");
+    setNote("");
+    try {
+      const rows = await exportDataset(dataset);
+      if (!rows.length) {
+        setNote("Nothing to export there yet.");
+        return;
+      }
+      write(stem, rows);
+    } catch (e) {
+      await refused(dataset, e);
+    } finally {
+      setBusyExport("");
+    }
+  }
+
+  /** One of the three the browser works out for itself. */
+  async function saveComposed(stem: string, rows: Record<string, unknown>[]) {
+    setBusyExport(stem);
+    setError("");
+    setNote("");
+    try {
+      if (!rows.length) {
+        setNote("Nothing to export there yet.");
+        return;
+      }
+      // Authorised and recorded before a file reaches the downloads folder.
+      await recordExport(stem, rows.length);
+      write(stem, rows);
+    } catch (e) {
+      await refused(stem, e);
+    } finally {
+      setBusyExport("");
+    }
   }
 
   const owing = accounts.filter((a) => a.outstanding > 0.005);
@@ -138,7 +217,25 @@ export default function ReportsSection() {
         </div>
       </section>
 
+      {/* ---------- not authorised for the rest ---------- */}
+      {!mayExport && !roleLoading && (
+        <section className="rounded-2xl border border-line bg-surface p-5 shadow-card">
+          <h3 className="text-sm font-semibold text-ink">🔒 Money and spreadsheets</h3>
+          <p className="mt-1 text-xs leading-relaxed text-ink-3">
+            Balances across the business, and the CSV downloads of clients, dogs, visits and
+            payments, need a manager or owner account. Downloading the client list is the kind of
+            thing that should be a decision rather than a click, so the database asks who is doing
+            it and records the answer.
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-ink-3">
+            What you can still do here: every printable report above, and a household&rsquo;s own
+            balance from their page when they are paying.
+          </p>
+        </section>
+      )}
+
       {/* ---------- money ---------- */}
+      {mayExport && (
       <section className="rounded-2xl border border-line bg-surface p-5 shadow-card">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-semibold text-ink">💰 Money owed</h3>
@@ -284,22 +381,32 @@ export default function ReportsSection() {
             <div className="mt-3 flex flex-wrap gap-2">
               <Download
                 label="Accounts + ageing"
-                onClick={() => save("accounts-receivable", accounts as unknown as Record<string, unknown>[])}
+                busy={busyExport === "accounts-receivable"}
+                onClick={() =>
+                  saveComposed(
+                    "accounts-receivable",
+                    accounts as unknown as Record<string, unknown>[]
+                  )
+                }
               />
               <Download
                 label="Outstanding charges"
-                onClick={() => data && save("outstanding-charges", outstandingChargeRows(data))}
+                busy={busyExport === "outstanding-charges"}
+                onClick={() => data && saveComposed("outstanding-charges", outstandingChargeRows(data))}
               />
               <Download
                 label="Payments received"
-                onClick={() => data && save("payments", data.payments as unknown as Record<string, unknown>[])}
+                busy={busyExport === "payments"}
+                onClick={() => saveTable("payments", "payments")}
               />
             </div>
           </>
         )}
       </section>
+      )}
 
       {/* ---------- spreadsheets ---------- */}
+      {mayExport && (
       <section className="rounded-2xl border border-line bg-surface p-5 shadow-card">
         <h3 className="text-sm font-semibold text-ink">📄 Spreadsheets</h3>
         <p className="mt-0.5 text-xs text-ink-3">
@@ -312,15 +419,17 @@ export default function ReportsSection() {
             title="Dogs and owners — everything on file"
             blurb="One row per dog: every profile answer, vaccination dates and status, age, visit counts, package balances, plus the whole owner record — address, email, emergency and vet contacts."
             count={data?.dogs.length}
-            onClick={() => data && save("dogs-and-owners", dogDirectoryRows(data))}
+            busy={busyExport === "dogs-and-owners"}
+            onClick={() => data && saveComposed("dogs-and-owners", dogDirectoryRows(data))}
           />
           <ExportRow
             title="Owners"
             blurb="One row per household, with dogs and balance."
             count={data?.owners.length}
+            busy={busyExport === "owners"}
             onClick={() =>
               data &&
-              save(
+              saveComposed(
                 "owners",
                 data.owners.map((o) => {
                   const acct = accounts.find((a) => a.phone === o.phone);
@@ -342,42 +451,46 @@ export default function ReportsSection() {
             title="Visits"
             blurb="Every sign-in and sign-out with service, add-ons, who handed over and price."
             count={data?.signins.length}
-            onClick={() => data && save("visits", data.signins as unknown as Record<string, unknown>[])}
+            busy={busyExport === "visits"}
+            onClick={() => saveTable("visits", "visits")}
           />
           <ExportRow
             title="Boarding reservations"
             blurb="Dates, add-ons, walks per day, feeding and medication instructions."
             count={data?.boardings.length}
-            onClick={() => data && save("boardings", data.boardings as unknown as Record<string, unknown>[])}
+            busy={busyExport === "boardings"}
+            onClick={() => saveTable("boardings", "boardings")}
           />
           <ExportRow
             title="Packages"
             blurb="Blocks sold, kind, days used against days bought and price."
             count={data?.packages.length}
-            onClick={() => data && save("packages", data.packages as unknown as Record<string, unknown>[])}
+            busy={busyExport === "packages"}
+            onClick={() => saveTable("packages", "packages")}
           />
           <ExportRow
             title="Walk logs"
             blurb="Per dog, per day, per slot — out, back and who walked."
             count={data?.walkLogs.length}
-            onClick={() => data && save("walk-logs", data.walkLogs as unknown as Record<string, unknown>[])}
+            busy={busyExport === "walk-logs"}
+            onClick={() => saveTable("walk-logs", "walk_logs")}
           />
           <ExportRow
             title="Vaccinations"
             blurb="Every record with given and expiry dates."
             count={data?.vaccinations.length}
-            onClick={() =>
-              data && save("vaccinations", data.vaccinations as unknown as Record<string, unknown>[])
-            }
+            busy={busyExport === "vaccinations"}
+            onClick={() => saveTable("vaccinations", "vaccinations")}
           />
         </div>
 
         <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
           These files contain client names, phone numbers, addresses and emergency contacts. Treat a
           download like a printed client list — keep it off shared drives and delete it when the job
-          is done.
+          is done. Every download is recorded against your account in Settings → Security.
         </p>
       </section>
+      )}
 
       {error && <p className="text-xs font-medium text-rose-500">{error}</p>}
       {note && <p className="text-xs font-medium text-emerald-700">{note}</p>}
@@ -437,13 +550,22 @@ function Stat({
   );
 }
 
-function Download({ label, onClick }: { label: string; onClick: () => void }) {
+function Download({
+  label,
+  onClick,
+  busy,
+}: {
+  label: string;
+  onClick: () => void;
+  busy?: boolean;
+}) {
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink-2 hover:border-accent-300"
+      disabled={busy}
+      className="rounded-xl border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink-2 hover:border-accent-300 disabled:opacity-60"
     >
-      ⬇ {label}
+      {busy ? "Preparing…" : `⬇ ${label}`}
     </button>
   );
 }
@@ -453,11 +575,13 @@ function ExportRow({
   blurb,
   count,
   onClick,
+  busy,
 }: {
   title: string;
   blurb: string;
   count?: number;
   onClick: () => void;
+  busy?: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-start gap-3 rounded-xl border border-line bg-surface-2/60 px-3.5 py-2.5">
@@ -467,11 +591,17 @@ function ExportRow({
       </div>
       <button
         onClick={onClick}
-        disabled={count === 0}
+        disabled={count === 0 || busy}
         className="shrink-0 rounded-xl bg-accent-500 px-3 py-1.5 text-xs font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-50"
       >
-        ⬇ CSV
-        {count != null && <span className="ml-1 opacity-80">({count.toLocaleString()})</span>}
+        {busy ? (
+          "Preparing…"
+        ) : (
+          <>
+            ⬇ CSV
+            {count != null && <span className="ml-1 opacity-80">({count.toLocaleString()})</span>}
+          </>
+        )}
       </button>
     </div>
   );

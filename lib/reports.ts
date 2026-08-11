@@ -57,6 +57,77 @@ export async function loadReportData(): Promise<ReportData> {
 }
 
 // ---------------------------------------------------------------------
+// Exporting, which is a different question from reading.
+//
+// Requirement 3 says an employee must not be able to export the whole
+// customer database without specific authorisation. That is enforced in the
+// database, not here: both functions below call into
+// security-exports-migration.sql, which refuses anybody below manager and
+// writes a line in the audit log naming the person, the dataset and the
+// number of rows. Hiding the buttons in the interface is a courtesy on top,
+// so nobody is offered something that will fail.
+//
+// Two paths, because there are two kinds of export:
+//
+//   exportDataset  a table, fetched through the gate. The function is the
+//                  authorisation for reading it in bulk.
+//   recordExport   the three exports composed in the browser out of figures
+//                  already on screen - accounts and ageing, outstanding
+//                  charges, the dog directory. Their arithmetic lives in
+//                  lib/billing.ts and above, and reimplementing it in SQL
+//                  would leave two versions of the same sums to drift apart.
+//                  So this authorises and records the act instead.
+// ---------------------------------------------------------------------
+
+/** The datasets the database will hand over in bulk. */
+export type ExportDataset =
+  | "dogs"
+  | "owners"
+  | "visits"
+  | "boardings"
+  | "packages"
+  | "payments"
+  | "vaccinations"
+  | "walk_logs";
+
+/**
+ * Thrown when the database refuses an export. The message comes from the
+ * database and is already written for a person to read, so it is shown as
+ * it arrives rather than replaced with something vaguer.
+ */
+export class ExportRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExportRefused";
+  }
+}
+
+export async function exportDataset(kind: ExportDataset): Promise<Record<string, unknown>[]> {
+  const { data, error } = await getSupabase().rpc("export_dataset", { p_dataset: kind });
+  if (error) throw new ExportRefused(exportMessage(error.message));
+  // The function returns one jsonb per row, with the photo and signature
+  // columns already dropped on the database side.
+  return (data ?? []) as Record<string, unknown>[];
+}
+
+export async function recordExport(kind: string, rows: number): Promise<void> {
+  const { error } = await getSupabase().rpc("record_export", {
+    p_dataset: kind,
+    p_rows: rows,
+  });
+  if (error) throw new ExportRefused(exportMessage(error.message));
+}
+
+function exportMessage(raw: string): string {
+  // Before the migration has been run the function does not exist, and the
+  // PostgREST message for that is not one to show a member of staff.
+  if (/could not find the function|does not exist|schema cache/i.test(raw)) {
+    return "Exports are not set up on this database yet. Run the security migrations first.";
+  }
+  return raw;
+}
+
+// ---------------------------------------------------------------------
 // The directory: every dog, with its household attached.
 // ---------------------------------------------------------------------
 
