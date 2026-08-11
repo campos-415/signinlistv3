@@ -297,9 +297,26 @@ await expectDenied("still cannot delete a payment", "delete from public.payments
 await expectDenied("still cannot grant a role", "insert into public.staff_roles (user_id, role) values ($1,'manager')", [users.stranger]);
 
 // =====================================================================
-console.log("\n=== 9. The owner ===");
+// The demo case, stated as its own section because it is the one that must
+// never regress: an owner who has NOT set up an authenticator, signing in
+// with a password only, has to be able to run the whole business. If this
+// section ever fails, the migration locks the owner out of their own app.
+console.log("\n=== 9. The owner, with NO authenticator set up (aal1) ===");
+await superuser();
+const ownerFactors = (
+  await db.query("select count(*)::int as n from auth.mfa_factors where user_id = $1", [users.owner])
+).rows[0].n;
+ok(ownerFactors === 0, "precondition: the owner has enrolled nothing");
+const ownerRequire = (
+  await db.query("select require_mfa from public.staff_roles where user_id = $1", [users.owner])
+).rows[0].require_mfa;
+ok(ownerRequire === false, "precondition: nobody has required MFA on it");
+
 await as(users.owner, "aal1");
-await expectAllowed("exports", "select * from public.export_dataset('owners')");
+await expectAllowed("reads dogs", "select * from public.dogs");
+await expectAllowed("reads the audit log", "select * from public.audit_log");
+await expectAllowed("lists staff", "select * from public.list_staff()");
+await expectAllowed("EXPORTS, with no second factor", "select * from public.export_dataset('owners')");
 await expectAllowed("changes prices and branding", "update public.settings set data = '{\"a\":1}'::jsonb where id = 1");
 await expectAllowed("deletes a payment", "delete from public.payments where amount = 25");
 await expectAllowed("grants a role", "insert into public.staff_roles (user_id, role) values ($1,'employee') returning user_id", [users.stranger]);

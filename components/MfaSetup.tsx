@@ -63,10 +63,36 @@ export default function MfaSetup({
   }
 
   if (!start) {
+    // The escape has to be here as well as below, and this is the branch that
+    // matters most. If Supabase cannot start an enrolment - the project has
+    // MFA switched off, the network is out - then without a way past this
+    // screen an owner who has not enrolled yet is locked out of their own
+    // application by a feature that is not even working. That is a worse
+    // outcome than not having MFA at all.
     return (
       <div className="space-y-2">
-        <p className="text-sm text-ink-3">Preparing the setup…</p>
+        <p className="text-sm text-ink-3">
+          {error ? "Setup is not available right now." : "Preparing the setup…"}
+        </p>
         {error && <p className="text-xs font-medium text-rose-500">{error}</p>}
+        {error && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              onClick={begin}
+              className="rounded-xl border border-line px-3 py-1.5 text-xs font-medium text-ink-2 hover:border-accent-300"
+            >
+              Try again
+            </button>
+            {onCancel && (
+              <button
+                onClick={onCancel}
+                className="rounded-xl bg-accent-500 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent-600"
+              >
+                Skip for now and carry on
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }

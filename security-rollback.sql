@@ -178,6 +178,46 @@ drop table if exists public.staff_roles;
 */
 
 -- =====================================================================
+-- BREAK GLASS: somebody cannot get past the two-factor prompt.
+--
+-- Read this first, because most of the time the answer is that there is no
+-- problem. An account that has never enrolled is NOT blocked by the app: the
+-- prompt is a banner it can dismiss, and the database lets it work at
+-- employee level while refusing exports, deletions and permission changes.
+-- So this section is for one situation only - an account that DID enrol and
+-- no longer has the phone.
+--
+-- The ordinary fix needs no SQL: another owner lifts the requirement in
+-- Settings, Security, and the person enrols again on the new phone. Use the
+-- statements below only when nobody can get in to do that.
+--
+-- Put the sign-in email in both places, and run them together.
+-- =====================================================================
+
+/*
+-- 1. Stop the database demanding a code from this account.
+update public.staff_roles
+set require_mfa = false
+where user_id = (select id from auth.users where lower(email) = lower('owner@staff.local'));
+
+-- 2. Remove the enrolled authenticator, so mfa_ok stops looking for it.
+--    The supported route is the app or the Auth admin API; this is the
+--    break-glass version for when neither is reachable.
+delete from auth.mfa_factors
+where user_id = (select id from auth.users where lower(email) = lower('owner@staff.local'));
+
+-- 3. Check. Expect require_mfa false and factors 0.
+select
+  u.email,
+  r.role,
+  r.require_mfa,
+  (select count(*) from auth.mfa_factors f where f.user_id = u.id) as factors
+from auth.users u
+left join public.staff_roles r on r.user_id = u.id
+where lower(u.email) = lower('owner@staff.local');
+*/
+
+-- =====================================================================
 -- Note on MFA, which this script cannot undo.
 --
 -- Enrolled authenticator factors live in the auth schema, managed by
