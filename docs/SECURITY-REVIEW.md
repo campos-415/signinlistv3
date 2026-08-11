@@ -24,7 +24,7 @@ Objective. It is one piece of work, not four.
 | No self-hosted database | **Met** |
 | RLS on every table with customer/pet data | **Met** — verified in force: the public key reads settings only, is refused every other table, and may insert into the two form tables |
 | Customers cannot reach another customer's data | **Not met** — there is no customer role and no customer account. Nothing in the database distinguishes one customer from another |
-| Production and development separated | **Not met** — one Supabase project; local development points at production data |
+| Production and development separated | **Not met** — one Supabase project; local development points at the production database. Mitigating factor today: the 495 imported owner records are synthetic test data, not real customers, so no live customer information is currently exposed to development. That stops being true the day the business goes live, so the separation must exist before launch rather than after |
 
 ## 2. Authentication
 
