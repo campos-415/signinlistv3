@@ -152,7 +152,9 @@ export async function loadPayments(phone: string): Promise<Payment[]> {
 export async function loadBalanceFor(phone: string): Promise<Balance> {
   const supabase = getSupabase();
   const [signinRes, pkgRes, payments] = await Promise.all([
-    supabase.from("signins").select("*").eq("phone", phone).limit(1000),
+    // Not capped: a balance built from the first page of a long-standing
+    // client's visits is a wrong number, not a partial one.
+    supabase.from("signins").select("*").eq("phone", phone).limit(100000),
     supabase.from("packages").select("*").eq("phone", phone),
     loadPayments(phone),
   ]);

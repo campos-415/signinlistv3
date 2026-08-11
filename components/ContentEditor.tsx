@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, Dispatch, SetStateAction, useRef, useState } from "react";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { uploadSiteImage } from "@/lib/siteStorage";
 import { AppSettings } from "@/lib/settings";
 import { DEFAULT_CONTENT, Card, Heading, Hero, SiteContent } from "@/lib/siteContent";
 
@@ -862,7 +862,7 @@ function PhotoPicker({
     if (!file) return;
     setError("");
     try {
-      onChange(await fileToResizedDataUrl(file, 256, 0.85));
+      onChange(await uploadSiteImage(file, "team", 256, 40 * 1024));
     } catch {
       setError("Could not read that image.");
     }

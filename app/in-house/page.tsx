@@ -4,7 +4,7 @@ import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useStat
 import Link from "next/link";
 import { prettyDateKey } from "@/lib/dates";
 import { getSupabase } from "@/lib/supabase";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { fileToBudgetedJpeg } from "@/lib/image";
 import {
   BATH_PRICES,
   estimateBoardingTotal,
@@ -1101,7 +1101,7 @@ function RecordsInner() {
     }
     setMgBusyKey(row.key);
     try {
-      const dataUrl = await fileToResizedDataUrl(file);
+      const dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
       const supabase = getSupabase();
       const { error: err } = await supabase
         .from("dogs")

@@ -5,7 +5,7 @@ import { ChangeEvent, forwardRef, useEffect, useImperativeHandle, useRef, useSta
 import SignaturePad, { SignaturePadHandle } from "@/components/SignaturePad";
 import DateField from "@/components/DateField";
 import { CheckGrid, ChoiceWithOther, Field, YesNo, YesNoDetail, inputClass } from "@/components/FormBits";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { fileToRecordJpeg } from "@/lib/image";
 import { formatPhoneInput } from "@/lib/phone";
 import { useSettings } from "@/components/SettingsProvider";
 import {
@@ -42,7 +42,6 @@ import {
 // A vaccination record is usually a photo of a page or a PDF from the vet.
 // Photos get resized like every other image in the app; PDFs are stored as
 // they are, so this is the ceiling on what a submission can weigh.
-const MAX_DOC_BYTES = 4 * 1024 * 1024;
 
 export interface EnrollmentPrefill {
   owner_name?: string;
@@ -177,24 +176,11 @@ function EnrollmentFormInner({
     if (!file) return;
     setError("");
     try {
-      if (file.type.startsWith("image/")) {
-        // 1200px keeps small print on a vet's printout legible, which 640
-        // (the size used for dog portraits) does not.
-        const data = await fileToResizedDataUrl(file, 1200, 0.8);
-        setDog(index, { doc: { name: file.name, mime: "image/jpeg", data } });
-        return;
-      }
-      if (file.size > MAX_DOC_BYTES) {
-        setError("That file is over 4 MB — please upload a photo of the record instead.");
-        return;
-      }
-      const data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(file);
-      });
-      setDog(index, { doc: { name: file.name, mime: file.type || "application/octet-stream", data } });
+      // Image or PDF, in or out, it lands as one budgeted JPEG. A PDF used to
+      // be stored byte for byte, so a scanned certificate could be megabytes
+      // in a database row; now its pages are rendered and stacked.
+      const data = await fileToRecordJpeg(file);
+      setDog(index, { doc: { name: file.name, mime: "image/jpeg", data } });
     } catch (err) {
       console.error("Reading vaccination record failed:", err);
       setError("Could not read that file — try a photo or a PDF.");

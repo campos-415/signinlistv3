@@ -98,7 +98,9 @@ function OwnerProfile() {
         supabase.from("dogs").select("*").eq("phone", phone).order("created_at", { ascending: true }),
         supabase.from("boardings").select("*").eq("phone", phone).order("start_date", { ascending: false }),
         supabase.from("packages").select("*").eq("phone", phone).order("created_at", { ascending: false }),
-        supabase.from("signins").select("*").eq("phone", phone).limit(1000),
+        // Same reason as lib/billing.ts: this feeds the balance shown on the
+        // profile, and a truncated history quietly changes the total.
+        supabase.from("signins").select("*").eq("phone", phone).limit(100000),
         loadPayments(phone),
       ]);
       if (ownerRes.error) throw ownerRes.error;

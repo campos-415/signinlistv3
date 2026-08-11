@@ -22,7 +22,7 @@ import DogLink from "@/components/DogLink";
 import Money, { PayState } from "@/components/Money";
 import { signinChargeKey } from "@/lib/billing";
 import { useUnpaid } from "@/components/useUnpaid";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { fileToBudgetedJpeg } from "@/lib/image";
 import StaffNav from "@/components/StaffNav";
 import StaffGate from "@/components/StaffGate";
 import DateField from "@/components/DateField";
@@ -395,7 +395,7 @@ function BoardingsInner() {
     e.target.value = ""; // allow re-selecting the same file later
     if (!file) return;
     try {
-      const dataUrl = await fileToResizedDataUrl(file);
+      const dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
       updateConfig(key, { photo_data: dataUrl });
     } catch (err) {
       console.error("Reading photo failed:", err);

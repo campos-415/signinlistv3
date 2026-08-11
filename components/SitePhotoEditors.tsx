@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useState } from "react";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { uploadSiteImage } from "@/lib/siteStorage";
 import {
   PLACEHOLDER_ABOUT,
   PLACEHOLDER_HERO,
@@ -53,7 +53,7 @@ export function SinglePhotoEditor({
     setError("");
     try {
       // Wider than a gallery tile — this one runs half the screen.
-      const data = await fileToResizedDataUrl(file, 1600, 0.82);
+      const data = await uploadSiteImage(file, "hero", 1600, 400 * 1024);
       await setSinglePhoto(kind, data, photo?.alt ?? "");
       await refresh();
     } catch (err) {

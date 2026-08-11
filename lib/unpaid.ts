@@ -10,8 +10,8 @@
 // So this loads the whole picture once and hands back a flat map of charge
 // key to the amount still outstanding. A key that is absent is settled.
 
-import { getSupabase } from "@/lib/supabase";
 import { computeBalance, unpaidByKey } from "@/lib/billing";
+import { fetchAll } from "@/lib/fetchAll";
 import { Package, Payment, SignInRecord } from "@/types";
 
 export type UnpaidIndex = Map<string, number>;
@@ -20,21 +20,21 @@ export type UnpaidIndex = Map<string, number>;
 const SIGNIN_COLUMNS = "id, dog_name, dog_id, phone, action, service_type, price, created_at";
 
 export async function loadUnpaidIndex(): Promise<UnpaidIndex> {
-  const supabase = getSupabase();
-  const [signinRes, pkgRes, payRes] = await Promise.all([
-    supabase.from("signins").select(SIGNIN_COLUMNS).eq("action", "pick_up").not("price", "is", null),
-    supabase.from("packages").select("*"),
-    supabase.from("payments").select("*"),
+  // Paged, not capped. Whether a charge is settled depends on every payment
+  // and every older charge in that household, so a first-page answer would be
+  // wrong rather than incomplete — it would show paid visits as unpaid the
+  // moment the book passed a thousand priced pick-ups.
+  const [signins, packages, payments] = await Promise.all([
+    fetchAll<SignInRecord>("signins", SIGNIN_COLUMNS, (q) =>
+      (q as never as { eq: (a: string, b: string) => { not: (a: string, b: string, c: null) => unknown } })
+        .eq("action", "pick_up")
+        .not("price", "is", null)
+    ),
+    fetchAll<Package>("packages"),
+    fetchAll<Payment>("payments"),
   ]);
-  if (signinRes.error) throw signinRes.error;
-  if (pkgRes.error) throw pkgRes.error;
-  if (payRes.error) throw payRes.error;
 
-  return buildUnpaidIndex(
-    (signinRes.data as SignInRecord[]) ?? [],
-    (pkgRes.data as Package[]) ?? [],
-    (payRes.data as Payment[]) ?? []
-  );
+  return buildUnpaidIndex(signins, packages, payments);
 }
 
 /** Split out from the query so it can be tested without a database. */

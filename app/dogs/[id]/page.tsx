@@ -4,7 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { fileToBudgetedJpeg, fileToRecordJpeg } from "@/lib/image";
 import {
   daysLeft,
   findPackageFor,
@@ -400,7 +400,7 @@ function DogProfile() {
     e.target.value = "";
     if (!file || !dog?.id) return;
     try {
-      const dataUrl = await fileToResizedDataUrl(file);
+      const dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
       const supabase = getSupabase();
       const { error: err } = await supabase
         .from("dogs")
@@ -455,18 +455,9 @@ function DogProfile() {
     if (!file || !dog?.id) return;
     setError("");
     try {
-      const data = file.type.startsWith("image/")
-        ? await fileToResizedDataUrl(file, 1200, 0.8)
-        : await new Promise<string>((resolve, reject) => {
-            if (file.size > 4 * 1024 * 1024) {
-              reject(new Error("too big"));
-              return;
-            }
-            const reader = new FileReader();
-            reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-            reader.onload = () => resolve(reader.result as string);
-            reader.readAsDataURL(file);
-          });
+      // Same path as the enrollment form: whatever the owner has becomes one
+      // budgeted JPEG, PDFs included.
+      const data = await fileToRecordJpeg(file);
       const supabase = getSupabase();
       const { data: row, error: err } = await supabase
         .from("dog_docs")
@@ -474,7 +465,8 @@ function DogProfile() {
           dog_id: dog.id,
           kind: "vaccination",
           file_name: file.name,
-          mime_type: file.type.startsWith("image/") ? "image/jpeg" : file.type,
+          // Always a JPEG now, whatever was picked — a PDF has been rendered.
+          mime_type: "image/jpeg",
           data,
         })
         .select("id, dog_id, kind, file_name, mime_type, created_at")

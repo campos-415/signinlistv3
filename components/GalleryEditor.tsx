@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useState } from "react";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { uploadSiteImage } from "@/lib/siteStorage";
 import {
   SitePhoto,
   addSitePhoto,
@@ -44,7 +44,7 @@ export default function GalleryEditor() {
         if (!file.type.startsWith("image/")) continue;
         // 1400px wide is plenty for a grid tile on a retina screen, and
         // keeps a nine-photo gallery to a sensible total weight.
-        const data = await fileToResizedDataUrl(file, 1400, 0.82);
+        const data = await uploadSiteImage(file, "gallery", 1400, 300 * 1024);
         await addSitePhoto(data, "");
       }
       await refresh();

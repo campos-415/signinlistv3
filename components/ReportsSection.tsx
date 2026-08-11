@@ -14,6 +14,7 @@ import {
   outstandingChargeRows,
 } from "@/lib/reports";
 import { packageTotals } from "@/lib/packageMoney";
+import { StorageHealth, formatBytes, loadStorageHealth } from "@/lib/storageHealth";
 import { ADDON_PRICES, PRICING } from "@/lib/pricing";
 
 // Settings -> Reports.
@@ -36,6 +37,20 @@ export default function ReportsSection() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
+  const [health, setHealth] = useState<StorageHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  const checkHealth = useCallback(() => {
+    setHealthLoading(true);
+    loadStorageHealth()
+      .then(setHealth)
+      .catch((e) => console.error("Measuring storage failed:", e))
+      .finally(() => setHealthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    checkHealth();
+  }, [checkHealth]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -295,6 +310,99 @@ export default function ReportsSection() {
                 onClick={() => data && save("payments", data.payments as unknown as Record<string, unknown>[])}
               />
             </div>
+          </>
+        )}
+      </section>
+
+      {/* ---------- storage ---------- */}
+      <section className="rounded-2xl border border-line bg-surface p-5 shadow-card">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-semibold text-ink">💾 Storage health</h3>
+          <button
+            onClick={checkHealth}
+            disabled={healthLoading}
+            className="ml-auto rounded-lg border border-line px-2.5 py-1 text-[11px] font-medium text-ink-2 hover:border-accent-400 disabled:opacity-60">
+            {healthLoading ? "Measuring…" : "Re-check"}
+          </button>
+        </div>
+        <p className="mt-0.5 text-xs text-ink-3">
+          Records are cheap; pictures are not. Photos, signed waivers and uploaded vaccination
+          records are stored inside the rows themselves, so they are what eventually fills the
+          database — and the first sign is usually pages getting slow, not an error.
+        </p>
+
+        {!health ? (
+          <p className="mt-3 text-sm text-ink-3">Measuring…</p>
+        ) : (
+          <>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              <Stat label="Records" value={health.totalRows.toLocaleString()} />
+              <Stat
+                label="Pictures (estimated)"
+                value={formatBytes(health.totalBlobBytes)}
+                tone={health.totalBlobBytes > health.limitBytes * 0.6 ? "amber" : undefined}
+              />
+              <Stat
+                label="Of the 500 MB free tier"
+                value={`${Math.min(100, Math.round((health.totalBlobBytes / health.limitBytes) * 100))}%`}
+                tone={health.totalBlobBytes > health.limitBytes * 0.6 ? "amber" : undefined}
+              />
+            </div>
+
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-3">
+              <div
+                className={`h-full rounded-full ${
+                  health.totalBlobBytes > health.limitBytes * 0.6 ? "bg-amber-400" : "bg-accent-500"
+                }`}
+                style={{
+                  width: `${Math.min(100, (health.totalBlobBytes / health.limitBytes) * 100)}%`,
+                }}
+              />
+            </div>
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[30rem] border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-line text-ink-3">
+                    <th className="py-1.5 pr-3 font-medium">Table</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Records</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Pictures</th>
+                    <th className="py-1.5 pr-3 font-medium">Sampled</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {health.tables.map((t) => (
+                    <tr key={t.table} className="border-b border-line-soft text-ink-2">
+                      <td className="py-1.5 pr-3">{t.label}</td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums">
+                        {t.rows.toLocaleString()}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums">
+                        {t.blobBytes > 0 ? formatBytes(t.blobBytes) : "—"}
+                      </td>
+                      <td className="py-1.5 pr-3 text-[11px] text-ink-3">
+                        {t.sampleSize > 0
+                          ? `${t.sampleWithBlob} of ${t.sampleSize} had one`
+                          : "no pictures"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+              Picture sizes are an estimate: a sample of {12} rows per table, averaged across all of
+              them. Measuring exactly would mean downloading every image, which is the thing this is
+              here to warn about. Expect it to drift while only a few dogs have photos.
+              {health.totalBlobBytes > health.limitBytes * 0.6 && (
+                <span className="font-medium text-amber-700">
+                  {" "}
+                  Past about 60% it is worth moving pictures to file storage rather than paying for
+                  a bigger database — they are the only thing that grows this fast.
+                </span>
+              )}
+            </p>
           </>
         )}
       </section>

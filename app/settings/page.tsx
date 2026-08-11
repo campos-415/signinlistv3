@@ -2,7 +2,7 @@
 
 import { ChangeEvent, useEffect, useState } from "react";
 import Link from "next/link";
-import { fileToResizedDataUrl } from "@/lib/image";
+import { deleteSiteImage, uploadSiteImage } from "@/lib/siteStorage";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import {
   desktopAlertsOn,
@@ -154,8 +154,10 @@ function Settings() {
     if (!file) return;
     try {
       // Bigger than a dog photo — this one is rendered large on the kiosk.
-      const dataUrl = await fileToResizedDataUrl(file, 512, 0.9);
-      setDraft((d) => ({ ...d, business: { ...d.business, logoData: dataUrl } }));
+      const url = await uploadSiteImage(file, "logo", 512, 100 * 1024);
+      // The old file goes once the new one is safely uploaded.
+      deleteSiteImage(draft.business.logoData);
+      setDraft((d) => ({ ...d, business: { ...d.business, logoData: url } }));
     } catch {
       setError("Could not read that image — try a different file.");
     }

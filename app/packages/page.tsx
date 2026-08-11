@@ -81,7 +81,10 @@ function Packages() {
       const supabase = getSupabase();
       const [pkgRes, useRes, dogRes] = await Promise.all([
         supabase.from("packages").select("*").order("created_at", { ascending: false }),
-        supabase.from("package_uses").select("*").order("used_on", { ascending: false }).limit(1000),
+        // A daycare spending twenty package days a week crosses a thousand
+        // uses in a year, and the history below would start showing the wrong
+        // rows with nothing to say it had.
+        supabase.from("package_uses").select("*").order("used_on", { ascending: false }).limit(100000),
         supabase.from("dogs").select("*"),
       ]);
       if (pkgRes.error) throw pkgRes.error;
