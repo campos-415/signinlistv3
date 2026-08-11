@@ -127,3 +127,79 @@ rather than a side effect.
 - Insert in batches; 600 dogs each carrying a 120 KB photo is ~72 MB and
   will not go in one request.
 - Run against a branch or a copy first if one is available.
+
+---
+
+# 3. Customer accounts — request-only portal
+
+Customers sign in, see their own dogs, packages, stays and invoices, keep
+their own details up to date, and submit boarding requests. They do **not**
+book directly: requests go to the staff queue that already exists.
+
+Depends on the staff roles work landing first — it is the same RLS rewrite
+touching the same policies.
+
+## The blocker to solve first
+
+There is no identity for a household. `owners` has no `user_id`, and every
+child table — dogs, packages, boardings, signins, payments — is grouped by a
+**phone number string**. Nothing can be attached to an account because there
+are no accounts.
+
+Worse, RLS built on that string inherits every inconsistency in it. Code in
+this app already strips non-digits before comparing phone numbers, which means
+the stored formats vary. A policy of the form
+
+    phone in (select phone from owners where user_id = auth.uid())
+
+fails closed when a format differs — a customer silently cannot see their own
+dog — and that is the better failure. The worse one is two households sharing
+a normalised number.
+
+**Do not build the portal on the phone string.** Add `owner_id` to dogs,
+packages, boardings, signins, payments and dog_docs, backfill it from the
+current phone grouping, and write the policies against that. It is a bigger
+migration and it is the difference between an isolation guarantee and a
+hopeful one.
+
+## Claiming an account
+
+497 owners already exist with no login. A customer must not be able to claim a
+household by typing a phone number — guessing one is trivial, and that is
+exactly the isolation failure the requirements are about.
+
+Staff send an invite: a one-time token emailed to the address on file, which
+proves control of that address. `owners.invite_token`, `owners.invited_at`,
+`owners.claimed_at`. Signing up through the link binds `auth.uid()` to that
+owner row.
+
+## What a customer may do
+
+Read, scoped to their own household: dogs and their vaccination records,
+package balances and usage history, past and upcoming stays, invoices and what
+is outstanding.
+
+Write: update their own owner details (address, emergency contact, vet),
+upload a replacement vaccination record, submit a boarding request.
+
+Never: another household's anything, staff notes on a visit, pricing
+configuration, reports, exports, or the staff pages.
+
+Note the staff-only fields explicitly — a visit row carries internal notes,
+and a customer-facing query must not select them.
+
+## Screens
+
+A route group of its own, so the staff chrome cannot leak in.
+
+- Sign in / claim invite
+- Overview: dogs, package days remaining, next stay
+- Request boarding — reuse `BoardingRequestForm`, prefilled from the account,
+  never asking for what is already on file
+- History: visits and invoices, with the unpaid colouring already built
+- Documents: vaccination records, and uploading a new one
+
+## Not in scope
+
+Direct booking without staff approval, online payment, and MFA for customers
+(the requirements ask for MFA on staff accounts only).
