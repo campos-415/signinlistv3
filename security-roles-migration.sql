@@ -353,9 +353,10 @@ do $seed$
 declare
   -- EDIT ME. Left column is the sign-in email, right column the role.
   seeds text[][] := array[
-    ['cesar@staff.local', 'owner_admin'],
-    ['kiosk@staff.local', 'kiosk']
-  ];
+  ['cesar@staff.local', 'owner_admin'],
+  ['kiosk@staff.local', 'kiosk'],
+  ['frontdesk@staff.local', 'employee']
+];
   i int;
   seed_email text;
   seed_role text;

@@ -22,6 +22,8 @@ import { getSupabase } from "@/lib/supabase";
 import { canRegisterWithSquare } from "@/lib/square";
 import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
+import useRole from "@/components/useRole";
+import { isManagerOrAbove } from "@/lib/roles";
 import StaffNav from "@/components/StaffNav";
 import GalleryEditor from "@/components/GalleryEditor";
 import { SinglePhotoEditor } from "@/components/SitePhotoEditors";
@@ -47,9 +49,50 @@ const TABS: { key: Tab; label: string; blurb: string }[] = [
 export default function SettingsPage() {
   return (
     <StaffGate title="App settings">
-      <Settings />
+      <SettingsIfPermitted />
     </StaffGate>
   );
+}
+
+// Settings is manager and owner territory.
+//
+// Showing an employee the price table, letting them retype it, and only then
+// refusing the save is the worst of both: it leaks what the business charges
+// and wastes the time of somebody who was trying to help. If a thing cannot
+// be changed by this account, it is not rendered.
+//
+// This is presentation only. The database refuses the write regardless — see
+// the policy matrix in rls-lockdown.sql — and that is the boundary that
+// actually holds. This just stops the app offering what it will not accept.
+function SettingsIfPermitted() {
+  const { account, loading, unavailable } = useRole();
+
+  // A database that has not run the roles migration has no roles to read.
+  // Locking the owner out of settings on the strength of a missing table
+  // would be a worse failure than showing it.
+  if (loading) return <p className="px-6 py-10 text-sm text-ink-3">Checking your account…</p>;
+  if (!unavailable && !isManagerOrAbove(account?.role ?? null)) {
+    return (
+      <div className="mx-auto max-w-lg px-6 py-16 text-center">
+        <p className="text-3xl" aria-hidden>
+          🔒
+        </p>
+        <h1 className="font-display mt-3 text-lg font-semibold text-ink">
+          Settings needs a manager account
+        </h1>
+        <p className="mt-2 text-sm leading-relaxed text-ink-3">
+          Prices, branding, staff and the website are changed by a manager or the owner. Ask
+          whoever runs the daycare if something here needs to change.
+        </p>
+        <Link
+          href="/dashboard"
+          className="mt-6 inline-block rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600">
+          Back to the dashboard
+        </Link>
+      </div>
+    );
+  }
+  return <Settings />;
 }
 
 function Settings() {
