@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import MeetGreetCard from "@/components/MeetGreetCard";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { estimatePrice } from "@/lib/pricing";
@@ -950,7 +951,14 @@ export default function KioskForm() {
                         )} */}
                       </div>
                     )}
-                    {action === "drop_off" && !isIn && (
+                    {/* A first visit gets the assessment, not the upsell.
+                        Almost nobody books a bath for a meet & greet, and the
+                        space is worth more to the person holding the lead —
+                        and to whoever takes the dog through. */}
+                    {action === "drop_off" && !isIn && effectiveService(dog) === "meet_greet" && (
+                      <MeetGreetCard dog={dog} />
+                    )}
+                    {action === "drop_off" && !isIn && effectiveService(dog) !== "meet_greet" && (
                       <div className="mt-2">
                         <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-accent-500">
                           Add-ons for {dog.dog_name} (optional)

@@ -414,16 +414,45 @@ function RecordsInner() {
   const [boardings, setBoardings] = useState<Boarding[]>([]);
   const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
 
+  // Reloads when the date changes too, now that the query is scoped to it.
+  // Without this, changing the date would filter an old window rather than
+  // fetching the new one — which is how the list would come back empty for
+  // a day that has visits.
   useEffect(() => {
     if (unlocked) loadAll();
-  }, [unlocked]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlocked, selectedDate]);
 
   async function loadAll() {
     setLoading(true);
     try {
       const supabase = getSupabase();
+      // Sign-ins for the day being looked at, not "the most recent 500".
+      //
+      // The cap was every row when this table held a few dozen. At ten
+      // thousand it covers about a fortnight, and the failure is silent in
+      // both directions: pick any older date and the list is empty although
+      // the visits exist, and a day on the edge of the window arrives HALF
+      // there — a pick-up whose drop-off fell outside it merges into a row
+      // with no drop_off_id, which is the row whose note and meal editors
+      // then quietly do nothing.
+      //
+      // A window rather than a single day because a visit can cross
+      // midnight: the pairing in mergeRecords needs the drop-off that opened
+      // a stay still in the set. Two days either side is generous and still
+      // a couple of dozen rows.
+      const from = new Date(`${selectedDate}T00:00:00`);
+      from.setDate(from.getDate() - 2);
+      const to = new Date(`${selectedDate}T00:00:00`);
+      to.setDate(to.getDate() + 3);
+
       const [signinsRes, usesRes, packagesRes, clientsRes, boardingsRes] = await Promise.all([
-        supabase.from("signins").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase
+          .from("signins")
+          .select("*")
+          .gte("created_at", from.toISOString())
+          .lt("created_at", to.toISOString())
+          .order("created_at", { ascending: false }),
         supabase.from("package_uses").select("*").limit(2000),
         supabase.from("packages").select("*"),
         // Clients back the hover cards and profile links on dog names.
@@ -649,7 +678,11 @@ function RecordsInner() {
   }
 
   const merged = useMemo(() => mergeRecords(records), [records]);
-  const SERVICE_ORDER: Record<string, number> = { daycare: 0, boarding: 1, meet_greet: 2 };
+  // Meet & greets first. There are one or two a day against twenty daycare
+  // dogs, they are the rows that need something done to them — a verdict, a
+  // photo, a first-day report — and at the bottom of the list they were the
+  // rows most likely to be scrolled past. Everything else keeps its order.
+  const SERVICE_ORDER: Record<string, number> = { meet_greet: 0, daycare: 1, boarding: 2 };
   const filtered = useMemo(() => {
     const rows = merged
       .filter((r) => r.dateKey === selectedDate || r.pickUpDateKey === selectedDate)
@@ -1639,6 +1672,17 @@ function RecordsInner() {
           >
             Delete {selectedRows.length > 1 ? `all ${selectedRows.length}` : ""}
           </button>
+          {/* Select-all lost its column when the checkboxes went. It lives
+              here instead, which costs one tap to reach — select a row, then
+              select the rest — and costs every row nothing. */}
+          {!allVisibleSelected && filtered.length > selectedRows.length && (
+            <button
+              onClick={() => setSelected(new Set(filtered.map((r) => r.key)))}
+              className="rounded-xl border border-line bg-surface px-3.5 py-1.5 text-xs font-medium text-ink-2 transition hover:border-accent-400"
+            >
+              Select all {filtered.length}
+            </button>
+          )}
           <button
             onClick={() => setSelected(new Set())}
             className="ml-auto text-xs font-medium text-ink-3 hover:text-ink-2"
@@ -1653,22 +1697,11 @@ function RecordsInner() {
         <table className="w-full text-left text-sm print:border-collapse">
           <thead>
             <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
-              {/* The checkbox column is gone: the row itself is the target
-                  now. This keeps the select-all, which has no row to live in,
-                  as a narrow text button in the same place. */}
-              <th className="w-10 px-3 py-3 print:hidden">
-                <button
-                  type="button"
-                  aria-label={allVisibleSelected ? "Clear the selection" : "Select every visit shown"}
-                  title={allVisibleSelected ? "Clear the selection" : "Select every visit shown"}
-                  onClick={() =>
-                    setSelected(allVisibleSelected ? new Set() : new Set(filtered.map((r) => r.key)))
-                  }
-                  className="rounded-md border border-line px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
-                >
-                  {allVisibleSelected ? "None" : "All"}
-                </button>
-              </th>
+              {/* No selection column at all. The row tints when it is
+                  selected, and that is the whole indicator — a checkbox
+                  beside it would be a second way of saying the same thing,
+                  taking width from every row to do it. Select-all lives in
+                  the toolbar that appears once anything is selected. */}
               <SortableTh label="🐕 Dog" sortKey="dog_name" sort={sort} onSort={toggleSort} />
               <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
               <SortableTh label="Owner" sortKey="last_name" sort={sort} onSort={toggleSort} />
@@ -1725,7 +1758,7 @@ function RecordsInner() {
               const groupHeader = showGroupHeader && (
                 <tr key={`${r.key}-group`}>
                   <td
-                    colSpan={10}
+                    colSpan={8}
                     className="bg-surface-3 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-3 print:border print:border-paper-rule print:bg-paper-band print:px-2 print:text-paper-ink">
                     {groupInfo
                       ? `${groupInfo.icon} ${groupInfo.label}`
@@ -1971,20 +2004,6 @@ function RecordsInner() {
                           ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 hover:bg-emerald-50/70 dark:bg-emerald-400/10 print:bg-transparent"
                           : "border-l-4 border-l-transparent hover:bg-surface-2"
                     }`}>
-                    <td className="w-10 px-3 py-3 print:hidden">
-                      {/* A tick rather than a control: it reports the state
-                          the row is already showing, and is not the thing you
-                          aim at. */}
-                      <span
-                        aria-hidden
-                        className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] font-bold transition ${
-                          isSelected
-                            ? "border-accent-500 bg-accent-500 text-accent-ink"
-                            : "border-line text-transparent"
-                        }`}>
-                        ✓
-                      </span>
-                    </td>
                     <td className="whitespace-nowrap px-3 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="inline-flex items-center gap-1.5">
                         <DogLink
@@ -2102,9 +2121,28 @@ function RecordsInner() {
                       {r.service_type === "meet_greet" ? (
                         <div className="flex flex-wrap items-center gap-1 print:hidden">
                           {r.meet_greet_result === "pass" ? (
-                            <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
-                              ✓ Passed
-                            </span>
+                            <>
+                              <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                                ✓ Passed
+                              </span>
+                              {/* Offered here because a pass is when the photo
+                                  exists, and the photo is what makes the sheet
+                                  worth handing over. Opened rather than printed
+                                  straight off: staff fill it in first. */}
+                              {(() => {
+                                const d = findDog(dogs, { dogName: r.dog_name, phone: r.phone });
+                                return d?.id ? (
+                                  <a
+                                    href={`/first-day?dog=${d.id}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    title={`Write ${r.dog_name}'s first day report for the owner`}
+                                    className="rounded-md border border-accent-300 px-2 py-0.5 text-[11px] font-medium text-accent-700 transition hover:bg-accent-50">
+                                    🖨 First day report
+                                  </a>
+                                ) : null;
+                              })()}
+                            </>
                           ) : r.meet_greet_result === "fail" ? (
                             <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
                               ✕ Not passed
@@ -2414,7 +2452,7 @@ function RecordsInner() {
                       note between shifts. */}
                   {noteKey === r.key && (
                     <tr className="print:hidden">
-                      <td colSpan={10} className="bg-surface-2 px-4 pb-3 pt-1">
+                      <td colSpan={8} className="bg-surface-2 px-4 pb-3 pt-1">
                         <p className="mb-1 text-[11px] font-medium text-ink-3">
                           Meals for {r.dog_name} today
                         </p>
@@ -2509,7 +2547,7 @@ function RecordsInner() {
             {filtered.length === 0 && !loading && (
               <tr>
                 <td
-                  colSpan={10}
+                  colSpan={8}
                   className="px-4 py-6 text-center text-sm text-ink-3 print:border print:border-paper-line">
                   No sign-ins for this date.
                 </td>
@@ -2683,7 +2721,7 @@ function RecordsInner() {
               {boardingRows.length === 0 && !loading && (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-6 text-center text-sm text-ink-3 print:border print:border-paper-line"
                   >
                     No boarding stays covering this date.
