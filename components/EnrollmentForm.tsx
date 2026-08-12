@@ -6,7 +6,7 @@ import BusyButton from "@/components/BusyButton";
 import SignaturePad, { SignaturePadHandle } from "@/components/SignaturePad";
 import DateField from "@/components/DateField";
 import { Field, YesNo, inputClass } from "@/components/FormBits";
-import { fileToRecordJpeg } from "@/lib/image";
+import { PdfWorkerMissingError, fileToRecordJpeg } from "@/lib/image";
 import { formatPhoneInput } from "@/lib/phone";
 import { useSettings } from "@/components/SettingsProvider";
 import {
@@ -184,7 +184,14 @@ function EnrollmentFormInner({
       setDog(index, { doc: { name: file.name, mime: "image/jpeg", data } });
     } catch (err) {
       console.error("Reading vaccination record failed:", err);
-      setError("Could not read that file — try a photo or a PDF.");
+      // A missing pdf.js worker is a fault at our end, and telling somebody
+      // their certificate is unreadable when it is not sends them off to
+      // re-scan a perfectly good document.
+      setError(
+        err instanceof PdfWorkerMissingError
+          ? `${err.message} A photo of the certificate works in the meantime.`
+          : "Could not read that file — try a photo or a PDF."
+      );
     }
   }
 
@@ -239,11 +246,21 @@ function EnrollmentFormInner({
           touch to confirm your meet &amp; greet. You&apos;ll be able to check
           in by phone number once it&apos;s approved.
         </p>
+        {/* This used to promise a second FORM by email. It is now a second
+            step inside an account, and saying so here is what stops the
+            invitation looking like something nobody asked for when it
+            arrives. */}
         <p className="text-sm text-ink-3">
-          After the meet &amp; greet we&apos;ll email you a short second form
-          for the rest — your address, your vet, and how{" "}
+          Once the meet &amp; greet has gone well we&apos;ll email you a link
+          to set up your account. You&apos;ll pick a password, and the last
+          few questions are waiting inside — your address, your vet, and how{" "}
           {draft.dogs.length > 1 ? "they get on" : "your dog gets on"} with
           other dogs.
+        </p>
+        <p className="text-xs text-ink-3">
+          That account is also where you&apos;ll find{" "}
+          {draft.dogs.length > 1 ? "their" : "your dog&apos;s"} vaccination
+          dates, your visits and what you owe.
         </p>
         {!embed && (
           <Link

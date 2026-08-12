@@ -70,6 +70,31 @@ function drawToCanvas(img: HTMLImageElement, maxDim: number): HTMLCanvasElement 
 /** Pages beyond this are dropped — a vaccination record is not a book. */
 const MAX_PDF_PAGES = 4;
 
+const WORKER_URL = "/pdf.worker.min.mjs";
+
+/**
+ * Thrown when the pdf.js worker is not being served.
+ *
+ * Worth its own type because of how it presented the first time: the worker
+ * 404s, pdf.js fails to start, and the enrollment form told somebody their
+ * vaccination certificate was unreadable. The file was fine. The deployment
+ * was missing a file, and the message sent the client to look at their
+ * scanner.
+ *
+ * The worker is copied into /public before every dev and build, so the way
+ * to end up without it is to pull the repo with a server already running, or
+ * to deploy in a way that skips the copy. Both are recoverable in seconds by
+ * somebody who is told what is wrong.
+ */
+export class PdfWorkerMissingError extends Error {
+  constructor() {
+    super(
+      "The PDF reader is not available on this server. Restart it, or run npm install, so the pdf.js worker is copied into public/."
+    );
+    this.name = "PdfWorkerMissingError";
+  }
+}
+
 /**
  * Every page of a PDF, stacked into one tall JPEG.
  *
@@ -88,20 +113,23 @@ async function pdfToJpeg(file: File, maxDim: number, targetBytes: number): Promi
   //
   // This used to be new URL("pdfjs-dist/build/pdf.worker.min.mjs",
   // import.meta.url), which reads like the modern way to do it and broke
-  // `next build` completely. Webpack treats that pattern as an instruction to
+  // `next build` completely: webpack treats that pattern as an instruction to
   // bundle the target, so it pulled the worker in and handed it to SWC, which
-  // parsed a file full of import.meta as a script and failed:
+  // parsed a file full of import.meta as a script and failed.
   //
-  //   x 'import.meta' cannot be used outside of module code
-  //
-  // Nothing in the app reported this, because `next dev` never bundles the
-  // worker and so never hits it. Only a production build does.
-  //
-  // A plain path is not a workaround for that - it is what the worker
-  // actually is. It is a separate file the browser fetches at runtime, not a
-  // module this app imports, and scripts/copy-pdf-worker.mjs puts the copy
-  // that matches the installed pdfjs into /public before every dev and build.
-  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  // The worker is not a module this app imports. It is a separate file the
+  // browser fetches at runtime, and scripts/copy-pdf-worker.mjs puts the copy
+  // matching the installed pdfjs into /public before every dev and build.
+  pdfjs.GlobalWorkerOptions.workerSrc = WORKER_URL;
+
+  // Asked for once, before pdf.js is handed a document, so a missing worker
+  // reports itself as a missing worker. Left to pdf.js it surfaces as
+  // "Setting up fake worker failed", which every layer above turns into
+  // "could not read that file" - a message about the wrong thing entirely.
+  const workerReady = await fetch(WORKER_URL, { method: "HEAD" })
+    .then((r) => r.ok)
+    .catch(() => false);
+  if (!workerReady) throw new PdfWorkerMissingError();
 
   const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const count = Math.min(doc.numPages, MAX_PDF_PAGES);
