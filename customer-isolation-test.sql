@@ -105,6 +105,7 @@ declare
   a_owner uuid;   b_owner uuid;
   a_user uuid;    b_user uuid;
   a_claimed timestamptz; b_claimed timestamptz;
+  a_invited timestamptz; b_invited timestamptz;
   a_prev_user uuid;      b_prev_user uuid;
   -- The whole of household B as it was found. The details probe genuinely
   -- rewrites twelve columns, so putting them back means having kept them.
@@ -167,8 +168,8 @@ begin
     (a_user, 'isolation-test-a@example.invalid'),
     (b_user, 'isolation-test-b@example.invalid');
 
-  select user_id, claimed_at into a_prev_user, a_claimed from public.owners where id = a_owner;
-  select user_id, claimed_at into b_prev_user, b_claimed from public.owners where id = b_owner;
+  select user_id, claimed_at, invited_at into a_prev_user, a_claimed, a_invited from public.owners where id = a_owner;
+  select user_id, claimed_at, invited_at into b_prev_user, b_claimed, b_invited from public.owners where id = b_owner;
   select * into b_before from public.owners where id = b_owner;
 
   update public.owners set user_id = a_user, claimed_at = now() where id = a_owner;
@@ -602,7 +603,13 @@ begin
   delete from public.payments where note = marker;
   delete from public.boarding_requests where data ->> 'marker' = marker;
 
-  update public.owners set user_id = a_prev_user, claimed_at = a_claimed, invite_token = null where id = a_owner;
+  -- invited_at is restored too, and it was not the first time round. A run
+  -- left it set on a household nobody had invited, which showed on the owner
+  -- profile as an invitation that had been sent. A test that tidies up
+  -- almost everything is how a database drifts.
+  update public.owners set
+    user_id = a_prev_user, claimed_at = a_claimed, invited_at = a_invited, invite_token = null
+  where id = a_owner;
   update public.owners set
     owner_name = b_before.owner_name,
     email = b_before.email,
@@ -618,6 +625,7 @@ begin
     vet_address = b_before.vet_address,
     user_id = b_prev_user,
     claimed_at = b_claimed,
+    invited_at = b_invited,
     invite_token = null
   where id = b_owner;
   delete from auth.users where id in (a_user, b_user);

@@ -78,11 +78,23 @@ export default function ClaimPage() {
     });
     if (signUpError) {
       setBusy(false);
-      setError(
-        signUpError.message.toLowerCase().includes("already")
-          ? "There is already an account for that address. Sign in below instead."
-          : "We could not set that up. Check the address and try again."
-      );
+      const said = signUpError.message.toLowerCase();
+      if (said.includes("already")) {
+        setError("There is already an account for that address. Sign in below instead.");
+      } else if (said.includes("signup") || said.includes("not allowed") || said.includes("disabled")) {
+        // Supabase Auth refused before any of this reached the database.
+        // Worth naming exactly, because the generic wording sent somebody to
+        // check the email address for an hour when the address was fine.
+        setError(
+          "Accounts are switched off for this site at the moment, so we cannot finish setting yours up. That is at our end, not yours — please let us know and we will sort it out."
+        );
+        console.error(
+          "Supabase Auth is refusing sign-ups. Either enable them, or switch the invite flow to inviteUserByEmail so the account is created server-side.",
+          signUpError
+        );
+      } else {
+        setError("We could not set that up just now. Please let us know and we will sort it out.");
+      }
       return;
     }
     // With email confirmations switched on there is no session yet, so the
