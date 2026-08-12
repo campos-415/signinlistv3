@@ -19,6 +19,9 @@ export const STAFF_ROUTES = [
   "/settings",
   "/dogs",
   "/owners",
+  // Opened from the sign-in list and only ever by staff. Missing from this
+  // list, it lost dark mode halfway through a shift for whoever had it on.
+  "/first-day",
 ];
 
 /**
