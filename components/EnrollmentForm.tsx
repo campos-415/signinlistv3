@@ -443,7 +443,7 @@ function EnrollmentFormInner({
       <Section title="Meet &amp; greet and signature" step={3 + draft.dogs.length}>
         <div className="rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
           Every new dog comes in for a meet &amp; greet before their first full day, so we can see
-          how they settle in with the group. Bring your dog on a leash and allow about half an hour.
+          how they settle in with the group. Bring your dog on a leash and allow about two hours.
           Requested dates are confirmed by phone or email — nothing is booked until we reply.
         </div>
         <label className="mt-3 flex items-start gap-2">

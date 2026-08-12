@@ -46,9 +46,9 @@ export default function MeetGreetCard({
       {/* For the owner. They have usually never been here before and are
           holding a lead, so it is three short lines, not a policy. */}
       <p className="mt-1 text-xs leading-relaxed text-violet-900">
-        {dog.dog_name} will spend about half an hour with us while we see how
-        they settle in with the group. Stay if you like, or pop back — we will
-        talk you through how it went either way.
+        {dog.dog_name} will spend about two hours with us while we see how they
+        settle in with the group. Stay if you like, or pop back — we will talk
+        you through how it went either way.
       </p>
 
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-violet-800">
@@ -62,7 +62,7 @@ export default function MeetGreetCard({
       </div>
 
       {/* For whoever takes the dog through. Only the things that change how
-          the next half hour is run — a card that lists everything gets read
+          the next two hours are run — a card that lists everything gets read
           as decoration. */}
       {(flags.length > 0 || care.length > 0 || expired.length > 0) && (
         <div className="mt-2 border-t border-violet-200 pt-2">
@@ -129,7 +129,7 @@ function behaviourFlags(dog: Dog): string[] {
   return out;
 }
 
-/** Health and handling, which matter for half an hour as much as for a day. */
+/** Health and handling, which matter for two hours as much as for a day. */
 function careNotes(dog: Dog): string[] {
   const out: string[] = [];
   if (dog.health_problems && dog.health_notes?.trim()) out.push(dog.health_notes.trim());
