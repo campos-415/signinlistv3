@@ -84,10 +84,24 @@ const MAX_PDF_PAGES = 4;
  */
 async function pdfToJpeg(file: File, maxDim: number, targetBytes: number): Promise<string> {
   const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url
-  ).toString();
+  // Served from /public rather than referenced through the bundler.
+  //
+  // This used to be new URL("pdfjs-dist/build/pdf.worker.min.mjs",
+  // import.meta.url), which reads like the modern way to do it and broke
+  // `next build` completely. Webpack treats that pattern as an instruction to
+  // bundle the target, so it pulled the worker in and handed it to SWC, which
+  // parsed a file full of import.meta as a script and failed:
+  //
+  //   x 'import.meta' cannot be used outside of module code
+  //
+  // Nothing in the app reported this, because `next dev` never bundles the
+  // worker and so never hits it. Only a production build does.
+  //
+  // A plain path is not a workaround for that - it is what the worker
+  // actually is. It is a separate file the browser fetches at runtime, not a
+  // module this app imports, and scripts/copy-pdf-worker.mjs puts the copy
+  // that matches the installed pdfjs into /public before every dev and build.
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
   const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const count = Math.min(doc.numPages, MAX_PDF_PAGES);

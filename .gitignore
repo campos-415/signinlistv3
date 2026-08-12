@@ -18,3 +18,10 @@ docs/*.pdf
 # tracking it means a dirty tree after any build and a meaningless diff in
 # every commit.
 tsconfig.tsbuildinfo
+
+# Copied out of node_modules before every dev and build by
+# scripts/copy-pdf-worker.mjs. Not committed, so it can never drift from the
+# installed pdfjs-dist — a worker from a different version than the library
+# fails at runtime, which would be found by a client uploading a vaccination
+# certificate rather than by anybody here.
+public/pdf.worker.min.mjs
