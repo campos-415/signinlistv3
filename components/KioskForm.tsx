@@ -553,10 +553,15 @@ export default function KioskForm() {
   // Every dog being dropped off is still waiting for its assessment. A mixed
   // household keeps the full choice — one dog's first visit should not stop
   // its housemate coming in for daycare.
+  // Asks what the visit will ACTUALLY be recorded as, not merely whether the
+  // dog is owed an assessment. A dog with a boarding reservation is signed in
+  // as boarding even on its first visit — effectiveService puts the
+  // reservation first — so testing needsMeetGreet alone would hide the
+  // service picker and then file something else.
   const allNeedMeetGreet =
     action === "drop_off" &&
     selectedDogs.length > 0 &&
-    selectedDogs.every((d) => needsMeetGreet(d));
+    selectedDogs.every((d) => effectiveService(d) === "meet_greet");
 
   // Birthdays today, compared on month and day so it fires every year.
   const birthdayDogs = selectedDogs.filter((d) => {
@@ -870,7 +875,13 @@ export default function KioskForm() {
                         </span>
                       )}
                     </p>
-                    {pkgLoading ? (
+                    {/* Packages are hidden on a first visit.
+                        A meet & greet does not spend a package day and nobody
+                        has bought one yet, so "No package on file" reads as a
+                        problem to solve at the very moment the household is
+                        being told this visit is free of all that. Once the
+                        dog is coming for daycare the line comes back. */}
+                    {effService === "meet_greet" ? null : pkgLoading ? (
                       <p className="mt-1 text-xs text-accent-600">
                         Checking for a package…
                       </p>
@@ -1204,10 +1215,14 @@ export default function KioskForm() {
                           boarding.
                         </p>
                       )}
-                      <div className="mb-4 flex flex-wrap gap-2">
-                        {SERVICE_TYPES.filter(
-                          (s) => !allNeedMeetGreet || s.key === "meet_greet"
-                        ).map((s) => (
+                      {/* No picker on a first visit. It was already narrowed
+                          to the single meet & greet option, which is a choice
+                          with one answer — and it rendered unselected, so it
+                          read as a required question nobody had answered. The
+                          note above says what the visit is; the sign-in
+                          records it from the dog's own history either way. */}
+                      <div className={`mb-4 flex flex-wrap gap-2 ${allNeedMeetGreet ? "hidden" : ""}`}>
+                        {SERVICE_TYPES.map((s) => (
                           <button
                             key={s.key}
                             onClick={() => setService(s.key)}
