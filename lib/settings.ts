@@ -103,6 +103,12 @@ export interface EmailSettings {
   // message has nothing to act on, so the settings page says so.
   detailsRequestSubject: string;
   detailsRequestBody: string;
+  // The invitation to claim a client account. {{link}} carries a one-time
+  // token, and it is the only way an account is ever attached to a
+  // household — so a message without it invites somebody to nothing. The
+  // settings page says so, the same as it does for the details form.
+  portalInviteSubject: string;
+  portalInviteBody: string;
   // Boarding requests. Separate wording from enrollment, because these also
   // carry dates — {{dropoff}}, {{pickup}} and {{nights}} work here too.
   boardingAckSubject: string;
@@ -326,6 +332,20 @@ There is one thing left: the rest of your profile. It takes a couple of minutes 
 {{link}}
 
 The link is yours alone and does not expire, so finish it whenever suits. If you would rather do it at the front desk, just say so when you next come in.
+
+— {{business}}`,
+    portalInviteSubject: "Your {{business}} account is ready to set up",
+    portalInviteBody: `Hi {{owner}},
+
+You can now see everything we hold for {{dogs}} in one place — vaccination dates, package days left, past visits and what is outstanding — and ask us for boarding dates without ringing up.
+
+Set your password here:
+
+{{link}}
+
+That link is yours alone and works once, so please do not forward it. It is good for {{days}} days; if it runs out, just ask us for another.
+
+You will still hear from us to confirm any dates you request — nothing is booked automatically.
 
 — {{business}}`,
     declinedSubject: "About your enrollment at {{business}}",

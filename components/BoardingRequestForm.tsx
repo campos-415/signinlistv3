@@ -16,6 +16,7 @@ import {
 } from "@/lib/pricing";
 import {
   BoardingRequestDraft,
+  BoardingRequestSource,
   MAX_WALKS_PER_DAY,
   NOTICE_DAYS,
   cleanDogNames,
@@ -30,20 +31,59 @@ import {
 } from "@/lib/boardingRequest";
 import { BOARDING_SERVICES, BoardingAddonKey } from "@/types";
 
+/** Details the account already holds, so the form does not ask for them. */
+export interface BoardingPrefill {
+  owner_name?: string;
+  last_name?: string;
+  phone?: string;
+  email?: string;
+}
+
 export default function BoardingRequestForm({
   source,
   embed = false,
+  prefill,
+  lockContact = false,
+  knownDogs,
 }: {
-  source: "kiosk" | "web";
+  source: BoardingRequestSource;
   // Drops the heading and back link, for embedding in an iframe on the
   // business's own website.
   embed?: boolean;
+  // What the signed-in account already knows. The portal passes this; the
+  // public form does not have it to pass.
+  prefill?: BoardingPrefill;
+  // Shows the contact details back rather than asking for them. Only
+  // meaningful with `prefill`, and only honest when the details came from an
+  // account rather than from something the person typed a moment ago.
+  lockContact?: boolean;
+  // The dogs on the account. Given these, the form offers them to tick
+  // instead of asking somebody to type the name of a dog we already know —
+  // which is also how a stay ends up filed under a spelling that matches no
+  // profile. Passing this also settles the enrollment question: a dog with a
+  // record here is enrolled by definition.
+  knownDogs?: string[];
 }) {
   const { settings } = useSettings();
-  // The kiosk sends people back to the sign-in screen; the website sends
-  // them back to the website.
-  const homeHref = source === "kiosk" ? "/kiosk" : "/";
-  const [draft, setDraft] = useState<BoardingRequestDraft>(emptyBoardingRequest());
+  // The kiosk sends people back to the sign-in screen, the portal back to
+  // the account, and the website back to the website.
+  const homeHref = source === "kiosk" ? "/kiosk" : source === "portal" ? "/account" : "/";
+  const [draft, setDraft] = useState<BoardingRequestDraft>(() => {
+    const base = emptyBoardingRequest();
+    if (!prefill) return base;
+    return {
+      ...base,
+      owner_name: prefill.owner_name ?? base.owner_name,
+      last_name: prefill.last_name ?? base.last_name,
+      phone: prefill.phone ?? base.phone,
+      email: prefill.email ?? base.email,
+      // A household with dogs on file has answered this already.
+      alreadyEnrolled: knownDogs?.length ? true : base.alreadyEnrolled,
+      // One dog: ticked already, since there is nothing to choose between.
+      // Several: none ticked, so nobody books the wrong dog by not looking.
+      dogNames: knownDogs?.length ? (knownDogs.length === 1 ? [knownDogs[0]] : []) : base.dogNames,
+    };
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -64,6 +104,12 @@ export default function BoardingRequestForm({
   }
 
   async function handleSubmit() {
+    // The shared validator says "Enter your dog's name", which is the wrong
+    // instruction next to a list of tick boxes.
+    if (knownDogs?.length && !cleanDogNames(draft).length) {
+      setError("Tick which of your dogs is coming.");
+      return;
+    }
     const problem = validateBoardingRequest(draft);
     if (problem) {
       setError(problem);
@@ -206,6 +252,32 @@ export default function BoardingRequestForm({
 
       {/* Owner */}
       <Section title="Your details" step={2}>
+        {/* Signed in, so these came from the account rather than from
+            somebody typing them again. Shown back rather than asked: this is
+            also how a household ends up in the book twice, under two
+            spellings of the same name. */}
+        {lockContact ? (
+          <div className="rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
+              Sending as
+            </p>
+            <p className="mt-1 text-sm text-ink-2">
+              {[draft.owner_name, draft.last_name].filter(Boolean).join(" ") || "Your account"}
+              <span className="text-ink-3">
+                {draft.phone ? ` · ${draft.phone}` : ""}
+                {draft.email ? ` · ${draft.email}` : ""}
+              </span>
+            </p>
+            <p className="mt-1 text-[11px] text-ink-3">
+              Change these under{" "}
+              <Link href="/account/details" className="text-accent-600 underline">
+                Your details
+              </Link>
+              .
+            </p>
+          </div>
+        ) : (
+        <>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="First name" required>
             <input
@@ -244,14 +316,21 @@ export default function BoardingRequestForm({
             />
           </Field>
         </div>
+        </>
+        )}
 
         <div className="mt-3">
+          {/* Not asked when the dogs are already on the account: a household
+              with records here is enrolled, and asking anyway invites a "no"
+              that opens an enrollment form for a dog we have had for years. */}
+          {!knownDogs?.length && (
           <Field label={`Is your dog already enrolled with ${settings.business.name}?`} required>
             <YesNo
               value={draft.alreadyEnrolled}
               onChange={(v) => set("alreadyEnrolled", v)}
             />
           </Field>
+          )}
           {/* Not a dead end any more.
               Sending someone away to another form lost everything they had
               already typed and lost the booking with it. The enrollment form
@@ -329,7 +408,34 @@ export default function BoardingRequestForm({
       <>
       {/* Dogs and dates */}
       <Section title="Dogs and dates" step={3}>
-        {enrollingHere ? (
+        {knownDogs?.length ? (
+          // Ticked, not typed. The approval matches each name against the
+          // dogs on the number, so a stay requested for "Bailey" when the
+          // profile says "Baley" arrives unmatched and has to be sorted out
+          // by hand — and the account already knows the spelling.
+          <Field label="Who is coming?" required>
+            <div className="space-y-1.5">
+              {knownDogs.map((name) => (
+                <label key={name} className="flex items-center gap-2 text-sm text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={draft.dogNames.includes(name)}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        dogNames: e.target.checked
+                          ? [...d.dogNames.filter((n) => n !== name), name]
+                          : d.dogNames.filter((n) => n !== name),
+                      }))
+                    }
+                    className="h-4 w-4 shrink-0 rounded border-line text-accent-500 focus:ring-accent-100"
+                  />
+                  <span>{name}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        ) : enrollingHere ? (
           // The enrollment above already named them, and naming them twice is
           // how the two submissions end up disagreeing about who is coming.
           <div className="rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">

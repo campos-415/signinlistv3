@@ -9,8 +9,20 @@
 -- What it did not do was distinguish between the people who sign in. One
 -- policy said any authenticated account may do anything to any table, so
 -- the front desk, the lobby iPad and the owner had identical power. This
--- version replaces that single policy with a matrix: four roles, and per
+-- version replaces that single policy with a matrix: five roles, and per
 -- table per command, which of them the database will accept.
+--
+-- The fifth is the client. Staff roles answer WHAT an account may do and the
+-- answer is the same for every row; the client role also has to answer WHICH
+-- ROWS, and the answer is one household. That is why the customer half of
+-- the matrix holds owner_id rather than a capability: isolation is a foreign
+-- key comparison, not a permission level.
+--
+-- It is deliberately NOT built on the phone number. See the long note at the
+-- top of customer-accounts-migration.sql: the phone column is a string whose
+-- format varies, the app already strips non-digits before comparing it, and
+-- a policy resting on it fails closed at best and collides two households at
+-- worst. owner_id is a real key and this file compares nothing else.
 --
 -- The anon key can still do exactly four things, all of which the public
 -- pages genuinely need:
@@ -20,17 +32,20 @@
 --   write enrollments     (somebody submitting the enrollment form)
 --   write boarding_requests (somebody requesting dates)
 --
--- RUN ORDER. This is the LAST of four files and the only one that can lock
+-- RUN ORDER. This is the LAST of five files and the only one that can lock
 -- somebody out, because it is the one that stops trusting authenticated:
 --
 --   1. security-roles-migration.sql   creates the roles and assigns them
 --   2. security-audit-migration.sql
 --   3. security-exports-migration.sql
---   4. rls-lockdown.sql               this file
+--   4. customer-accounts-migration.sql  owner_id, and who a client is
+--   5. rls-lockdown.sql               this file
 --
 -- Running this before step 1 locks every account out of every table, since
 -- there would be no roles for the policies to find. The block refuses to
--- start if the roles table is missing or has no owner_admin in it.
+-- start if the roles table is missing or has no owner_admin in it, and
+-- likewise if step 4 has not run, since the customer half of the matrix
+-- references a column and a function that would not exist yet.
 --
 -- The whole rewrite is one DO block, which is one statement, which is one
 -- transaction: the old policies and the new ones are swapped atomically.
@@ -55,11 +70,13 @@
 do $lockdown$
 declare
   -- ---------------------------------------------------------------
-  -- The matrix. One row per table:
+  -- The matrix. One row per table, staff on the left and the client on
+  -- the right:
   --
-  --   table name, select, insert, update, delete
+  --   table name, select, insert, update, delete,
+  --               client select, client insert, client update, client delete
   --
-  -- and each cell is who may do it:
+  -- Staff cells are a capability - who may do this at all:
   --
   --   OA   owner or admin, MFA satisfied
   --   M    manager or above, MFA satisfied
@@ -67,6 +84,44 @@ declare
   --   EK   employee or above, or the lobby kiosk
   --   ANY  any account with a role at all
   --   -    nobody through the API
+  --
+  -- Client cells are a row test - which rows, if any:
+  --
+  --   OWN  rows whose owner_id is the household this account claimed
+  --   PUB  any signed-in account at all, claimed or not. Only for the three
+  --        tables a signed-out visitor can already read through the anon
+  --        policies below, so this grants nothing new - it repairs
+  --        something. Note it is NOT is_customer: an account that has signed
+  --        up and not yet claimed its household must still be able to read
+  --        settings, because SettingsProvider fetches them in the browser
+  --        with the session attached, and without them the business name,
+  --        the accent colour and the phone number fall back to the shipped
+  --        defaults. The screen that would break is the claim page, which is
+  --        the first thing a new client ever sees. Anything stricter here
+  --        than the anon policy means a signed-in person clearing a higher
+  --        bar than a stranger, which is backwards
+  --   V    nothing directly. The client reads this table through the
+  --        matching my_* view in customer-accounts-migration.sql, which
+  --        names its columns
+  --   F    nothing directly. The client writes this table through the
+  --        named function in the same file, which names its columns
+  --   -    nothing
+  --
+  -- Why V exists, because it is the one thing here that is not obvious.
+  -- A policy can say which ROWS. It cannot say which COLUMNS, and half
+  -- these tables carry a field staff write for each other: signins has
+  -- staff_note and meet_greet_note, dogs and owners and boardings each have
+  -- notes, payments has note. A select policy on signins would therefore let
+  -- a client ask the REST API for select=* and read every handover note ever
+  -- written about their dog. Not selecting the column in the app is not a
+  -- control - the app is theirs, the API is public, and the token is in
+  -- their browser.
+  --
+  -- So a client never selects from a base table. Each read goes through a
+  -- view that lists its columns, the view filters on the same
+  -- customer_owner_id these cells use, and the base table refuses them. V
+  -- means exactly that, and it is written here rather than only in the other
+  -- file so that this matrix is still the whole answer.
   --
   -- Read it as the answer to why each cell is what it is:
   --
@@ -93,11 +148,19 @@ declare
   -- that a per-command cell cannot express, and both are handled below.
   -- ---------------------------------------------------------------
   matrix text[][] := array[
-    --  table                select insert update delete
-    array['dogs',              'EK',  'E',   'E',   'M' ],
-    array['owners',            'E',   'E',   'E',   'M' ],
-    array['signins',           'EK',  'EK',  'E',   'M' ],
-    array['boardings',         'EK',  'E',   'E',   'M' ],
+    --  table                select insert update delete   client: sel  ins  upd  del
+    array['dogs',              'EK',  'E',   'E',   'M',           'V', '-', '-', '-'],
+    -- F on update, and this cell was an update policy until the isolation
+    -- test proved the policy did nothing. Postgres applies SELECT policies
+    -- to the rows an UPDATE reads, and update().eq(id) reads; a client has
+    -- no select policy here, so the statement matched no rows, reported
+    -- success and changed nothing. A control that fails silently is worse
+    -- than one that is absent, so the write went to update_my_household,
+    -- which names the twelve contact columns it will set. phone is not one
+    -- of them: it is the key the households were rebuilt on.
+    array['owners',            'E',   'E',   'E',   'M',           'V', '-', 'F', '-'],
+    array['signins',           'EK',  'EK',  'E',   'M',           'V', '-', '-', '-'],
+    array['boardings',         'EK',  'E',   'E',   'M',           'V', '-', '-', '-'],
     -- Selling is employee work. A client asks for a ten-day block at the
     -- counter and the person at the counter is who sells it; needing a
     -- manager for a routine transaction means either the sale does not
@@ -107,24 +170,51 @@ declare
     -- act. Every sale is written to the audit log with who made it, which
     -- is the control that actually catches misuse — blocking the till does
     -- not. Deleting one stays with a manager.
-    array['packages',          'EK',  'E',   'EK',  'M' ],
-    array['package_uses',      'EK',  'EK',  'EK',  'E' ],
-    array['payments',          'EK',  'EK',  'M',   'OA'],
-    array['vaccinations',      'E',   'E',   'E',   'M' ],
-    array['meal_logs',         'E',   'E',   'E',   'E' ],
-    array['walk_logs',         'E',   'E',   'E',   'E' ],
-    array['dog_docs',          'E',   'E',   'E',   'M' ],
+    array['packages',          'EK',  'E',   'EK',  'M',           'V', '-', '-', '-'],
+    array['package_uses',      'EK',  'EK',  'EK',  'E',           'V', '-', '-', '-'],
+    array['payments',          'EK',  'EK',  'M',   'OA',          'V', '-', '-', '-'],
+    array['vaccinations',      'E',   'E',   'E',   'M',           'V', '-', '-', '-'],
+    -- Not the care logs. A client seeing whether their dog was fed and
+    -- walked would be a good feature and is not this one: these rows carry
+    -- the initials of whoever did it, they are written and corrected all day
+    -- long, and nothing was asked for here. Left shut rather than half open.
+    array['meal_logs',         'E',   'E',   'E',   'E',           '-', '-', '-', '-'],
+    array['walk_logs',         'E',   'E',   'E',   'E',           '-', '-', '-', '-'],
+    -- Insert, so a client can upload a replacement vaccination record. The
+    -- fill_owner_id trigger derives owner_id on this table from the DOG
+    -- rather than from the session, so a record uploaded against a dog in
+    -- another household arrives stamped with that household and this cell
+    -- refuses it. Update and delete stay with staff: a record is replaced by
+    -- adding the new one, and the history of what was on file when is worth
+    -- more than a tidy list.
+    array['dog_docs',          'E',   'E',   'E',   'M',           'V', 'OWN', '-', '-'],
     -- Insert is EK, not E, and the reason is easy to get wrong: the
     -- enrollment and boarding forms are filled in on the lobby iPad as well
     -- as on the website, and that iPad is signed in as the kiosk. Its
     -- requests arrive as authenticated, so the anon policy never applies to
     -- them. Leaving these at E would have left the public website working
     -- and broken signup on the kiosk - the failure nobody tests for.
-    array['enrollments',       'E',   'EK',  'E',   'M' ],
-    array['boarding_requests', 'E',   'EK',  'E',   'M' ],
-    array['settings',          'ANY', 'OA',  'OA',  'OA'],
-    array['site_photos',       'ANY', 'M',   'M',   'M' ],
-    array['reviews',           'ANY', 'M',   'M',   'M' ],
+    array['enrollments',       'E',   'EK',  'E',   'M',           '-', '-', '-', '-'],
+    -- The one place a client writes something that reaches staff. It goes
+    -- into the SAME pending queue the public form feeds - the portal offers
+    -- no way to book, only to ask - and the trigger stamps owner_id and the
+    -- phone from the session, so a request cannot arrive claiming to come
+    -- from a household it did not.
+    array['boarding_requests', 'E',   'EK',  'E',   'M',           'V', 'OWN', '-', '-'],
+    -- PUB on these three: a signed-out visitor can already read all of them
+    -- through the anon policies below, so this is not a grant, it is the
+    -- repair of one. Without it the marketing site, the prices and the
+    -- branding would render for everybody EXCEPT a signed-in client, who is
+    -- authenticated and holds no staff role.
+    --
+    -- The isolation test caught the narrower version of this, where the cell
+    -- was is_customer rather than any signed-in account: a person who had
+    -- just set their password but not yet finished claiming got the shipped
+    -- defaults instead of the business name and colours, on the claim page,
+    -- which is the first screen a new client ever sees.
+    array['settings',          'ANY', 'OA',  'OA',  'OA',          'PUB', '-', '-', '-'],
+    array['site_photos',       'ANY', 'M',   'M',   'M',           'PUB', '-', '-', '-'],
+    array['reviews',           'ANY', 'M',   'M',   'M',           'PUB', '-', '-', '-'],
     -- A leftover from importing vaccination records. Nothing in the
     -- application reads or writes it and no previous migration named it, so
     -- whatever policy it has was never chosen - it was simply never
@@ -135,7 +225,7 @@ declare
     --
     -- Importing through the SQL editor or with the secret key is unaffected:
     -- both bypass RLS. If it is genuinely finished with, drop it.
-    array['vaccinations_staging', 'M', 'M',  'M',   'M' ]
+    array['vaccinations_staging', 'M', 'M',  'M',   'M',           '-', '-', '-', '-']
   ];
 
   -- Readable by the public website without signing in.
@@ -149,6 +239,7 @@ declare
   old_names text[] := array[
     'allow all', 'staff full access', 'public read', 'public submit',
     'staff select', 'staff insert', 'staff update', 'staff delete',
+    'customer select', 'customer insert', 'customer update', 'customer delete',
     'own role', 'manage roles', 'harden own account', 'read audit log'
   ];
 
@@ -182,6 +273,15 @@ begin
     raise exception 'audit_log does not exist. Run security-audit-migration.sql first.';
   end if;
 
+  -- The client half of the matrix compares owner_id against a function.
+  -- Neither exists until step 4, and writing these policies without them
+  -- would fail on the first client cell and roll the whole rewrite back -
+  -- leaving the database on whatever policies it had, which after a first
+  -- run means the blanket one.
+  if to_regprocedure('public.customer_owner_id()') is null then
+    raise exception 'customer_owner_id does not exist. Run customer-accounts-migration.sql first: the client policies below have nothing to compare against without it.';
+  end if;
+
   -- -----------------------------------------------------------------
   -- The matrix.
   -- -----------------------------------------------------------------
@@ -199,32 +299,62 @@ begin
       execute format('drop policy if exists %I on public.%I', name, t);
     end loop;
 
-    for c in 1 .. 4 loop
-      cmd := cmds[c];
+    -- Eight cells: four staff, then four client. Both halves become a
+    -- policy the same way and only the expression differs, so the writing
+    -- of it stays in one place rather than being said twice.
+    --
+    -- The two halves are separate policies on purpose, not one combined
+    -- expression. Postgres ORs the permissive policies on a table together,
+    -- which is exactly the semantics wanted here: an employee passes the
+    -- staff policy and fails the client one, a client the reverse, and
+    -- neither is ever asked to satisfy both.
+    for c in 1 .. 8 loop
+      cmd := cmds[((c - 1) % 4) + 1];
       cell := matrix[i][c + 1];
 
-      -- Wrapped in a select so Postgres evaluates the role lookup once per
-      -- statement instead of once per row. On a 20,000 row sign-in history
-      -- that is the difference between a report that loads and one that
-      -- times out.
-      expr := case cell
-        when 'OA'  then '(select public.is_owner_admin())'
-        when 'M'   then '(select public.at_least_manager())'
-        when 'E'   then '(select public.at_least_employee())'
-        when 'EK'  then '(select public.at_least_employee() or public.is_kiosk())'
-        when 'ANY' then '(select public.has_staff_role())'
-        when '-'   then null
-        else null
-      end;
-
-      if expr is null then
-        if cell <> '-' then
-          raise exception 'Unknown cell % for %.%', cell, t, cmd;
+      if c <= 4 then
+        policy_name := 'staff ' || cmd;
+        -- Wrapped in a select so Postgres evaluates the role lookup once per
+        -- statement instead of once per row. On a 20,000 row sign-in history
+        -- that is the difference between a report that loads and one that
+        -- times out.
+        expr := case cell
+          when 'OA'  then '(select public.is_owner_admin())'
+          when 'M'   then '(select public.at_least_manager())'
+          when 'E'   then '(select public.at_least_employee())'
+          when 'EK'  then '(select public.at_least_employee() or public.is_kiosk())'
+          when 'ANY' then '(select public.has_staff_role())'
+          when '-'   then null
+          else null
+        end;
+        if expr is null and cell <> '-' then
+          raise exception 'Unknown staff cell % for %.%', cell, t, cmd;
         end if;
-        continue;
+      else
+        policy_name := 'customer ' || cmd;
+        -- Same select wrapper, and it matters more here: without it
+        -- customer_owner_id would be called once per row of a household
+        -- history rather than once for the statement.
+        expr := case cell
+          when 'OWN'  then 'owner_id = (select public.customer_owner_id())'
+          -- Not a bare true, so the "anything left open" check below does
+          -- not have to make an exception for it.
+          when 'PUB'  then '(select auth.uid() is not null)'
+          -- Through the named view or function instead. No policy, on
+          -- purpose, and not the same as a cell nobody has thought about.
+          when 'V'    then null
+          when 'F'    then null
+          when '-'    then null
+          else null
+        end;
+        if expr is null and cell not in ('-', 'V', 'F') then
+          raise exception 'Unknown client cell % for %.%', cell, t, cmd;
+        end if;
       end if;
 
-      policy_name := 'staff ' || cmd;
+      if expr is null then
+        continue;
+      end if;
 
       -- insert takes with check, delete and select take using, update
       -- needs both: using decides which rows may be touched, with check
@@ -269,6 +399,14 @@ begin
       execute format('create policy "public submit" on public.%I for insert to anon with check (true)', t);
     end if;
   end loop;
+
+  -- The same trap, and it now catches a second case worth naming here
+  -- because it is the one somebody will hit. A client has no select policy
+  -- on any base table - the V cells - so a client insert into dog_docs or
+  -- boarding_requests, and a client update of their own owners row, must
+  -- also not ask for the row back. supabase-js does that only when select
+  -- is chained onto the call, so the portal never chains it, and reads the
+  -- my_* view afterwards instead.
 
   -- -----------------------------------------------------------------
   -- staff_roles. The permission boundary, so it gets written out by hand.
@@ -364,4 +502,39 @@ join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
   and c.relkind = 'r'
   and not c.relrowsecurity
+order by c.relname;
+
+-- ---------------------------------------------------------------------
+-- Check 4. Every client policy, and the row test it applies. Read this as
+-- the answer to the requirement that customers cannot reach each other:
+-- every expression here must mention customer_owner_id, because that is
+-- the only thing that narrows a statement to one household. A client
+-- policy that does not is a client policy that leaks.
+-- ---------------------------------------------------------------------
+select
+  tablename,
+  policyname,
+  cmd,
+  coalesce(qual, with_check) as row_test,
+  coalesce(qual, with_check) like '%customer_owner_id%'
+    or coalesce(qual, with_check) like '%is_customer%' as scoped
+from pg_policies
+where schemaname = 'public'
+  and policyname like 'customer %'
+order by tablename, cmd;
+
+-- ---------------------------------------------------------------------
+-- Check 5. The views a client reads through must not be reachable by a
+-- signed-out visitor, and must be reachable by a signed-in one. Expect one
+-- row per my_ view, anon false and authenticated true throughout.
+-- ---------------------------------------------------------------------
+select
+  c.relname as view_name,
+  has_table_privilege('anon', c.oid, 'select') as anon_can_read,
+  has_table_privilege('authenticated', c.oid, 'select') as authenticated_can_read
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public'
+  and c.relkind = 'v'
+  and c.relname like 'my\_%'
 order by c.relname;

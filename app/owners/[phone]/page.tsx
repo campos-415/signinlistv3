@@ -24,6 +24,7 @@ import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import { ChoiceWithOther } from "@/components/FormBits";
 import Panel from "@/components/Panel";
+import CustomerAccountPanel from "@/components/CustomerAccountPanel";
 
 export default function OwnerProfilePage() {
   return (
@@ -851,6 +852,15 @@ function OwnerProfile() {
           </div>
         </div>
       </Panel>
+
+      {/* Their own login. Sits under Contact because it depends on the email
+          address up there — the invitation goes to whatever is on file. */}
+      <CustomerAccountPanel
+        ownerId={owner?.id ?? null}
+        ownerName={form.owner_name || displayName}
+        email={form.email}
+        dogNames={dogs.map((d) => d.dog_name).filter(Boolean)}
+      />
 
       {/* Veterinarian */}
       <Panel

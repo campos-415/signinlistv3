@@ -24,6 +24,14 @@ export const NOTICE_DAYS = 2;
 // data-entry mistake. Staff can always add more on the reservation.
 export const MAX_WALKS_PER_DAY = 4;
 
+/**
+ * Where a request came from. Staff reading the queue want to know whether
+ * somebody stood at the front desk, filled it in on the website, or sent it
+ * from their own account — the last of those is the only one where the
+ * household is already known rather than typed.
+ */
+export type BoardingRequestSource = "kiosk" | "web" | "portal";
+
 export interface BoardingRequestDraft {
   owner_name: string;
   last_name: string;
@@ -142,9 +150,24 @@ export function boardingTemplateVars(draft: BoardingRequestDraft): Record<string
   };
 }
 
+/**
+ * Files the request as pending. Nothing is booked here, by design.
+ *
+ * No .select() on the insert, and that is load-bearing rather than a style
+ * choice. Neither a signed-out visitor nor a signed-in client has a select
+ * policy on this table, and Postgres treats a RETURNING clause as a read —
+ * asking for the row back would turn a working submission into a refusal for
+ * everybody except staff. See the note on "public submit" in
+ * rls-lockdown.sql.
+ *
+ * From the portal, owner_id and the phone number are stamped by the
+ * fill_owner_id trigger from the SESSION rather than taken from this
+ * payload, so a request cannot arrive claiming to be from a household it is
+ * not.
+ */
 export async function submitBoardingRequest(
   draft: BoardingRequestDraft,
-  source: "kiosk" | "web"
+  source: BoardingRequestSource
 ): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase.from("boarding_requests").insert({

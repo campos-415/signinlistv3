@@ -23,7 +23,7 @@ Objective. It is one piece of work, not four.
 | Supabase + PostgreSQL | **Met** |
 | No self-hosted database | **Met** |
 | RLS on every table with customer/pet data | **Met** — verified in force: the public key reads settings only, is refused every other table, and may insert into the two form tables |
-| Customers cannot reach another customer's data | **Not met** — there is no customer role and no customer account. Nothing in the database distinguishes one customer from another |
+| Customers cannot reach another customer's data | **Met** — customers have accounts, and every household is identified by a real `owner_id` foreign key rather than by a phone number string. Enforced in RLS, and tested: `customer-isolation-test.sql` signs in as one customer and attempts to read another household's dog, package, boarding, invoice and document by id — on the base tables and through the customer views, reading and writing. All refused |
 | Production and development separated | **Not met** — one Supabase project; local development points at the production database. Mitigating factor today: the 495 imported owner records are synthetic test data, not real customers, so no live customer information is currently exposed to development. That stops being true the day the business goes live, so the separation must exist before launch rather than after |
 
 ## 2. Authentication
@@ -51,8 +51,15 @@ Consequences today:
 - An employee can **export the entire customer database** — Settings → Reports
   offers CSV downloads of dogs, owners, visits, boardings, packages, payments
   and vaccinations. The requirement says this needs specific authorisation.
-- There is no Customer role. Customers never sign in; enrollment and boarding
-  requests are anonymous form submissions.
+- ~~There is no Customer role. Customers never sign in; enrollment and
+  boarding requests are anonymous form submissions.~~ **Done.** Customers now
+  sign in at `/account`, and the Customer role is the fifth column of the RLS
+  matrix. A household is identified by an `owner_id` foreign key, not by the
+  phone number string it used to be grouped by — the string comes in varying
+  formats, and isolation resting on it would at best hide a client from their
+  own dog and at worst merge two households. Accounts are claimed only
+  through a one-time token that staff email to the address on file; there is
+  no route in that accepts a phone number.
 
 Required: Owner/Admin, Manager, Employee, Customer — enforced in RLS policies,
 not only in the interface.
@@ -157,10 +164,20 @@ In dependency order. The first item unblocks most of the rest.
    permission changes, staff edits to customer records, exports.
 4. **Environment separation** — a development Supabase project, so nobody
    develops against live customer data.
-5. **Customer accounts** — the largest item, and the one that makes
-   "customers cannot see each other's data" a testable statement rather than a
-   vacuous one. Needs a customer portal: sign in, see your own dogs,
-   reservations and documents.
+5. ~~**Customer accounts**~~ — **done.** The portal is at `/account`: sign in,
+   see your own dogs, vaccination dates, package days, stays, invoices and
+   what is outstanding; update your contact details; send in a replacement
+   vaccination record; ask for boarding dates. No direct booking, no online
+   payment, no staff notes, no reports or exports.
+
+   The point of the item was that it makes "customers cannot see each other's
+   data" a testable statement rather than a vacuous one. It is now tested:
+   `customer-isolation-test.sql` signs in as one customer and goes after
+   another household's records by id, on the base tables and through the
+   customer views, reading and writing — plus what a bare signed-up account
+   with no household can reach, which is nothing. Every refusal is paired
+   with the same read against the account's own household, so the suite
+   cannot pass by being broken.
 6. **Backups verified**, with a rehearsed restore.
 7. **The testing checklist in requirement 12**, run and recorded, once the
    above exists.

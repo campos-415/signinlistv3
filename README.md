@@ -456,16 +456,59 @@ Do this in order. **The last step breaks an unauthenticated app the moment it ru
 1. In Supabase → **Authentication → Users → Add user**, create the accounts you need, with **Auto Confirm** on:
    - one per staff member, e.g. `frontdesk@staff.local`
    - one for each lobby tablet, e.g. `kiosk@staff.local`
-2. Turn **off** public sign-ups: Authentication → Providers → Email → disable *Enable sign ups*. Otherwise anyone could create themselves an account and inherit staff access.
+2. **Public sign-ups.** This instruction changed when client accounts arrived — see [Client accounts](#client-accounts-and-the-portal).
+
+   It used to say turn them off, because *anyone could create themselves an account and inherit staff access*. That was true when RLS granted every authenticated session everything. It is not true any more: an account with no row in `staff_roles` and no household in `owners.user_id` is refused every table, every view and every write — [customer-isolation-test.sql](customer-isolation-test.sql) checks exactly that, on 24 tables and views, and the portal argument depends on it.
+
+   So: leave sign-ups **on** if you want clients to set their own password from the invitation link, which is how the portal is built. Turn them **off** if you are not using the portal. Either way the token in the invitation, not the sign-up gate, is what grants access to a household.
 3. Deploy this code.
 4. Open the kiosk tablet, go to `/kiosk`, and sign in once with the kiosk account.
-5. Run [rls-lockdown.sql](rls-lockdown.sql).
+5. Run the security migrations **in order** — each one refuses to run before the one above it:
+   1. [security-roles-migration.sql](security-roles-migration.sql)
+   2. [security-audit-migration.sql](security-audit-migration.sql)
+   3. [security-exports-migration.sql](security-exports-migration.sql)
+   4. [customer-accounts-migration.sql](customer-accounts-migration.sql)
+   5. [rls-lockdown.sql](rls-lockdown.sql)
 
 If something stops loading afterwards, it is almost always a page being used signed-out. Sign in and it returns; nothing is deleted by the lockdown.
 
 ### Still worth doing
 
 `NEXT_PUBLIC_SUPABASE_SECRET_KEY` in `.env.local` is a service-role key carrying a `NEXT_PUBLIC_` prefix. Nothing references it, so Next never inlines it into a bundle and it is not currently exposed — but that prefix means any future code that reads it would publish it to every visitor. Rename it to `SUPABASE_SECRET_KEY`, or delete it if unused.
+
+## Client accounts and the portal
+
+Clients sign in at `/account` and see their own dogs, vaccination dates, package days, stays, invoices and what is outstanding. They can update their contact details, send in a replacement vaccination record, and **ask** for boarding dates — the request lands in the same pending queue the public form feeds. They cannot book, cannot pay online, and cannot see anything belonging to another household.
+
+### The household is a key, not a phone number
+
+This is the part worth understanding before changing anything here.
+
+Every child table used to be grouped by a **phone number string** — `dogs.phone`, `packages.phone`, and so on. Nothing in the database said which rows belonged to the same household except that string, and the app already strips non-digits before comparing it, which tells you the stored formats vary.
+
+Isolation built on that would inherit every inconsistency in it. A policy comparing phone numbers fails closed when a format differs — a client silently cannot see their own dog — and that is the *better* failure. The worse one is two households whose numbers normalise to the same digits reading each other.
+
+So [customer-accounts-migration.sql](customer-accounts-migration.sql) adds a real `owner_id` foreign key to `dogs`, `packages`, `boardings`, `signins`, `payments`, `dog_docs` and `boarding_requests`, backfills it once from the old phone grouping, and **refuses to finish** if the grouping turns out to be ambiguous or leaves anything unattached. A `fill_owner_id` trigger keeps it true for rows written afterwards, including by code that has never heard of the column.
+
+### How somebody gets an account
+
+Staff-initiated, always. On an owner profile there is a **Client account** panel: it issues a one-time token and emails a link to the address already on file, which is what makes holding the link proof of controlling that address.
+
+There is deliberately **no** way for a client to claim a household by typing a phone number. Guessing a phone number is trivial, and a portal that hands over a household for a correct guess is the exact failure the requirements are about.
+
+Invitations are good for 14 days and re-sending replaces the old one. An owner (not a manager) can unbind an account afterwards.
+
+### Views, not tables
+
+A client never selects from a base table. RLS answers *which rows*; it cannot answer *which columns*, and several of these tables carry a field staff write for each other — `signins.staff_note` and `meet_greet_note`, `dogs.notes`, `owners.notes`, `boardings.notes`, `payments.note`. A select policy on `signins` would let a client ask the REST API for `select=*` and read every handover note ever written about their dog.
+
+So each read goes through a `my_*` view that names its columns, and each write through a named function. The [matrix in rls-lockdown.sql](rls-lockdown.sql) carries a cell per table saying which — `V` for a view, `F` for a function — so the whole picture is still in one place.
+
+### Testing it
+
+[customer-isolation-test.sql](customer-isolation-test.sql) creates two accounts, binds them to two real households, and then tries to reach across — by id, on the base tables and through the views, reading and writing — before putting everything back and removing itself. Every refusal is paired with the same read against the account's own household, so a test that passes because everything is broken fails instead.
+
+Run it after the migrations. Every line should read PASS.
 
 ## How packages work
 

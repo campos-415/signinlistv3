@@ -21,7 +21,23 @@ export const STAFF_ROUTES = [
   "/owners",
 ];
 
-/** The lobby kiosk and the forms clients fill in. Public, but not marketing. */
+/**
+ * The lobby kiosk and the forms clients fill in. Public, but not marketing.
+ *
+ * The client portal at `/account` is deliberately in NEITHER list.
+ *
+ * Not STAFF_ROUTES: dark mode is a back-office affordance for a screen
+ * somebody stares at all day, and the portal should look like the website
+ * the client arrived from.
+ *
+ * Not APP_ROUTES either, which is subtler. The only thing that list does is
+ * let SettingsProvider retitle the tab "<business> — sign in" at runtime.
+ * That is right for the kiosk and the enrollment form, which are sign-in
+ * screens; it is wrong for a client reading their billing history, and it
+ * would overwrite the portal own title to say so. The portal layout sets
+ * its title through Next metadata instead, which picks the business name up
+ * the same way.
+ */
 export const APP_ROUTES = ["/kiosk", "/signup", "/enroll", "/book"];
 
 function matches(pathname: string | null, routes: string[]): boolean {
