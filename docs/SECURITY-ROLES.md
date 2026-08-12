@@ -115,21 +115,39 @@ session token, and every Manager and Owner capability is written in terms of
 it. A session that has not presented a code cannot export, cannot delete and
 cannot change a permission, whatever the interface allows.
 
-**Nobody gets locked out by the migration.** An account with no authenticator
-set up yet still works: `mfa_ok()` passes for an account that has no verified
-factor and is not marked `require_mfa`. Enrolling closes that window for that
-account and there is no way back through it — the app sets `require_mfa` when
-enrolment succeeds, and after that `aal2` is the only route.
+**An account that has not enrolled is never blocked.** This is the rule the
+whole thing is built on, and it is structural rather than incidental. In the
+database, `mfa_ok()` passes for an account with no verified factor that is not
+marked `require_mfa`. In the app, the enrolment prompt is a dismissible banner
+sitting above a fully usable screen, not a wall. Being unable to sign in to a
+working application because of a security feature that has not been set up yet
+is a worse failure than not having the feature.
 
-So the rollout is: run the migrations, and each manager and owner enrols the
-next time they are at a computer. Until they do, they can do employee-level
-work and the manager side is refused. The app asks them to enrol at sign-in
-and explains what is not working until they do.
+Enforcement is therefore switched on per account, two ways: enrolling sets
+`require_mfa` on that account, or an owner sets it in Settings → Security.
+Switching it on cannot strand somebody who has not enrolled, because they are
+the person it is being switched on for.
 
-**If somebody loses the phone their authenticator was on**, an owner lifts the
-requirement for that account in Settings → Security, and they set it up again
-on the new phone. That is recorded in the audit log as a permission change,
-which is what it is.
+There are exactly two places the app does block, and both can be got out of:
+
+- **A code prompt** for an account that has enrolled and whose session is still
+  at `aal1`. It can always be completed — the account that enrolled has the app
+  in its hand.
+- **The enrolment screen** for an account an owner has deliberately required MFA
+  on that still has no authenticator.
+
+So the rollout is: run the migrations, and each manager and owner enrols when
+they are next at a computer. Until they do they can do employee-level work, the
+manager side is refused by the database, and a banner says so.
+
+**If somebody loses the phone their authenticator was on**, another owner lifts
+the requirement in Settings → Security and they enrol again on the new phone —
+recorded in the audit log as the permission change it is. If nobody can get in
+to do that, the break-glass SQL is at the bottom of `security-rollback.sql`.
+
+**If enrolment itself will not start** — the project has MFA switched off, the
+network is out — the setup panel offers "Try again" and "Skip for now and carry
+on" rather than trapping somebody behind a feature that is not working.
 
 ---
 
