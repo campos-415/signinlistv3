@@ -143,7 +143,7 @@ function FirstDay() {
 
         {/* The sheet itself. Everything below prints. */}
         <article className="rounded-2xl border border-line bg-surface p-6 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-          <header className="flex items-start gap-4 border-b border-line-soft pb-4 print:border-paper-rule">
+          <header className="flex items-start gap-4 border-b border-line-soft pb-4 print:break-inside-avoid print:border-paper-rule">
             {dog.photo_data ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -207,12 +207,18 @@ function FirstDay() {
               <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-3">
                 Looked after by
               </p>
+              {/* An input prints as an input: a box with a caret-sized gap
+                  and a border the browser draws its own way. On a sheet
+                  somebody is handed, it should be a name on a line. */}
               <input
                 value={report.staff}
                 onChange={(e) => set("staff", e.target.value)}
                 placeholder="Your name"
-                className="mt-0.5 w-full max-w-[14rem] border-b border-line bg-transparent pb-0.5 text-sm text-ink outline-none focus:border-accent-500 print:border-b print:border-paper-line"
+                className="mt-0.5 w-full max-w-[14rem] border-b border-line bg-transparent pb-0.5 text-sm text-ink outline-none focus:border-accent-500 print:hidden"
               />
+              <p className="mt-0.5 hidden min-h-[1.4em] max-w-[14rem] border-b border-paper-line text-sm text-ink print:block">
+                {report.staff}
+              </p>
             </div>
             <p className="text-right text-[11px] text-ink-3">
               {settings.business.name}
@@ -227,8 +233,15 @@ function FirstDay() {
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <section className="mt-4">
-      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{label}</p>
+    // break-inside-avoid so a question and its answer are never split across
+    // two sheets, which is the one way a one-page handout turns into two.
+    <section className="mt-4 print:break-inside-avoid">
+      {/* The label is grey on screen because the answer is what matters
+          there. On paper grey-on-white at 11px is where a photocopier gives
+          up, so it prints darker. */}
+      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-3 print:text-ink-2">
+        {label}
+      </p>
       {children}
     </section>
   );
