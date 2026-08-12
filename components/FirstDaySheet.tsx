@@ -58,6 +58,33 @@ export default function FirstDaySheet({
 
   return (
     <article className="rounded-2xl border border-line bg-surface p-6 shadow-card print:rounded-none print:border-0 print:bg-white print:p-0 print:shadow-none">
+      {/* The same print block every other report on this app carries.
+          print-color-adjust: exact is the important line — without it the
+          browser drops background colours when printing, which is why this
+          sheet came out plain while the day and stay reports came out
+          branded. It travels inside the component so it reaches the print
+          document along with the sheet. */}
+      <style>{`
+        @media print {
+          @page { margin: 0.5in; size: portrait; }
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .print-header {
+            background: linear-gradient(135deg, rgb(var(--print-from)) 0%, rgb(var(--print-to)) 100%);
+            border-radius: 20px;
+          }
+        }
+      `}</style>
+
+      {/* The banner the other reports lead with. Print only: on screen the
+          page already has a heading, and the household is looking at their
+          own dog rather than at a document. */}
+      <div className="print-header mb-5 hidden px-6 py-5 print:block">
+        <h2 className="font-display text-2xl font-bold text-white">🐾 {businessName}</h2>
+        <p className="text-base font-medium text-white/90">
+          My first day — {dog.dog_name}
+        </p>
+      </div>
+
       <header className="flex items-start gap-4 border-b border-line-soft pb-4 print:break-inside-avoid print:border-paper-rule">
         {dog.photo_data ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -72,7 +99,9 @@ export default function FirstDaySheet({
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-accent-600 print:text-ink-2">
+          {/* On screen this names the business; in print the banner above
+              already has, so it would be the second time in two inches. */}
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-accent-600 print:hidden">
             My first day at {businessName}
           </p>
           <h2 className="font-display text-2xl font-semibold text-ink">{dog.dog_name}</h2>

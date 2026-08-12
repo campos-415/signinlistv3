@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import FirstDaySheet, { EMPTY_REPORT, FirstDayReport } from "@/components/FirstDaySheet";
 import { useSettings } from "@/components/SettingsProvider";
 import { getSupabase } from "@/lib/supabase";
+import { printNode } from "@/lib/printNode";
 import { Dog, Owner } from "@/types";
 
 // "My first day" — the thing a household takes home from a meet & greet.
@@ -58,6 +59,7 @@ function FirstDay() {
   const [report, setReport] = useState<FirstDayReport>(EMPTY_REPORT);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const sheetRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     if (dogId === null) return; // URL not read yet
@@ -115,7 +117,10 @@ function FirstDay() {
             First day report — {dog.dog_name}
           </h1>
           <button
-            onClick={() => window.print()}
+            onClick={() => {
+              const node = sheetRef.current?.firstElementChild as HTMLElement | null;
+              if (node) printNode(node, `First day — ${dog.dog_name}`);
+            }}
             className="ml-auto rounded-xl bg-accent-500 px-5 py-2 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600"
           >
             🖨 Print for the owner
@@ -125,14 +130,16 @@ function FirstDay() {
           Fill this in and print it. It is not saved — it is the copy the household takes home.
         </p>
 
-        <FirstDaySheet
+        <div ref={sheetRef}>
+          <FirstDaySheet
           dog={dog}
           owner={owner}
           report={report}
           onChange={setReport}
           businessName={settings.business.name}
-          businessPhone={settings.business.phone}
-        />
+            businessPhone={settings.business.phone}
+          />
+        </div>
       </div>
     </div>
   );
