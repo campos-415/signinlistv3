@@ -1653,16 +1653,21 @@ function RecordsInner() {
         <table className="w-full text-left text-sm print:border-collapse">
           <thead>
             <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
-              <th className="w-8 px-3 py-3 print:hidden">
-                <input
-                  type="checkbox"
-                  aria-label="Select every visit shown"
-                  checked={allVisibleSelected}
-                  onChange={() =>
+              {/* The checkbox column is gone: the row itself is the target
+                  now. This keeps the select-all, which has no row to live in,
+                  as a narrow text button in the same place. */}
+              <th className="w-10 px-3 py-3 print:hidden">
+                <button
+                  type="button"
+                  aria-label={allVisibleSelected ? "Clear the selection" : "Select every visit shown"}
+                  title={allVisibleSelected ? "Clear the selection" : "Select every visit shown"}
+                  onClick={() =>
                     setSelected(allVisibleSelected ? new Set() : new Set(filtered.map((r) => r.key)))
                   }
-                  className="h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
-                />
+                  className="rounded-md border border-line px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
+                >
+                  {allVisibleSelected ? "None" : "All"}
+                </button>
               </th>
               <SortableTh label="🐕 Dog" sortKey="dog_name" sort={sort} onSort={toggleSort} />
               <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
@@ -1920,6 +1925,7 @@ function RecordsInner() {
               }
 
               const stillIn = isStillIn(r);
+              const isSelected = selected.has(r.key);
               return (
                 <Fragment key={r.key}>
                   {groupHeader}
@@ -1929,20 +1935,55 @@ function RecordsInner() {
                       was top-aligned while everything else centred, so a row
                       that grew — a bath size, a second package dropdown —
                       pulled its neighbours out of line with the row above. */}
+                  {/* The whole row selects. A checkbox is a small target on a
+                      tablet at the front desk, and this row is already the
+                      thing being pointed at.
+
+                      Clicks on anything interactive inside are left alone —
+                      the dog link, the note and meal buttons, every input and
+                      dropdown in the inline editor. Without that check,
+                      opening a dog profile or typing a time would also toggle
+                      the selection underneath it. */}
                   <tr
-                    className={`border-b border-line-soft align-top last:border-0 print:border-b-0 ${
-                      stillIn
-                        ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 dark:bg-emerald-400/10 print:bg-transparent"
-                        : "border-l-4 border-l-transparent"
+                    aria-selected={isSelected}
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest("a, button, input, select, textarea, label")) return;
+                      toggleSelected(r.key);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleSelected(r.key);
+                      }
+                    }}
+                    tabIndex={0}
+                    className={`cursor-pointer border-b border-line-soft align-top outline-none transition-colors last:border-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-300 print:border-b-0 print:cursor-auto ${
+                      isSelected
+                        ? // Selection wins over the still-here tint, because it
+                          // is the state being acted on. The left edge stays
+                          // green so a selected dog does not stop looking like
+                          // one that is still on site.
+                          `border-l-4 bg-accent-100/70 dark:bg-accent-400/20 print:bg-transparent ${
+                            stillIn ? "border-l-emerald-400" : "border-l-accent-400"
+                          }`
+                        : stillIn
+                          ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 hover:bg-emerald-50/70 dark:bg-emerald-400/10 print:bg-transparent"
+                          : "border-l-4 border-l-transparent hover:bg-surface-2"
                     }`}>
-                    <td className="w-8 px-3 py-3 print:hidden">
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${r.dog_name}'s visit`}
-                        checked={selected.has(r.key)}
-                        onChange={() => toggleSelected(r.key)}
-                        className="h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
-                      />
+                    <td className="w-10 px-3 py-3 print:hidden">
+                      {/* A tick rather than a control: it reports the state
+                          the row is already showing, and is not the thing you
+                          aim at. */}
+                      <span
+                        aria-hidden
+                        className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] font-bold transition ${
+                          isSelected
+                            ? "border-accent-500 bg-accent-500 text-accent-ink"
+                            : "border-line text-transparent"
+                        }`}>
+                        ✓
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="inline-flex items-center gap-1.5">
