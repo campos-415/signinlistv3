@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ChangeEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import BusyButton from "@/components/BusyButton";
 import SignaturePad, { SignaturePadHandle } from "@/components/SignaturePad";
 import DateField from "@/components/DateField";
 import { Field, YesNo, inputClass } from "@/components/FormBits";
@@ -451,14 +452,12 @@ function EnrollmentFormInner({
 
       {!hideSubmit && (
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={submitting}
-          className="rounded-xl bg-accent-500 px-6 py-3 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
-        >
-          {submitting ? "Sending…" : "Submit for review"}
-        </button>
+        {/* The enrollment carries a photo, a signature and a vaccination
+            record, so this is the slowest submit in the app and the one most
+            likely to be pressed twice. */}
+        <BusyButton busy={submitting} busyLabel="Sending your enrollment…" onClick={handleSubmit}>
+          Submit for review
+        </BusyButton>
         <p className="text-xs text-ink-3">
           We&apos;ll review it and confirm by email — you can&apos;t check in until then.
         </p>

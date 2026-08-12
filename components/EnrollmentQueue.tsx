@@ -282,6 +282,9 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
         to: compose.to.trim(),
         subject: compose.subject,
         body: compose.body,
+        // A decline does not arrive in celebration green with a party
+        // motif on it. See OCCASIONS in lib/emailTemplate.ts.
+        kind: compose.outcome === "approved" ? "enrollment.approved" : "enrollment.declined",
       });
       if (result.skipped) {
         setError(

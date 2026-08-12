@@ -195,6 +195,7 @@ export async function sendBoardingAcknowledgement(draft: BoardingRequestDraft): 
     to: draft.email.trim(),
     subject: renderTemplate(email.boardingAckSubject, vars),
     body: renderTemplate(email.boardingAckBody, vars),
+    kind: "boarding.requested",
   });
   if (result.error) console.error("Boarding acknowledgement email failed:", result.error);
 }

@@ -546,6 +546,7 @@ export async function sendAcknowledgement(draft: EnrollmentDraft): Promise<void>
     to: draft.owner.email.trim(),
     subject: renderTemplate(email.ackSubject, vars),
     body: renderTemplate(email.ackBody, vars),
+    kind: "enrollment.received",
   });
   if (result.error) console.error("Acknowledgement email failed:", result.error);
 }
@@ -977,6 +978,7 @@ export async function sendDetailsRequest(phone: string): Promise<DetailsRequestR
       to,
       subject: renderTemplate(email.detailsRequestSubject, vars),
       body: renderTemplate(email.detailsRequestBody, vars),
+      kind: "enrollment.details",
     });
     if (result.skipped) return { status: "not-configured", to };
     if (result.error) return { status: "failed", to, detail: result.error };

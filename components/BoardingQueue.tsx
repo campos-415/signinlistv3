@@ -277,6 +277,7 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
         to: compose.to.trim(),
         subject: compose.subject,
         body: compose.body,
+        kind: compose.outcome === "approved" ? "boarding.confirmed" : "boarding.declined",
       });
       if (result.skipped) {
         setError(

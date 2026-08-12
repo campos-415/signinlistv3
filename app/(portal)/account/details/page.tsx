@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import BusyButton from "@/components/BusyButton";
 import CustomerGate from "@/components/CustomerGate";
 import { Field, inputClass } from "@/components/FormBits";
 import { formatPhoneInput } from "@/lib/phone";
@@ -207,13 +208,9 @@ function Details({ household }: { household: Household }) {
       )}
 
       <div className="flex items-center gap-3">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </button>
+        <BusyButton busy={saving} busyLabel="Saving…" onClick={save} className="py-2.5">
+          Save changes
+        </BusyButton>
         {saved && <span className="text-xs font-medium text-emerald-700">Saved.</span>}
       </div>
     </div>

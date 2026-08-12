@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import BusyButton from "@/components/BusyButton";
 import Panel from "@/components/Panel";
 import useRole from "@/components/useRole";
 import { isOwnerAdmin } from "@/lib/roles";
@@ -108,6 +109,7 @@ export default function CustomerAccountPanel({
         to: email,
         subject: renderTemplate(settings.email.portalInviteSubject, vars),
         body: renderTemplate(settings.email.portalInviteBody, vars),
+        kind: "account.invite",
       });
 
       if (result.sent) {
@@ -183,13 +185,15 @@ export default function CustomerAccountPanel({
           {/* Hidden rather than disabled for anybody below owner, the same
               as every other owner-only action in the app. */}
           {canUnbind && (
-            <button
+            <BusyButton
+              busy={busy}
+              busyLabel="Unbinding…"
               onClick={unbind}
-              disabled={busy}
-              className="rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-3 transition hover:border-rose-300 hover:text-rose-500 disabled:opacity-60"
+              variant="secondary"
+              className="px-3.5 py-2 text-xs hover:border-rose-300 hover:text-rose-500"
             >
               Unbind this account
-            </button>
+            </BusyButton>
           )}
         </div>
       ) : (
@@ -203,17 +207,14 @@ export default function CustomerAccountPanel({
           )}
 
           {hasEmail ? (
-            <button
+            <BusyButton
+              busy={busy}
+              busyLabel="Sending the invitation…"
               onClick={invite}
-              disabled={busy}
-              className="rounded-xl bg-accent-500 px-4 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
+              className="px-4 py-2.5"
             >
-              {busy
-                ? "Sending…"
-                : state.hasInvite
-                  ? "Send a new invitation"
-                  : `Invite ${email}`}
-            </button>
+              {state.hasInvite ? "Send a new invitation" : `Invite ${email}`}
+            </BusyButton>
           ) : (
             <p className="rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800">
               There is no email address on file for this household, and the invitation has nowhere

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import BusyButton from "@/components/BusyButton";
 import { useSettings } from "@/components/SettingsProvider";
 import { claimInvite, forgetCachedHousehold } from "@/lib/customer";
 
@@ -31,7 +32,6 @@ export default function ClaimPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [confirmNeeded, setConfirmNeeded] = useState(false);
 
   // Already signed in — either they came back to the link, or they just set
   // a password and Supabase handed back a session. Either way the only thing
@@ -64,49 +64,64 @@ export default function ClaimPage() {
     };
   }, [finish]);
 
+  // Choosing a password is the whole of what this asks.
+  //
+  // There is no email field, and that is a security property rather than a
+  // tidier form. The address comes off the owner record on the server - see
+  // app/api/claim/route.ts - so an account can never be created under an
+  // address the business does not already hold, and the person opening the
+  // link cannot substitute their own.
   async function createAccount() {
-    if (!email.trim() || password.length < 8) {
-      setError("Enter your email address and choose a password of at least 8 characters.");
+    if (password.length < 8) {
+      setError("Choose a password of at least 8 characters.");
       return;
     }
     setBusy(true);
     setError("");
-    const supabase = getSupabase();
-    const { data, error: signUpError } = await supabase.auth.signUp({
-      email: email.trim().toLowerCase(),
-      password,
-    });
-    if (signUpError) {
-      setBusy(false);
-      const said = signUpError.message.toLowerCase();
-      if (said.includes("already")) {
-        setError("There is already an account for that address. Sign in below instead.");
-      } else if (said.includes("signup") || said.includes("not allowed") || said.includes("disabled")) {
-        // Supabase Auth refused before any of this reached the database.
-        // Worth naming exactly, because the generic wording sent somebody to
-        // check the email address for an hour when the address was fine.
-        setError(
-          "Accounts are switched off for this site at the moment, so we cannot finish setting yours up. That is at our end, not yours — please let us know and we will sort it out."
-        );
-        console.error(
-          "Supabase Auth is refusing sign-ups. Either enable them, or switch the invite flow to inviteUserByEmail so the account is created server-side.",
-          signUpError
-        );
-      } else {
-        setError("We could not set that up just now. Please let us know and we will sort it out.");
+    try {
+      const res = await fetch("/api/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, password }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        signInInstead?: boolean;
+        signInYourself?: boolean;
+        access_token?: string;
+        refresh_token?: string;
+      };
+
+      if (!res.ok || !body.ok) {
+        setBusy(false);
+        setError(body.error ?? "We could not set that up just now.");
+        // They already have an account, so the password box becomes a
+        // sign-in box rather than a dead end.
+        if (body.signInInstead) setMode("signin");
+        return;
       }
-      return;
-    }
-    // With email confirmations switched on there is no session yet, so the
-    // claim cannot run until they have clicked through. Saying so is better
-    // than a spinner that never resolves.
-    if (!data.session) {
+
+      if (body.access_token && body.refresh_token) {
+        await getSupabase().auth.setSession({
+          access_token: body.access_token,
+          refresh_token: body.refresh_token,
+        });
+        forgetCachedHousehold();
+        router.replace("/account");
+        return;
+      }
+
+      // Account made and household bound, but the session did not come
+      // back. Nothing is broken; they just sign in.
       setBusy(false);
-      setConfirmNeeded(true);
-      return;
+      setMode("signin");
+      setError("Your account is ready — sign in with the password you just chose.");
+    } catch (e) {
+      console.error("Setting the account up failed:", e);
+      setBusy(false);
+      setError("We could not reach the server. Check your connection and try again.");
     }
-    await finish();
-    setBusy(false);
   }
 
   async function signIn() {
@@ -137,18 +152,10 @@ export default function ClaimPage() {
     );
   }
 
-  if (confirmNeeded) {
-    return (
-      <div className="mx-auto mt-16 max-w-sm px-1">
-        <h1 className="font-display text-xl font-semibold text-ink">Almost there</h1>
-        <p className="mt-2 text-sm leading-relaxed text-ink-2">
-          We have sent a message to <strong>{email}</strong> to check the address is yours. Click
-          the link in it, then come back to this page and your account will be ready.
-        </p>
-      </div>
-    );
-  }
-
+  // There is no "check your email to confirm" step any more. The invitation
+  // reaching them WAS the confirmation - it only arrived at the address on
+  // file - so the server marks the address confirmed when it creates the
+  // account, and they go straight in.
   return (
     <div className="mx-auto mt-10 flex max-w-sm flex-col gap-3 px-1 sm:mt-16">
       <h1 className="font-display text-xl font-semibold text-ink">
@@ -160,16 +167,27 @@ export default function ClaimPage() {
           : "Sign in and we will link this invitation to your account."}
       </p>
 
-      <input
-        type="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="Email address"
-        autoComplete="email"
-        autoCapitalize="none"
-        spellCheck={false}
-        className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
-      />
+      {mode === "create" ? (
+        // No email field, on purpose. We already know the address — this
+        // link was sent to it — and letting somebody type a different one is
+        // how an account ends up under an address we do not hold.
+        <p className="rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3 text-xs text-ink-2">
+          Your account will use the email address we already have for you — the one this link was
+          sent to. If that is the wrong address, give us a ring and we will change it before you
+          set up.
+        </p>
+      ) : (
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Email address"
+          autoComplete="email"
+          autoCapitalize="none"
+          spellCheck={false}
+          className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
+        />
+      )}
       <input
         type="password"
         value={password}
@@ -183,13 +201,14 @@ export default function ClaimPage() {
         <p className="-mt-1 text-[11px] text-ink-3">At least 8 characters.</p>
       )}
 
-      <button
+      <BusyButton
+        busy={busy}
+        busyLabel={mode === "create" ? "Setting your account up…" : "Signing in…"}
         onClick={mode === "create" ? createAccount : signIn}
-        disabled={busy}
-        className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
+        className="py-2.5"
       >
-        {busy ? "Working…" : mode === "create" ? "Create my account" : "Sign in"}
-      </button>
+        {mode === "create" ? "Create my account" : "Sign in"}
+      </BusyButton>
       {error && <p className="text-xs font-medium text-rose-500">{error}</p>}
 
       <button

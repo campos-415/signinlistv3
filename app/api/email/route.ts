@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { EmailBrand, EmailKind, renderEmailHtml } from "@/lib/emailTemplate";
 
 // -----------------------------------------------------------------------
 // Sends client-facing email — the enrollment acknowledgement, and whatever
@@ -29,6 +30,14 @@ interface EmailPayload {
   fromName?: string;
   fromAddress?: string;
   replyTo?: string;
+  // Which message this is, so it can carry the right motif and heading.
+  // Absent means "generic", which is the old plain look and is what a test
+  // send from the settings screen gets.
+  kind?: EmailKind;
+  // The logo, colour and contact details, passed from the client because
+  // that is where the settings cache lives. The route holds no state of its
+  // own beyond the provider key.
+  brand?: EmailBrand;
 }
 
 function escapeHtml(s: string): string {
@@ -139,10 +148,17 @@ export async function POST(req: NextRequest) {
         from,
         to: [to],
         subject,
+        // Both parts, always. The text version is what a watch, a screen
+        // reader and a plain-text client show, and it is the one staff
+        // actually wrote — the HTML is a presentation of it, not a
+        // replacement for it.
         text: body,
-        html: `<div style="font:14px/1.6 -apple-system,Segoe UI,sans-serif;color:#1e1d1a">${escapeHtml(
-          body
-        ).replace(/\n/g, "<br>")}</div>`,
+        html: renderEmailHtml({
+          kind: payload.kind ?? "generic",
+          subject,
+          body,
+          brand: payload.brand ?? { name: payload.fromName ?? "" },
+        }),
         ...(payload.replyTo ? { reply_to: payload.replyTo } : {}),
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),

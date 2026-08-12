@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import BusyButton from "@/components/BusyButton";
 import DateField from "@/components/DateField";
 import { Field, YesNo, inputClass } from "@/components/FormBits";
 import { formatPhoneInput } from "@/lib/phone";
@@ -613,18 +614,13 @@ export default function BoardingRequestForm({
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
+        <BusyButton
+          busy={submitting}
+          busyLabel="Sending your request…"
           onClick={handleSubmit}
-          disabled={submitting}
-          className="rounded-xl bg-accent-500 px-6 py-3 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
         >
-          {submitting
-            ? "Sending…"
-            : enrollingHere
-              ? "Send enrollment & request dates"
-              : "Request these dates"}
-        </button>
+          {enrollingHere ? "Send enrollment & request dates" : "Request these dates"}
+        </BusyButton>
         <p className="text-xs text-ink-3">
           We&apos;ll email you to confirm — nothing is held until then.
         </p>

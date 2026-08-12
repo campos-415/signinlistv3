@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import BusyButton from "@/components/BusyButton";
 import { useSettings } from "@/components/SettingsProvider";
 import useCustomer from "@/components/useCustomer";
 import { Household } from "@/lib/customer";
@@ -125,13 +126,9 @@ function SignInPanel({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
         onKeyDown={(e) => e.key === "Enter" && submit()}
         className="rounded-xl border border-line bg-surface px-4 py-2.5 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
       />
-      <button
-        onClick={submit}
-        disabled={busy}
-        className="rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600 disabled:opacity-60"
-      >
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
+      <BusyButton busy={busy} busyLabel="Signing in…" onClick={submit} className="py-2.5">
+        Sign in
+      </BusyButton>
       {error && <p className="text-xs font-medium text-rose-500">{error}</p>}
 
       <button

@@ -729,6 +729,119 @@ begin
 end
 $fn$;
 
+-- ---------------------------------------------------------------------
+-- 8b. The server half of the claim.
+--
+-- claim_owner_invite above binds an account that already exists and is
+-- already signed in. These two are for the case that account does NOT exist
+-- yet, which is the normal one: somebody opening the link for the first
+-- time.
+--
+-- They exist because of a hole worth naming. The first version of the claim
+-- page asked the person to type an email address and called signUp with it
+-- in the browser. Nothing stopped them typing a different address from the
+-- one the invitation was sent to - so a forwarded link could be claimed by
+-- whoever it was forwarded to, under their own address, and the whole
+-- argument for this design (the token went to the address on file, so
+-- holding it proves control of that address) quietly stopped being true.
+--
+-- The address is therefore never supplied by the browser and never shown to
+-- it. The server reads it off the owner record, creates the account with it,
+-- and binds the household - and if the binding fails, the account it just
+-- created is removed rather than left behind with no household.
+--
+-- Only the service role may call these. They are reachable exclusively from
+-- app/api/claim/route.ts, which holds the secret key.
+-- ---------------------------------------------------------------------
+
+create or replace function public.invite_email_for_token(p_token uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $fn$
+  select o.email
+  from public.owners o
+  where o.invite_token = p_token
+    and o.claimed_at is null
+    and o.invited_at is not null
+    and o.invited_at >= now() - make_interval(days => public.owner_invite_days())
+$fn$;
+
+create or replace function public.bind_owner_account(p_token uuid, p_user_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  o public.owners%rowtype;
+begin
+  select * into o
+  from public.owners
+  where invite_token = p_token and claimed_at is null;
+
+  if not found then
+    raise exception 'That invitation is not valid any more.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if o.invited_at is null or o.invited_at < now() - make_interval(days => public.owner_invite_days()) then
+    raise exception 'That invitation is not valid any more.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if exists (select 1 from public.owners where user_id = p_user_id) then
+    raise exception 'That account already belongs to a household.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if exists (select 1 from public.staff_roles where user_id = p_user_id) then
+    raise exception 'That is a staff account. Client accounts are separate.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  update public.owners
+  set user_id = p_user_id, claimed_at = now(), invite_token = null
+  where id = o.id;
+
+  -- Written straight to the log rather than through audit_write, which
+  -- needs a session to attribute the entry to and there is none here: the
+  -- route is holding the secret key, not a token. The actor is the account
+  -- that was just created, which is the honest answer to who claimed it.
+  insert into public.audit_log (
+    actor_id, actor_email, actor_role, action, entity, entity_id, summary, detail
+  )
+  values (
+    p_user_id,
+    (select u.email from auth.users u where u.id = p_user_id),
+    'customer',
+    'customer.claimed',
+    'owners',
+    o.id::text,
+    'A client set up their account from the invitation link',
+    jsonb_build_object('household', o.phone)
+  );
+
+  return o.id;
+end
+$fn$;
+
+do $servergrants$
+declare
+  fn text;
+begin
+  foreach fn in array array[
+    'public.invite_email_for_token(uuid)',
+    'public.bind_owner_account(uuid, uuid)'
+  ] loop
+    execute format('revoke execute on function %s from public, anon, authenticated', fn);
+    execute format('grant execute on function %s to service_role', fn);
+  end loop;
+end
+$servergrants$;
+
 create or replace function public.revoke_owner_claim(p_owner_id uuid)
 returns void
 language plpgsql

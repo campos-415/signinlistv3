@@ -3,6 +3,7 @@
 // deploy; the provider key stays server-side in app/api/email/route.ts.
 
 import { getSettings } from "@/lib/settings";
+import type { EmailKind } from "@/lib/emailTemplate";
 
 export interface SendResult {
   sent: boolean;
@@ -25,6 +26,10 @@ export async function sendEmail(input: {
   to: string;
   subject: string;
   body: string;
+  // Which message this is. Decides the motif and heading the branded
+  // template puts above the text — see lib/emailTemplate.ts. Omitted means
+  // the plain treatment, which is what a test send should get.
+  kind?: EmailKind;
   // Overrides the saved sender. Only the settings page uses this, so a
   // test send reflects the addresses being edited rather than the ones
   // last saved — otherwise "send a test" would quietly test the old value.
@@ -41,6 +46,19 @@ export async function sendEmail(input: {
         fromName: from?.fromName || email.fromName || business.name,
         fromAddress: from?.fromAddress || email.fromAddress,
         replyTo: from?.replyTo || email.replyTo || undefined,
+        // Assembled here rather than in the route so there is one source of
+        // branding, and it is the same settings object the whole app reads.
+        brand: {
+          name: business.name,
+          // Already a public https URL: the settings screen uploads the
+          // logo to the site-photos bucket. That matters more than it looks
+          // — a base64 logo is stripped by Gmail and would arrive broken.
+          logoUrl: business.logoData,
+          accentColor: business.accentColor,
+          phone: business.phone,
+          address: [business.street, business.city, business.state].filter(Boolean).join(", "),
+          website: business.domain,
+        },
       }),
     });
     const data = (await res.json()) as { sent?: boolean; skipped?: boolean; error?: string };

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
+import { BusyNote } from "@/components/BusyButton";
 import CustomerGate from "@/components/CustomerGate";
 import { HouseholdData, loadHouseholdData, uploadVaccinationRecord } from "@/lib/customer";
 import { fileToRecordJpeg } from "@/lib/image";
@@ -208,7 +209,14 @@ function Uploader({
       <p className="mt-1.5 text-[11px] text-ink-3">
         A photo or a PDF is fine. We will read the dates off it and update the account.
       </p>
-      {busy && <p className="mt-1.5 text-[11px] text-ink-3">Sending…</p>}
+      {/* A vaccination record goes through a resize, and a PDF pulls down
+          pdf.js first, so this is a real wait on a phone. The spinner is the
+          part that says so. */}
+      {busy && (
+        <p className="mt-1.5">
+          <BusyNote>Reading the file and sending it…</BusyNote>
+        </p>
+      )}
       {done && (
         <p className="mt-1.5 text-[11px] font-medium text-emerald-700">
           Got it — thank you. We will update the dates shortly.
