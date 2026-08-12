@@ -98,7 +98,16 @@ declare
     array['owners',            'E',   'E',   'E',   'M' ],
     array['signins',           'EK',  'EK',  'E',   'M' ],
     array['boardings',         'EK',  'E',   'E',   'M' ],
-    array['packages',          'EK',  'M',   'EK',  'M' ],
+    -- Selling is employee work. A client asks for a ten-day block at the
+    -- counter and the person at the counter is who sells it; needing a
+    -- manager for a routine transaction means either the sale does not
+    -- happen or the manager password gets shared, and the second is worse
+    -- than the thing this was guarding against. It also matched nothing
+    -- else: an employee could already take a payment, which is the same
+    -- act. Every sale is written to the audit log with who made it, which
+    -- is the control that actually catches misuse — blocking the till does
+    -- not. Deleting one stays with a manager.
+    array['packages',          'EK',  'E',   'EK',  'M' ],
     array['package_uses',      'EK',  'EK',  'EK',  'E' ],
     array['payments',          'EK',  'EK',  'M',   'OA'],
     array['vaccinations',      'E',   'E',   'E',   'M' ],

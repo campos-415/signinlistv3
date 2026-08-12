@@ -374,9 +374,6 @@ function Packages() {
         </p>
       </div>
 
-      {/* Selling a package is an insert, which the policy matrix puts at
-          manager. An employee is not shown a form whose save would fail. */}
-      {mayManage && (
       <div className="mb-8 rounded-2xl border border-line bg-surface p-5 shadow-card">
         <p className="mb-4 text-sm font-medium text-ink-2">Sell a package</p>
 
@@ -579,7 +576,6 @@ function Packages() {
         </button>
         {error && <p className="mt-3 text-xs font-medium text-rose-500">{error}</p>}
       </div>
-      )}
 
       {loading ? (
         <p className="text-sm text-ink-3">Loading…</p>
