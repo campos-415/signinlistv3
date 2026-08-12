@@ -48,7 +48,11 @@ export async function loadPhoneContext(phone: string): Promise<PhoneContext> {
     // Not date-limited, for the multi-day boarding reason above.
     supabase
       .from("signins")
-      .select("id, dog_name, dog_id, action, service_type, addons, bath_size, price, created_at")
+      .select(
+        // meet_greet_result so the kiosk can tell a dog that has passed its
+        // assessment from one still waiting for it.
+        "id, dog_name, dog_id, action, service_type, addons, bath_size, price, created_at, meet_greet_result"
+      )
       .eq("phone", trimmed)
       .order("created_at", { ascending: true })
       .limit(300),

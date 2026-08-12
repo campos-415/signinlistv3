@@ -210,7 +210,17 @@ export default function KioskForm() {
       if (open) return open.serviceType;
     }
     if (action === "drop_off" && activeBoardingFor(dog)) return "boarding";
+    // A dog on file that has never passed a meet and greet cannot do a normal
+    // day yet. Approving the enrollment is what created the profile; the
+    // assessment is what decides whether the dog joins a playgroup.
+    if (action === "drop_off" && needsMeetGreet(dog)) return "meet_greet";
     return service;
+  }
+
+  // Has this dog ever passed an assessment?
+  function needsMeetGreet(dog: Dog): boolean {
+    if (!dog.id) return false;
+    return !history.some((h) => h.dog_id === dog.id && h.meet_greet_result === "pass");
   }
 
   // Whether a package covers this dog's visit right now — full daycare days
@@ -539,6 +549,25 @@ export default function KioskForm() {
 
   const digits = phone.replace(/\D/g, "");
   const phoneEntered = digits.length >= 7;
+  // Every dog being dropped off is still waiting for its assessment. A mixed
+  // household keeps the full choice — one dog's first visit should not stop
+  // its housemate coming in for daycare.
+  const allNeedMeetGreet =
+    action === "drop_off" &&
+    selectedDogs.length > 0 &&
+    selectedDogs.every((d) => needsMeetGreet(d));
+
+  // Birthdays today, compared on month and day so it fires every year.
+  const birthdayDogs = selectedDogs.filter((d) => {
+    const born = (d.birthdate ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(born)) return false;
+    const now = new Date();
+    return (
+      born.slice(5, 7) === String(now.getMonth() + 1).padStart(2, "0") &&
+      born.slice(8, 10) === String(now.getDate()).padStart(2, "0")
+    );
+  });
+
   const showNoProfile = phoneEntered && dogsChecked && !dogsLoading && matches.length === 0;
   const showDogPicker = matches.length > 1;
   const now = new Date();
@@ -1151,8 +1180,26 @@ export default function KioskForm() {
                           </span>
                         )}
                       </label>
+                      {birthdayDogs.length > 0 && (
+                        <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
+                          🎂 Happy birthday{" "}
+                          <span className="font-semibold">
+                            {birthdayDogs.map((d) => d.dog_name).join(" and ")}
+                          </span>
+                          ! Take 10% off your next package — just mention it at the desk.
+                        </p>
+                      )}
+                      {allNeedMeetGreet && (
+                        <p className="mb-3 rounded-xl bg-violet-50 px-3 py-2 text-xs leading-relaxed text-violet-900">
+                          ✨ First visit — this is a meet &amp; greet. Once it has gone well,
+                          {selectedDogs.length === 1 ? " your dog" : " your dogs"} can book daycare and
+                          boarding.
+                        </p>
+                      )}
                       <div className="mb-4 flex flex-wrap gap-2">
-                        {SERVICE_TYPES.map((s) => (
+                        {SERVICE_TYPES.filter(
+                          (s) => !allNeedMeetGreet || s.key === "meet_greet"
+                        ).map((s) => (
                           <button
                             key={s.key}
                             onClick={() => setService(s.key)}
