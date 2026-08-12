@@ -4,6 +4,7 @@
 // out where the money is. Balances are per PHONE, because one household pays
 // one bill covering every dog on the number (see lib/billing.ts).
 
+import { getSupabase } from "@/lib/supabase";
 import { fetchAll } from "@/lib/fetchAll";
 
 /** Only the ordering helper is needed off the query builder. */
@@ -61,6 +62,115 @@ export async function loadReportData(): Promise<ReportData> {
     vaccinations,
     walkLogs,
   };
+}
+
+// ---------------------------------------------------------------------
+// Exporting, which is a different question from reading.
+//
+// Requirement 3 says an employee must not be able to export the whole
+// customer database without specific authorisation. That is enforced in the
+// database, not here: both functions below call into
+// security-exports-migration.sql, which refuses anybody below manager and
+// writes a line in the audit log naming the person, the dataset and the
+// number of rows. Hiding the buttons in the interface is a courtesy on top,
+// so nobody is offered something that will fail.
+//
+// Two paths, because there are two kinds of export:
+//
+//   exportDataset  a table, fetched through the gate. The function is the
+//                  authorisation for reading it in bulk.
+//   recordExport   the three exports composed in the browser out of figures
+//                  already on screen - accounts and ageing, outstanding
+//                  charges, the dog directory. Their arithmetic lives in
+//                  lib/billing.ts and above, and reimplementing it in SQL
+//                  would leave two versions of the same sums to drift apart.
+//                  So this authorises and records the act instead.
+// ---------------------------------------------------------------------
+
+/** The datasets the database will hand over in bulk. */
+export type ExportDataset =
+  | "dogs"
+  | "owners"
+  | "visits"
+  | "boardings"
+  | "packages"
+  | "payments"
+  | "vaccinations"
+  | "walk_logs";
+
+/**
+ * Thrown when the database refuses an export. The message comes from the
+ * database and is already written for a person to read, so it is shown as
+ * it arrives rather than replaced with something vaguer.
+ */
+export class ExportRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExportRefused";
+  }
+}
+
+/**
+ * How many rows one request can actually carry.
+ *
+ * PostgREST caps a response at 1,000 rows whatever is asked for, and the cap
+ * applies to a function returning a set just as it does to a table. Asking for
+ * more does not fail, it silently returns a thousand — so an export of a 2,640
+ * row table produced a spreadsheet that looked complete and was not. The rows
+ * are fetched a page at a time for that reason and for no other.
+ */
+const EXPORT_PAGE = 1000;
+
+/**
+ * A safety valve, not a business limit. Nothing here is near it: the largest
+ * table in the app is a few thousand rows. It exists so that a bug which stops
+ * the pages from advancing cannot spin forever in somebody's browser.
+ */
+const EXPORT_MAX_ROWS = 250_000;
+
+export async function exportDataset(kind: ExportDataset): Promise<Record<string, unknown>[]> {
+  const supabase = getSupabase();
+  const rows: Record<string, unknown>[] = [];
+
+  for (let offset = 0; ; offset += EXPORT_PAGE) {
+    const { data, error } = await supabase.rpc("export_dataset", {
+      p_dataset: kind,
+      p_offset: offset,
+      p_limit: EXPORT_PAGE,
+    });
+    if (error) throw new ExportRefused(exportMessage(error.message));
+
+    const page = (data ?? []) as Record<string, unknown>[];
+    rows.push(...page);
+
+    // A short page is the end. Asking again would cost a request to be told
+    // the same thing.
+    if (page.length < EXPORT_PAGE) break;
+
+    if (rows.length >= EXPORT_MAX_ROWS) {
+      console.error(`Export of ${kind} stopped at ${rows.length} rows, which should not happen.`);
+      break;
+    }
+  }
+
+  return rows;
+}
+
+export async function recordExport(kind: string, rows: number): Promise<void> {
+  const { error } = await getSupabase().rpc("record_export", {
+    p_dataset: kind,
+    p_rows: rows,
+  });
+  if (error) throw new ExportRefused(exportMessage(error.message));
+}
+
+function exportMessage(raw: string): string {
+  // Before the migration has been run the function does not exist, and the
+  // PostgREST message for that is not one to show a member of staff.
+  if (/could not find the function|does not exist|schema cache/i.test(raw)) {
+    return "Exports are not set up on this database yet. Run the security migrations first.";
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------

@@ -11,6 +11,8 @@
 // token itself.
 
 import { getSupabase } from "@/lib/supabase";
+import { logSignIn, logSignOut } from "@/lib/audit";
+import { forgetCachedRole } from "@/lib/roles";
 import type { Session, User } from "@supabase/supabase-js";
 
 // Supabase identifies users by email. Staff would rather type "frontdesk"
@@ -43,6 +45,22 @@ export async function signIn(usernameOrEmail: string, password: string): Promise
       // which usernames exist.
       return { ok: false, error: "That username and password don't match." };
     }
+
+    // A different account may have been signed in a moment ago, and the
+    // cached role belongs to that one.
+    forgetCachedRole();
+
+    // Requirement 9 asks for a record of admin sign-ins. Written after the
+    // session exists, because the database attributes the entry to the
+    // session rather than believing what the browser says about who it is.
+    //
+    // Only successful sign-ins are recorded here, and a failed one cannot
+    // be: there is no session to attribute it to, and letting a signed-out
+    // caller write to the log would hand anybody on the internet a way to
+    // fill it with noise. Supabase Auth keeps its own record of every
+    // attempt including the failures, in auth.audit_log_entries.
+    await logSignIn();
+
     return { ok: true };
   } catch (e) {
     console.error("Sign-in failed:", e);
@@ -52,6 +70,10 @@ export async function signIn(usernameOrEmail: string, password: string): Promise
 
 export async function signOut(): Promise<void> {
   try {
+    // Before, not after: once the session is gone there is nobody for the
+    // database to attribute the entry to and the write is refused.
+    await logSignOut();
+    forgetCachedRole();
     await getSupabase().auth.signOut();
   } catch (e) {
     console.error("Sign-out failed:", e);
