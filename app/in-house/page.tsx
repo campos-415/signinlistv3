@@ -1205,17 +1205,45 @@ function RecordsInner() {
   // width to say "none" all day. The row shows a chip only once a meal is
   // set, and the detail opens underneath.
   async function saveMeals(row: MergedRow, meals: MealKey[], given: MealKey[]) {
-    if (!row.drop_off_id) return;
+    if (!row.drop_off_id) {
+      // A row built from a pick-up whose drop-off is not in the loaded window
+      // has nowhere to write meals to. It used to return in silence, so the
+      // chips simply did not respond and there was nothing to explain why.
+      setError(
+        `${row.dog_name}'s drop-off is not on this day, so meals cannot be set from here — open the day they arrived.`
+      );
+      return;
+    }
     setNoteBusy(true);
+    // A meal cannot be given if it is no longer due — unticking breakfast
+    // must not leave it counted as fed.
+    const settled = given.filter((g) => meals.includes(g));
     try {
       const { error: err } = await getSupabase()
         .from("signins")
-        // A meal cannot be given if it is no longer due — unticking breakfast
-        // must not leave it counted as fed.
-        .update({ meals, meals_given: given.filter((g) => meals.includes(g)) })
+        .update({ meals, meals_given: settled })
         .eq("id", row.drop_off_id);
       if (err) throw err;
-      loadAll();
+
+      // Patched in place rather than reloaded, and this is the fix for a real
+      // glitch rather than a tidy-up.
+      //
+      // loadAll() replaces the sign-ins, dogs, packages, boardings and uses,
+      // which rebuilds every merged row and re-sorts the table. Every other
+      // inline editor either closes first — saveStaffNote sets noteKey to
+      // null before reloading — or patches state the way this now does. Meals
+      // was the one place a full reload happened with the expanded editor
+      // still mounted, an autoFocus textarea inside it, and its row being
+      // moved underneath by the re-sort. The result was a mangled panel:
+      // chips duplicated, the Save button rendered without its label.
+      //
+      // It is also just disproportionate. Tapping "lunch" should not refetch
+      // seven hundred dogs.
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === row.drop_off_id ? { ...r, meals, meals_given: settled } : r
+        )
+      );
     } catch (e) {
       console.error("Saving meals failed:", e);
       setError("Could not save that — if this is a new install, run signin-meals-migration.sql.");
@@ -1246,7 +1274,14 @@ function RecordsInner() {
         .eq("id", row.drop_off_id);
       if (err) throw err;
       setNoteKey(null);
-      loadAll();
+      // Same reasoning as saveMeals: one column on one row does not need the
+      // whole day refetched. This one closed the editor first so it never
+      // showed the glitch, but it paid for a full reload all the same.
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === row.drop_off_id ? { ...r, staff_note: text.trim() || null } : r
+        )
+      );
     } catch (e) {
       console.error("Saving the note failed:", e);
       setError(
