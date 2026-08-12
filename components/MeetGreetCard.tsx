@@ -47,8 +47,9 @@ export default function MeetGreetCard({
           holding a lead, so it is three short lines, not a policy. */}
       <p className="mt-1 text-xs leading-relaxed text-violet-900">
         {dog.dog_name} will spend about two hours with us while we see how they
-        settle in with the group. Stay if you like, or pop back — we will talk
-        you through how it went either way.
+        settle in with the group. Leave them with us and come back at the end —
+        we will talk you through how it went. If it goes well, just ask and
+        they can stay on for the rest of the day.
       </p>
 
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-violet-800">
