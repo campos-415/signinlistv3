@@ -66,6 +66,7 @@ function EnrollmentFormInner({
   hideSubmit = false,
   onDogNamesChange,
   onSubmitted,
+  detailsOnFile = false,
 }: {
   // Where the submission came from, so staff reviewing the queue know
   // whether someone stood at the front desk or filled it in at home.
@@ -89,6 +90,10 @@ function EnrollmentFormInner({
   // Lets a host page react to a successful submission and keep its own
   // chrome, instead of this form taking over with its confirmation screen.
   onSubmitted?: () => void;
+  // The household has already answered stage two — an existing client
+  // adding another dog. Files the submission complete, so nothing later
+  // asks them to finish an enrollment that is finished.
+  detailsOnFile?: boolean;
 }, ref: React.Ref<EnrollmentFormHandle>) {
   const { settings } = useSettings();
   // The kiosk sends people back to the sign-in screen; the website sends
@@ -208,7 +213,7 @@ function EnrollmentFormInner({
     setError("");
     setSubmitting(true);
     try {
-      await submitForApproval(draft, sigRef.current?.toDataURL() ?? "", source);
+      await submitForApproval(draft, sigRef.current?.toDataURL() ?? "", source, detailsOnFile);
       // Confirmation email. Awaited so a slow send doesn't race the
       // unmount, but never fatal — the form is already filed, and saying
       // otherwise because an email bounced would be wrong.
@@ -249,19 +254,32 @@ function EnrollmentFormInner({
         {/* This used to promise a second FORM by email. It is now a second
             step inside an account, and saying so here is what stops the
             invitation looking like something nobody asked for when it
-            arrives. */}
-        <p className="text-sm text-ink-3">
-          Once the meet &amp; greet has gone well we&apos;ll email you a link
-          to set up your account. You&apos;ll pick a password, and the last
-          few questions are waiting inside — your address, your vet, and how{" "}
-          {draft.dogs.length > 1 ? "they get on" : "your dog gets on"} with
-          other dogs.
-        </p>
-        <p className="text-xs text-ink-3">
-          That account is also where you&apos;ll find{" "}
-          {draft.dogs.length > 1 ? "their" : "your dog&apos;s"} vaccination
-          dates, your visits and what you owe.
-        </p>
+            arrives.
+
+            An existing client adding another dog is told none of it: they
+            have an account, they answered those questions the first time,
+            and promising a form that will never arrive is how somebody ends
+            up waiting for one. */}
+        {detailsOnFile ? (
+          <p className="text-sm text-ink-3">
+            Nothing else to fill in — we already have your address, your vet and your emergency
+            contact from last time. This will show up in your account once we have approved it.
+          </p>
+        ) : (
+          <>
+            <p className="text-sm text-ink-3">
+              Once the meet &amp; greet has gone well we&apos;ll email you a link to set up your
+              account. You&apos;ll pick a password, and the last few questions are waiting inside
+              — your address, your vet, and how{" "}
+              {draft.dogs.length > 1 ? "they get on" : "your dog gets on"} with other dogs.
+            </p>
+            <p className="text-xs text-ink-3">
+              That account is also where you&apos;ll find{" "}
+              {draft.dogs.length > 1 ? "their" : "your dog's"} vaccination dates, your visits and
+              what you owe.
+            </p>
+          </>
+        )}
         {!embed && (
           <Link
             href="/"

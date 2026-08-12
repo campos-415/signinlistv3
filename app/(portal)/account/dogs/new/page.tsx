@@ -32,6 +32,18 @@ function AddDog({ household }: { household: Household }) {
   const firstName = parts.slice(0, -1).join(" ") || parts[0] || "";
   const lastName = parts.length > 1 ? parts[parts.length - 1] : "";
 
+  // Has this household already answered stage two?
+  //
+  // Checked against what stage two actually collects rather than assumed
+  // from "they have an account": a household staff invited directly may hold
+  // an account and still never have been asked these. Getting that backwards
+  // in the generous direction would file the enrollment as complete and
+  // quietly skip questions nobody has answered — the address to reach them
+  // at and the vet to ring.
+  const detailsOnFile = Boolean(
+    household.address?.trim() && household.vet_name?.trim() && household.emergency_name?.trim()
+  );
+
   if (sent) {
     return (
       <div className="mx-auto max-w-md py-10 text-center">
@@ -61,8 +73,9 @@ function AddDog({ household }: { household: Household }) {
           Add another dog
         </h1>
         <p className="mt-1 text-sm text-ink-3">
-          Same as the first time — we need their vaccinations and a meet &amp; greet before their
-          first full day. We have filled in your details already.
+          {detailsOnFile
+            ? "We have your details from last time, so this is just about the dog: their vaccinations, and a meet & greet before their first full day."
+            : "Same as the first time — we need their vaccinations and a meet & greet before their first full day. We have filled in your details already."}
         </p>
       </div>
 
@@ -71,6 +84,7 @@ function AddDog({ household }: { household: Household }) {
           source="web"
           embed
           lockContact
+          detailsOnFile={detailsOnFile}
           prefill={{
             owner_name: firstName,
             last_name: lastName,

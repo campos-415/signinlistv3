@@ -476,9 +476,16 @@ export function stageTwoOwnerPatch(o: OwnerDraft): Partial<Owner> {
 export async function submitForApproval(
   draft: EnrollmentDraft,
   signature: string,
-  source: "kiosk" | "web"
+  source: "kiosk" | "web",
+  // True when the household already answered stage two — an existing client
+  // adding another dog. Their address, vet and emergency contact are on
+  // file; asking again would be asking a question we know the answer to, and
+  // it would send them a "finish your enrollment" email for an enrollment
+  // that is finished. The submission is filed complete instead.
+  detailsOnFile = false
 ): Promise<void> {
   const supabase = getSupabase();
+  const stage = detailsOnFile ? 2 : 1;
   const row = {
     phone: draft.owner.phone.trim(),
     owner_name: draft.owner.owner_name.trim(),
@@ -493,9 +500,16 @@ export async function submitForApproval(
     // The stage is written inside `data` as well as into its own column so
     // that a submission still says which half of the questionnaire it holds
     // on an install where the migration has not been run.
-    data: { ...draft, signature, stage: 1 },
+    data: { ...draft, signature, stage },
   };
-  const { error } = await supabase.from("enrollments").insert({ ...row, stage: 1 });
+  const { error } = await supabase.from("enrollments").insert({
+    ...row,
+    stage,
+    // Stamped so nothing later reads this as still owing its second half:
+    // detailsOutstanding checks exactly this, and it is what decides whether
+    // the meet & greet pass emails a form.
+    ...(detailsOnFile ? { details_submitted_at: new Date().toISOString() } : {}),
+  });
   if (!error) return;
   // Without the migration there is no `stage` column. File the form anyway:
   // losing a client's enrollment over a column that only staff screens read
