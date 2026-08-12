@@ -25,6 +25,7 @@ import { getSupabase } from "@/lib/supabase";
 import { getSettings } from "@/lib/settings";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { notifyStaff } from "@/lib/notify";
+import { inviteToAccount } from "@/lib/customer";
 import {
   Dog,
   DogSex,
@@ -972,13 +973,32 @@ export async function sendDetailsRequest(phone: string): Promise<DetailsRequestR
     const to = draft?.owner?.email?.trim() ?? "";
     if (!to) return { status: "no-email" };
 
+    // Where the link points is the whole of this change.
+    //
+    // It used to be /enroll/details/<token>: a public page holding the rest
+    // of the household questionnaire, reachable by anyone the mail was
+    // forwarded to. Now it is the invitation to their ACCOUNT. They choose a
+    // password, sign in, and the portal puts the same form in front of them
+    // and will not let them past it - so the answers arrive over a session
+    // rather than over a link, and the household ends up with the portal it
+    // was going to need anyway.
+    //
+    // Falling back to the old link is deliberate rather than lazy. A
+    // household with no owner row yet, or one whose invitation cannot be
+    // issued, must still be able to finish enrolling; the alternative is a
+    // client stuck with no way to send their details and no way to tell.
+    const account = await inviteToAccount(phone);
+    const link = account.link ?? detailsLink(token);
+
     const { email } = getSettings();
-    const vars = { ...rowTemplateVars(row), link: detailsLink(token) };
+    const vars = { ...rowTemplateVars(row), link };
     const result = await sendEmail({
       to,
       subject: renderTemplate(email.detailsRequestSubject, vars),
       body: renderTemplate(email.detailsRequestBody, vars),
-      kind: "enrollment.details",
+      // The account invitation motif when that is what it is, so the message
+      // looks like what it asks for.
+      kind: account.link ? "account.invite" : "enrollment.details",
     });
     if (result.skipped) return { status: "not-configured", to };
     if (result.error) return { status: "failed", to, detail: result.error };

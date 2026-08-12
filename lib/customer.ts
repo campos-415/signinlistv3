@@ -50,6 +50,12 @@ export interface CustomerDoc {
   created_at: string;
 }
 
+/** The stage-two questionnaire this household still owes, if any. */
+export interface PendingDetails {
+  token: string;
+  dogNames: string[];
+}
+
 export interface CustomerRequest {
   id: string;
   dog_names: string[];
@@ -134,6 +140,64 @@ export async function claimInvite(token: string): Promise<{ ok: boolean; error?:
   return { ok: true };
 }
 
+/** Where a claim link lives. Same reasoning as detailsLink: built from the
+ *  browser's own origin, because the app is reached on several hostnames and
+ *  the link has to work from wherever the person sending it is standing. */
+export function claimLink(token: string): string {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  return `${origin}/account/claim/${token}`;
+}
+
+export function portalLink(): string {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  return `${origin}/account`;
+}
+
+/**
+ * Gets a household the link it needs to reach its own account.
+ *
+ * Called when a meet and greet passes, which is the moment a household stops
+ * being an applicant and starts being a client — and so the moment an
+ * account is worth having.
+ *
+ * Three answers, and the caller only has to know whether it got a link:
+ *
+ *   unclaimed household  a fresh one-time invitation
+ *   already claimed      the portal itself, because they can just sign in
+ *   anything else        null, and the caller falls back to the old public
+ *                        details link so nobody is left unable to finish
+ *
+ * Never throws. The meet and greet verdict is the thing being saved, and it
+ * must not be lost because an invitation could not be issued.
+ */
+export async function inviteToAccount(
+  phone: string
+): Promise<{ link: string | null; reason?: string }> {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from("owners")
+      .select("id, email, claimed_at")
+      .eq("phone", phone.trim())
+      .maybeSingle();
+    if (error) throw error;
+
+    const owner = data as { id: string; email: string | null; claimed_at: string | null } | null;
+    if (!owner?.id) return { link: null, reason: "no owner record for that number yet" };
+    if (owner.claimed_at) return { link: portalLink(), reason: "already has an account" };
+    if (!owner.email?.trim()) return { link: null, reason: "no email on file" };
+
+    const { data: token, error: rpcError } = await supabase.rpc("issue_owner_invite", {
+      p_owner_id: owner.id,
+    });
+    if (rpcError) throw rpcError;
+    return { link: claimLink(token as string) };
+  } catch (e) {
+    console.error("Could not issue an account invitation:", e);
+    return { link: null, reason: "the invitation could not be issued" };
+  }
+}
+
 // ---------------------------------------------------------------------
 // Reading.
 // ---------------------------------------------------------------------
@@ -171,6 +235,35 @@ export async function loadHouseholdData(): Promise<HouseholdData | null> {
     ]);
 
   return { household, dogs, vaccinations, packages, stays, visits, payments, documents, requests };
+}
+
+/**
+ * The rest of the enrollment, when the household has not sent it back yet.
+ *
+ * Returns the details token for the caller's own household and nothing else,
+ * which is what lets the portal reuse /api/enrollment-details rather than
+ * growing a second implementation of the stage-two whitelist. The token now
+ * never leaves an authenticated session: it is not emailed any more.
+ *
+ * Null both when nothing is outstanding and when the database has not run
+ * customer-details-handover-migration.sql. Both mean "no form to show", and
+ * a portal that refuses to load because a function is missing would be worse
+ * than one that simply does not nag.
+ */
+export async function loadPendingDetails(): Promise<PendingDetails | null> {
+  try {
+    const { data, error } = await getSupabase().rpc("my_pending_enrollment");
+    if (error) throw error;
+    const row = ((data ?? []) as Record<string, unknown>[])[0];
+    if (!row?.details_token) return null;
+    return {
+      token: String(row.details_token),
+      dogNames: (row.dog_names as string[] | null) ?? [],
+    };
+  } catch (e) {
+    console.error("Could not check for an outstanding enrollment:", e);
+    return null;
+  }
 }
 
 /**

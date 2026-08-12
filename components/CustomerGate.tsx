@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import BusyButton from "@/components/BusyButton";
+import PendingDetailsGate from "@/components/PendingDetailsGate";
 import { useSettings } from "@/components/SettingsProvider";
 import useCustomer from "@/components/useCustomer";
 import { Household } from "@/lib/customer";
@@ -44,7 +45,11 @@ export default function CustomerGate({
 
   if (!signedIn) return <SignInPanel onSignedIn={refresh} />;
   if (!household) return <NoHousehold />;
-  return <>{children(household)}</>;
+
+  // A household that passed its meet & greet but has not sent back the rest
+  // of the questionnaire gets the questionnaire and nothing else. Put here
+  // rather than on each page so a screen added later cannot forget it.
+  return <PendingDetailsGate>{children(household)}</PendingDetailsGate>;
 }
 
 function SignInPanel({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
