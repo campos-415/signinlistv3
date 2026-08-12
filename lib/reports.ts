@@ -102,12 +102,50 @@ export class ExportRefused extends Error {
   }
 }
 
+/**
+ * How many rows one request can actually carry.
+ *
+ * PostgREST caps a response at 1,000 rows whatever is asked for, and the cap
+ * applies to a function returning a set just as it does to a table. Asking for
+ * more does not fail, it silently returns a thousand — so an export of a 2,640
+ * row table produced a spreadsheet that looked complete and was not. The rows
+ * are fetched a page at a time for that reason and for no other.
+ */
+const EXPORT_PAGE = 1000;
+
+/**
+ * A safety valve, not a business limit. Nothing here is near it: the largest
+ * table in the app is a few thousand rows. It exists so that a bug which stops
+ * the pages from advancing cannot spin forever in somebody's browser.
+ */
+const EXPORT_MAX_ROWS = 250_000;
+
 export async function exportDataset(kind: ExportDataset): Promise<Record<string, unknown>[]> {
-  const { data, error } = await getSupabase().rpc("export_dataset", { p_dataset: kind });
-  if (error) throw new ExportRefused(exportMessage(error.message));
-  // The function returns one jsonb per row, with the photo and signature
-  // columns already dropped on the database side.
-  return (data ?? []) as Record<string, unknown>[];
+  const supabase = getSupabase();
+  const rows: Record<string, unknown>[] = [];
+
+  for (let offset = 0; ; offset += EXPORT_PAGE) {
+    const { data, error } = await supabase.rpc("export_dataset", {
+      p_dataset: kind,
+      p_offset: offset,
+      p_limit: EXPORT_PAGE,
+    });
+    if (error) throw new ExportRefused(exportMessage(error.message));
+
+    const page = (data ?? []) as Record<string, unknown>[];
+    rows.push(...page);
+
+    // A short page is the end. Asking again would cost a request to be told
+    // the same thing.
+    if (page.length < EXPORT_PAGE) break;
+
+    if (rows.length >= EXPORT_MAX_ROWS) {
+      console.error(`Export of ${kind} stopped at ${rows.length} rows, which should not happen.`);
+      break;
+    }
+  }
+
+  return rows;
 }
 
 export async function recordExport(kind: string, rows: number): Promise<void> {

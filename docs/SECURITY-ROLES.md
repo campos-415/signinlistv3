@@ -274,6 +274,22 @@ interface is ever wrong. Nothing is being let through in the meantime: the
 database is refusing exactly what it should, and the defect is that it does so
 without saying anything.
 
+**Exports are paged, and they have to be.** PostgREST returns at most 1,000
+rows per request however many are asked for, and the cap applies to a function
+returning a set exactly as it does to a table — the live database has 2,640
+vaccination records and hands back 1,000 of them. So `export_dataset` takes an
+offset and a limit and the browser walks the pages, and every dataset is
+ordered to its primary key as a tiebreak, because an order that is not total
+can shuffle rows between pages and produce a file with one row twice and
+another missing. In an export of the client database that is the worst kind of
+bug: the spreadsheet looks complete. `security-tests/policy-matrix.test.mjs`
+pages a 2,500 row table and checks that nothing is duplicated or dropped.
+
+Note that `loadReportData` on `main` still has the older capped version, which
+means the money figures and the three browser-composed exports are truncated
+to 1,000 rows per table until the `image-budgets-and-site-storage` branch
+merges. That fix is on that branch, not this one.
+
 **`vaccinations_staging`.** The live database has this table, left over from
 importing vaccination records. No migration had ever named it, so whatever
 policy it had was never chosen. It is empty, so nothing is exposed, but it is

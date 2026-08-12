@@ -425,6 +425,51 @@ await expectAllowed(
 );
 
 // =====================================================================
+// PostgREST returns at most 1,000 rows per request whatever is asked for, so
+// an export bigger than that has to be paged. It is checked here because the
+// failure mode is silence: a truncated spreadsheet that looks complete.
+console.log("\n=== 10d. An export bigger than one page ===");
+await superuser();
+await db.query(
+  `insert into public.dogs (dog_name, phone)
+   select 'Paged' || g, '630555' || lpad(g::text, 4, '0') from generate_series(1, 2500) g`
+);
+await as(users.owner, "aal1");
+const pages = [];
+for (let offset = 0; ; offset += 1000) {
+  const r = await db.query("select * from public.export_dataset('dogs', $1, 1000)", [offset]);
+  pages.push(r.rows.length);
+  if (r.rows.length < 1000) break;
+  if (offset > 20000) break;
+}
+const totalPaged = pages.reduce((a, b) => a + b, 0);
+const realTotal = (await db.query("select count(*)::int as n from public.dogs")).rows[0].n;
+ok(totalPaged === realTotal, "paging returns every row, not the first page", `${totalPaged} of ${realTotal} in pages ${pages.join("+")}`);
+ok(pages.length > 1, "and it really did take more than one page", `${pages.length} pages`);
+
+// A total order matters as much as the paging: without the primary key as a
+// tiebreak two dogs with the same name can swap between pages, so one row
+// arrives twice and another never arrives.
+await superuser();
+await db.query("insert into public.dogs (dog_name, phone) select 'Same Name', '6305557777' from generate_series(1, 40)");
+await as(users.owner, "aal1");
+const seen = new Set();
+let duplicates = 0;
+for (let offset = 0; ; offset += 1000) {
+  const r = await db.query("select * from public.export_dataset('dogs', $1, 1000)", [offset]);
+  for (const row of r.rows) {
+    const id = row.export_dataset.id;
+    if (seen.has(id)) duplicates++;
+    seen.add(id);
+  }
+  if (r.rows.length < 1000) break;
+  if (offset > 20000) break;
+}
+const afterDupes = (await db.query("select count(*)::int as n from public.dogs")).rows[0].n;
+ok(duplicates === 0, "no row is handed over twice across pages", `${duplicates} duplicates`);
+ok(seen.size === afterDupes, "and none is missed", `${seen.size} of ${afterDupes}`);
+
+// =====================================================================
 console.log("\n=== 11. Nothing left open ===");
 await superuser();
 const wide = await db.query(

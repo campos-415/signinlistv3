@@ -83,7 +83,26 @@ $fn$;
 -- The data path.
 -- ---------------------------------------------------------------------
 
-create or replace function public.export_dataset(p_dataset text)
+-- Paged, and it has to be.
+--
+-- PostgREST caps a response at 1,000 rows however many the caller asks for,
+-- and that cap applies to a function returning a set exactly as it applies to
+-- a table. An unpaged version of this returned the first thousand rows of a
+-- 2,640 row table with no error and nothing to say the file was short - which
+-- in an export of the client database is the worst possible failure, because
+-- the spreadsheet looks complete. The same trap was found and fixed in
+-- loadReportData; this is the same fix in the same shape.
+--
+-- Every dataset is ordered to the primary key as a tiebreak, not only by the
+-- column that reads well in a spreadsheet. Two dogs with the same name have no
+-- defined order between them otherwise, and an order that is not total can
+-- shuffle between pages: a row appears twice, another never appears, and again
+-- nothing says so.
+create or replace function public.export_dataset(
+  p_dataset text,
+  p_offset int default 0,
+  p_limit int default 1000
+)
 returns setof jsonb
 language plpgsql
 security definer
@@ -94,26 +113,36 @@ declare
   -- something to copy into a downloads folder.
   blobs text[] := array['photo_data', 'signature_data', 'file_data'];
   exported bigint := 0;
+  window_size int := least(greatest(coalesce(p_limit, 1000), 1), 1000);
+  start_at int := greatest(coalesce(p_offset, 0), 0);
 begin
   perform public.assert_can_export();
 
   case p_dataset
     when 'dogs' then
-      return query select to_jsonb(d) - blobs from public.dogs d order by d.dog_name;
+      return query select to_jsonb(d) - blobs from public.dogs d
+        order by d.dog_name, d.id offset start_at limit window_size;
     when 'owners' then
-      return query select to_jsonb(o) - blobs from public.owners o order by o.phone;
+      return query select to_jsonb(o) - blobs from public.owners o
+        order by o.phone, o.id offset start_at limit window_size;
     when 'visits' then
-      return query select to_jsonb(s) - blobs from public.signins s order by s.created_at desc;
+      return query select to_jsonb(s) - blobs from public.signins s
+        order by s.created_at desc, s.id offset start_at limit window_size;
     when 'boardings' then
-      return query select to_jsonb(b) - blobs from public.boardings b order by b.start_date desc;
+      return query select to_jsonb(b) - blobs from public.boardings b
+        order by b.start_date desc, b.id offset start_at limit window_size;
     when 'packages' then
-      return query select to_jsonb(p) - blobs from public.packages p order by p.created_at desc;
+      return query select to_jsonb(p) - blobs from public.packages p
+        order by p.created_at desc, p.id offset start_at limit window_size;
     when 'payments' then
-      return query select to_jsonb(p) - blobs from public.payments p order by p.paid_on desc;
+      return query select to_jsonb(p) - blobs from public.payments p
+        order by p.paid_on desc, p.id offset start_at limit window_size;
     when 'vaccinations' then
-      return query select to_jsonb(v) - blobs from public.vaccinations v;
+      return query select to_jsonb(v) - blobs from public.vaccinations v
+        order by v.id offset start_at limit window_size;
     when 'walk_logs' then
-      return query select to_jsonb(w) - blobs from public.walk_logs w order by w.date desc;
+      return query select to_jsonb(w) - blobs from public.walk_logs w
+        order by w.date desc, w.id offset start_at limit window_size;
     else
       raise exception 'Unknown export: %', p_dataset;
   end case;
@@ -122,6 +151,11 @@ begin
   -- number that left the building.
   get diagnostics exported = row_count;
 
+  -- One line per page rather than one per export. The biggest table here is
+  -- three pages, so this is two extra lines at worst, and it is the honest
+  -- version: it records what actually left even when somebody closes the tab
+  -- half way through. Waiting for a final page that may never come would have
+  -- recorded nothing at all for an abandoned export.
   insert into public.audit_log (
     actor_id, actor_email, actor_role, action, entity, summary, detail
   )
@@ -131,16 +165,28 @@ begin
     public.staff_role(),
     'export.' || p_dataset,
     p_dataset,
-    format('Exported %s rows of %s to a spreadsheet', exported, p_dataset),
-    jsonb_build_object('dataset', p_dataset, 'rows', exported, 'via', 'export_dataset')
+    format(
+      'Exported %s rows of %s to a spreadsheet (from row %s)',
+      exported, p_dataset, start_at + 1
+    ),
+    jsonb_build_object(
+      'dataset', p_dataset,
+      'rows', exported,
+      'offset', start_at,
+      'via', 'export_dataset'
+    )
   );
 
   return;
 end
 $fn$;
 
-revoke execute on function public.export_dataset(text) from public, anon;
-grant execute on function public.export_dataset(text) to authenticated;
+-- The old single-argument version, if an earlier run of this file created it.
+-- Left behind it would keep working and keep truncating.
+drop function if exists public.export_dataset(text);
+
+revoke execute on function public.export_dataset(text, int, int) from public, anon;
+grant execute on function public.export_dataset(text, int, int) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- The three exports the browser composes for itself.
