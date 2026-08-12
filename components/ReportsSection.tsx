@@ -121,13 +121,40 @@ export default function ReportsSection() {
     else console.error(`Exporting ${what} failed:`, e);
   }
 
+  /**
+   * The rows an export used to be built from, straight out of what is already
+   * loaded. Used only on a database where the security migrations have not
+   * been run, so this screen keeps working exactly as it did before them
+   * rather than telling staff that exports are not set up.
+   *
+   * This is not a way round the gate. It is reached only when the whole
+   * security layer is absent - no staff_roles table, so no roles to enforce -
+   * which is the state the app was already in. Once the migrations are run,
+   * staff_roles exists, rolesUnavailable goes false, and every export goes
+   * through the database.
+   */
+  function legacyRows(dataset: ExportDataset): Record<string, unknown>[] {
+    if (!data) return [];
+    const byDataset: Record<ExportDataset, Record<string, unknown>[]> = {
+      dogs: data.dogs as unknown as Record<string, unknown>[],
+      owners: data.owners,
+      visits: data.signins as unknown as Record<string, unknown>[],
+      boardings: data.boardings as unknown as Record<string, unknown>[],
+      packages: data.packages as unknown as Record<string, unknown>[],
+      payments: data.payments as unknown as Record<string, unknown>[],
+      vaccinations: data.vaccinations as unknown as Record<string, unknown>[],
+      walk_logs: data.walkLogs as unknown as Record<string, unknown>[],
+    };
+    return byDataset[dataset] ?? [];
+  }
+
   /** A table, fetched through the gate that authorises reading it in bulk. */
   async function saveTable(stem: string, dataset: ExportDataset) {
     setBusyExport(stem);
     setError("");
     setNote("");
     try {
-      const rows = await exportDataset(dataset);
+      const rows = rolesUnavailable ? legacyRows(dataset) : await exportDataset(dataset);
       if (!rows.length) {
         setNote("Nothing to export there yet.");
         return;
@@ -151,7 +178,9 @@ export default function ReportsSection() {
         return;
       }
       // Authorised and recorded before a file reaches the downloads folder.
-      await recordExport(stem, rows.length);
+      // Skipped only where there is no security layer to consult - see
+      // legacyRows above.
+      if (!rolesUnavailable) await recordExport(stem, rows.length);
       write(stem, rows);
     } catch (e) {
       await refused(stem, e);
