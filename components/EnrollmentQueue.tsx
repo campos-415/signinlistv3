@@ -8,6 +8,9 @@ import { ownerHref } from "@/lib/dogs";
 import {
   ageFromBirthdate,
   approveEnrollment,
+  detailsLink,
+  detailsOutstanding,
+  enrollmentStage,
   rejectEnrollment,
   deleteEnrollment,
   templateVars,
@@ -16,15 +19,31 @@ import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
 import RecordPreview from "@/components/RecordPreview";
-import { Enrollment, EnrollmentStatus, VACCINES } from "@/types";
+import { Enrollment, EnrollmentStage, EnrollmentStatus, VACCINES } from "@/types";
 import { reviewChecks } from "@/lib/enrollmentReview";
 import { todayKey } from "@/lib/dates";
 
-const TABS: { key: EnrollmentStatus; label: string }[] = [
+// "details" is not a status — it is a slice of the approved ones. An
+// approved household that has not returned the second half of its form is
+// finished as far as the review queue is concerned but not yet fully on
+// file, and nothing else on this page would show that.
+type QueueTab = EnrollmentStatus | "details";
+
+const TABS: { key: QueueTab; label: string }[] = [
   { key: "pending", label: "Pending" },
+  { key: "details", label: "Details outstanding" },
   { key: "approved", label: "Approved" },
   { key: "rejected", label: "Rejected" },
 ];
+
+// The columns the list needs, and the same list without the ones two-stage
+// enrollment added. `data` is left out of both: it carries the uploaded
+// paperwork and can be megabytes, so it is pulled only for the submission
+// being reviewed.
+const LIST_COLUMNS =
+  "id, phone, owner_name, last_name, dog_names, status, source, review_note, reviewed_at, created_at, stage, details_token, details_submitted_at";
+const LEGACY_LIST_COLUMNS =
+  "id, phone, owner_name, last_name, dog_names, status, source, review_note, reviewed_at, created_at";
 
 // The message staff are about to send, held while they edit it.
 interface Compose {
@@ -38,7 +57,7 @@ interface Compose {
 export default function Enrollments({ onChanged }: { onChanged?: () => void } = {}) {
   const { settings } = useSettings();
   const [rows, setRows] = useState<Enrollment[]>([]);
-  const [tab, setTab] = useState<EnrollmentStatus>("pending");
+  const [tab, setTab] = useState<QueueTab>("pending");
   const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -52,15 +71,24 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
     setError("");
     try {
       const supabase = getSupabase();
-      // `data` carries the uploaded paperwork and can be megabytes, so the
-      // whole row is only pulled for the one submission being reviewed.
-      const { data, error: err } = await supabase
-        .from("enrollments")
-        .select("id, phone, owner_name, last_name, dog_names, status, source, review_note, reviewed_at, created_at")
-        .order("created_at", { ascending: false })
-        .limit(300);
+      const fetchRows = (columns: string) =>
+        supabase
+          .from("enrollments")
+          .select(columns)
+          .order("created_at", { ascending: false })
+          .limit(300);
+
+      let { data, error: err } = await fetchRows(LIST_COLUMNS);
+      if (err) {
+        // Without two-stage-enrollment-migration.sql there is no stage
+        // column to select, and asking for one fails the whole query. The
+        // queue is how staff approve people, so it loads regardless — just
+        // without the details-outstanding state.
+        console.warn("Falling back to the pre-two-stage columns:", err.message);
+        ({ data, error: err } = await fetchRows(LEGACY_LIST_COLUMNS));
+      }
       if (err) throw err;
-      setRows((data as Enrollment[]) ?? []);
+      setRows((data as unknown as Enrollment[]) ?? []);
     } catch (e) {
       console.error("Loading enrollments failed:", e);
       setError(
@@ -76,8 +104,15 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
     onChanged?.();
   }, [load]);
 
-  const visible = useMemo(() => rows.filter((r) => r.status === tab), [rows, tab]);
+  const visible = useMemo(
+    () =>
+      tab === "details"
+        ? rows.filter((r) => detailsOutstanding(r))
+        : rows.filter((r) => r.status === tab),
+    [rows, tab]
+  );
   const pendingCount = useMemo(() => rows.filter((r) => r.status === "pending").length, [rows]);
+  const outstandingCount = useMemo(() => rows.filter((r) => detailsOutstanding(r)).length, [rows]);
 
   async function openRow(row: Enrollment) {
     if (openId === row.id) {
@@ -211,6 +246,21 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
     }
   }
 
+  // The link staff read out when the email never arrived, or when somebody
+  // would rather fill the form in at the front desk.
+  async function copyDetailsLink(row: Enrollment) {
+    if (!row.details_token) return;
+    const link = detailsLink(row.details_token);
+    try {
+      await navigator.clipboard.writeText(link);
+      setNotice(`Details link for ${row.owner_name} ${row.last_name} copied to the clipboard.`);
+    } catch {
+      // The clipboard API needs a secure context and permission. A prompt
+      // box with the link selected works everywhere.
+      window.prompt("Copy this link and send it to the client:", link);
+    }
+  }
+
   async function sendCompose() {
     if (!compose) return;
     if (!compose.to.trim()) {
@@ -245,25 +295,45 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
   return (
     <div>
       <div className="mb-5 flex flex-wrap gap-2">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded-xl px-3.5 py-2 text-xs font-medium transition ${
-              tab === t.key
-                ? "bg-accent-500 text-accent-ink shadow-card"
-                : "border border-line bg-surface text-ink-2 hover:border-accent-300"
-            }`}
-          >
-            {t.label}
-            {t.key === "pending" && pendingCount > 0 && (
-              <span className="ml-1.5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                {pendingCount}
-              </span>
-            )}
-          </button>
-        ))}
+        {TABS.map((t) => {
+          // Pending is a queue to work through, so its badge is red. Details
+          // outstanding is a waiting list — nobody at the front desk can
+          // clear it, only the owner can — so it is amber and does not shout.
+          const count =
+            t.key === "pending" ? pendingCount : t.key === "details" ? outstandingCount : 0;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-xl px-3.5 py-2 text-xs font-medium transition ${
+                tab === t.key
+                  ? "bg-accent-500 text-accent-ink shadow-card"
+                  : "border border-line bg-surface text-ink-2 hover:border-accent-300"
+              }`}
+            >
+              {t.label}
+              {count > 0 && (
+                <span
+                  className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold text-white ${
+                    t.key === "pending" ? "bg-rose-500" : "bg-amber-500"
+                  }`}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
+
+      {tab === "details" && (
+        <p className="mb-4 rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
+          Approved households whose second form is still outstanding. It is emailed
+          automatically when their meet &amp; greet is recorded as passed, and it asks for the
+          address, the vet, and the behaviour and health answers. Copy the link below to read
+          it out over the phone.
+        </p>
+      )}
 
       {error && <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>}
       {notice && (
@@ -341,7 +411,11 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
         <p className="text-sm text-ink-3">Loading…</p>
       ) : visible.length === 0 ? (
         <p className="rounded-2xl border border-line bg-surface p-8 text-center text-sm text-ink-3">
-          {tab === "pending" ? "Nothing waiting for review." : `No ${tab} requests.`}
+          {tab === "pending"
+            ? "Nothing waiting for review."
+            : tab === "details"
+              ? "Everybody approved has sent their details back."
+              : `No ${tab} requests.`}
         </p>
       ) : (
         <div className="space-y-3">
@@ -410,12 +484,16 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                   </span>
                 )}
 
+                <DetailsState row={row} onCopy={copyDetailsLink} />
               </div>
 
               {openId === row.id && (
                 <div className="border-t border-line-soft p-4">
                   {row.data ? (
-                    <Review draft={row.data as EnrollmentDraft & { signature?: string }} />
+                    <Review
+                      draft={row.data as EnrollmentDraft & { signature?: string }}
+                      stage={enrollmentStage(row)}
+                    />
                   ) : (
                     <p className="text-sm text-ink-3">Loading submission…</p>
                   )}
@@ -424,6 +502,17 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                       Deleting a submission is not part of reviewing one, and a
                       button that discards the paperwork does not belong a
                       thumb's width from the one that accepts it. */}
+                  {detailsOutstanding(row) && row.details_token && (
+                    <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                      Their details form is at{" "}
+                      <span className="break-all font-medium">
+                        {detailsLink(row.details_token)}
+                      </span>
+                      . It was emailed when the meet &amp; greet passed, and the link does not
+                      expire.
+                    </p>
+                  )}
+
                   <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
                     {row.status === "approved" && (
                       <Link
@@ -453,7 +542,52 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
   );
 }
 
-function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) {
+// Where a submission is in the two-stage form, for staff scanning the list.
+// Silent for a single-stage submission from before all this existed: there
+// is no second half to be waiting for, and a pill saying so on every old row
+// would be noise.
+function DetailsState({
+  row,
+  onCopy,
+}: {
+  row: Enrollment;
+  onCopy: (row: Enrollment) => void;
+}) {
+  if (row.details_submitted_at) {
+    return (
+      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+        Details in
+      </span>
+    );
+  }
+  if (!detailsOutstanding(row)) return null;
+  return (
+    <>
+      <span
+        title="Approved, but the second half of the form has not come back yet"
+        className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800"
+      >
+        ⏳ Details outstanding
+      </span>
+      {row.details_token && (
+        <button
+          onClick={() => onCopy(row)}
+          className="rounded-xl border border-line px-3 py-1.5 text-[11px] font-medium text-ink-2 hover:border-accent-300"
+        >
+          Copy link
+        </button>
+      )}
+    </>
+  );
+}
+
+function Review({
+  draft,
+  stage,
+}: {
+  draft: EnrollmentDraft & { signature?: string };
+  stage: EnrollmentStage;
+}) {
   // A submission with no owner block should not take the whole Requests page
   // down with it. React unmounts the tree on a render throw, so one malformed
   // row — a half-written insert, a hand-edited jsonb — would white-screen the
@@ -467,11 +601,24 @@ function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) 
       </p>
     );
   }
-  const summary = reviewChecks(draft, todayKey());
+  const summary = reviewChecks(draft, todayKey(), stage);
 
   return (
     <div className="space-y-5 text-sm">
       <ReviewVerdict summary={summary} />
+
+      {/* Said plainly, because the alternative is a reviewer reading a form
+          with no bite history on it and concluding the dog has none. At stage
+          one nobody has been asked yet. */}
+      {stage === 1 && (
+        <p className="rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
+          <span className="font-semibold text-ink">Stage one.</span> This form asked only what
+          is needed to book a meet &amp; greet. The address, the vet, and the behaviour and
+          health questions have <em>not been asked yet</em> — they are collected by the details
+          form emailed once the meet &amp; greet passes, so blanks below mean unasked rather
+          than unanswered.
+        </p>
+      )}
 
       <Block title="Owner">
         <Row label="Name" value={`${o.owner_name} ${o.last_name}`} />
@@ -488,13 +635,17 @@ function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) 
         <Row label="Heard about us" value={o.heard_about} />
       </Block>
 
-      <Block title="Veterinarian">
-        <Row label="Hospital" value={o.vet_name} />
-        <Row label="Phone" value={o.vet_phone} />
-        <Row label="Address" value={o.vet_address} />
-      </Block>
+      {/* Nothing to show at stage one, and an empty card headed
+          "Veterinarian" reads as a vet that was left blank. */}
+      {(stage === 2 || o.vet_name || o.vet_phone || o.vet_address) && (
+        <Block title="Veterinarian">
+          <Row label="Hospital" value={o.vet_name} />
+          <Row label="Phone" value={o.vet_phone} />
+          <Row label="Address" value={o.vet_address} />
+        </Block>
+      )}
 
-      {draft.dogs?.map((dog, i) => <DogReview key={i} dog={dog} />)}
+      {draft.dogs?.map((dog, i) => <DogReview key={i} dog={dog} stage={stage} />)}
 
       <Block title="Agreements">
         <Row label="Contract" value={draft.contractAgreed ? "Accepted" : "NOT accepted"} />
@@ -515,7 +666,7 @@ function Review({ draft }: { draft: EnrollmentDraft & { signature?: string } }) 
   );
 }
 
-function DogReview({ dog }: { dog: DogDraft }) {
+function DogReview({ dog, stage }: { dog: DogDraft; stage: EnrollmentStage }) {
   const age = ageFromBirthdate(dog.birthdate);
   const fixed =
     dog.fixed === true
@@ -577,6 +728,11 @@ function DogReview({ dog }: { dog: DogDraft }) {
         label="Meet & greet requested"
         value={[dog.meet_greet_on, dog.meet_greet_window].filter(Boolean).join(" · ")}
       />
+      {stage === 1 && (
+        <p className="mt-2 text-[11px] text-ink-3">
+          Behaviour, health and history come with the details form.
+        </p>
+      )}
 
       <div className="mt-3 border-t border-line-soft pt-3">
         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">

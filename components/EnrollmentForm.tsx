@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ChangeEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import SignaturePad, { SignaturePadHandle } from "@/components/SignaturePad";
 import DateField from "@/components/DateField";
-import { CheckGrid, ChoiceWithOther, Field, YesNo, YesNoDetail, inputClass } from "@/components/FormBits";
+import { Field, YesNo, inputClass } from "@/components/FormBits";
 import { fileToRecordJpeg } from "@/lib/image";
 import { formatPhoneInput } from "@/lib/phone";
 import { useSettings } from "@/components/SettingsProvider";
@@ -21,24 +21,24 @@ import {
   validateEnrollment,
 } from "@/lib/enrollment";
 import {
-  ACTIVITY_RESTRICTIONS,
-  ALLERGENS,
-  ATTENDANCE_PLANS,
-  BEHAVIOR_TRAITS,
-  BIG_DOG_RESPONSES,
   DOG_SEXES,
   DogSex,
-  FLEA_PROGRAMS,
-  HEARD_ABOUT,
   MEET_GREET_HOURS,
   MEET_GREET_WINDOWS,
-  PACKAGE_INTEREST,
-  PLAY_STYLES,
   VACCINES,
   VaccineKey,
   isMeetGreetDay,
 } from "@/types";
 
+// Stage one of the enrollment: the public form on /enroll, the lobby form on
+// /signup, and the copy embedded in the boarding request.
+//
+// It asks only what is needed to decide on a meet & greet and hold it
+// safely — who the household is, the dog basics, vaccinations with the
+// record, the agreements and the signature. The address, the vet, and the
+// behaviour and health questions come later, through the details form linked
+// from the email sent when the meet & greet passes. See lib/enrollment.ts.
+//
 // A vaccination record is usually a photo of a page or a PDF from the vet.
 // Photos get resized like every other image in the app; PDFs are stored as
 // they are, so this is the ceiling on what a submission can weigh.
@@ -238,6 +238,12 @@ function EnrollmentFormInner({
           touch to confirm your meet &amp; greet. You&apos;ll be able to check
           in by phone number once it&apos;s approved.
         </p>
+        <p className="text-sm text-ink-3">
+          After the meet &amp; greet we&apos;ll email you a short second form
+          for the rest — your address, your vet, and how{" "}
+          {draft.dogs.length > 1 ? "they get on" : "your dog gets on"} with
+          other dogs.
+        </p>
         {!embed && (
           <Link
             href="/https://dog-daycare-website-two.vercel.app"
@@ -263,6 +269,16 @@ function EnrollmentFormInner({
           </p>
         </div>
       )}
+
+      {/* Said before the first question rather than after the last one: the
+          reason this form is short is worth knowing while deciding whether to
+          start it. */}
+      <p className="mb-5 rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
+        Just enough to book your meet &amp; greet — about five minutes. Once
+        you&apos;ve been in and we&apos;ve met your dog, we&apos;ll email you a
+        second short form for the rest: your address, your vet, and how they
+        get on with other dogs.
+      </p>
 
       {/* Contract */}
       <Section title="Contract" step={1}>
@@ -348,113 +364,6 @@ function EnrollmentFormInner({
           </Field>
             </>
           )}
-          <div className="sm:col-span-2">
-            <Field label="Street address" required>
-              <input
-                value={draft.owner.address}
-                onChange={(e) => setOwner("address", e.target.value)}
-                autoComplete="street-address"
-                className={inputClass}
-              />
-            </Field>
-          </div>
-          <Field label="City" required>
-            <input
-              value={draft.owner.city}
-              onChange={(e) => setOwner("city", e.target.value)}
-              autoComplete="address-level2"
-              className={inputClass}
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="State" required>
-              <input
-                value={draft.owner.state}
-                onChange={(e) => setOwner("state", e.target.value.toUpperCase())}
-                maxLength={2}
-                autoComplete="address-level1"
-                className={inputClass}
-              />
-            </Field>
-            <Field label="ZIP" required>
-              <input
-                value={draft.owner.zip}
-                onChange={(e) => setOwner("zip", e.target.value)}
-                inputMode="numeric"
-                autoComplete="postal-code"
-                className={inputClass}
-              />
-            </Field>
-          </div>
-          <Field label="Emergency contact name" required>
-            <input
-              value={draft.owner.emergency_name}
-              onChange={(e) => setOwner("emergency_name", e.target.value)}
-              className={inputClass}
-            />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Emergency phone" required>
-              <input
-                value={draft.owner.emergency_phone}
-                onChange={(e) => setOwner("emergency_phone", formatPhoneInput(e.target.value))}
-                inputMode="tel"
-                className={inputClass}
-              />
-            </Field>
-            <Field label="Relationship">
-              <input
-                value={draft.owner.emergency_relation}
-                onChange={(e) => setOwner("emergency_relation", e.target.value)}
-                placeholder="Sister, neighbour…"
-                className={inputClass}
-              />
-            </Field>
-          </div>
-          <div className="sm:col-span-2">
-            <Field
-              label="Others authorized to pick up your dog"
-              required
-              hint="Nobody else will be allowed to collect your dog. Enter “nobody” if it's only you."
-            >
-              <input
-                value={draft.owner.authorized_pickup}
-                onChange={(e) => setOwner("authorized_pickup", e.target.value)}
-                placeholder="Names of anyone else allowed"
-                className={inputClass}
-              />
-            </Field>
-          </div>
-        </div>
-      </Section>
-
-      {/* Vet */}
-      <Section title="Veterinarian" step={3}>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Hospital name">
-            <input
-              value={draft.owner.vet_name}
-              onChange={(e) => setOwner("vet_name", e.target.value)}
-              className={inputClass}
-            />
-          </Field>
-          <Field label="Phone number">
-            <input
-              value={draft.owner.vet_phone}
-              onChange={(e) => setOwner("vet_phone", formatPhoneInput(e.target.value))}
-              inputMode="tel"
-              className={inputClass}
-            />
-          </Field>
-          <div className="sm:col-span-2">
-            <Field label="Address">
-              <input
-                value={draft.owner.vet_address}
-                onChange={(e) => setOwner("vet_address", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-          </div>
         </div>
       </Section>
 
@@ -462,7 +371,7 @@ function EnrollmentFormInner({
       {draft.dogs.map((dog, i) => (
         <Section
           key={i}
-          step={4 + i}
+          step={3 + i}
           title={multi ? `Dog ${i + 1}${dog.dog_name ? ` — ${dog.dog_name}` : ""}` : "Your dog"}
           action={
             multi ? (
@@ -497,7 +406,7 @@ function EnrollmentFormInner({
       </button>
 
       {/* Meet & greet + signature */}
-      <Section title="Meet &amp; greet and signature" step={4 + draft.dogs.length}>
+      <Section title="Meet &amp; greet and signature" step={3 + draft.dogs.length}>
         <div className="rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
           Every new dog comes in for a meet &amp; greet before their first full day, so we can see
           how they settle in with the group. Bring your dog on a leash and allow about half an hour.
@@ -514,17 +423,6 @@ function EnrollmentFormInner({
             I understand the meet &amp; greet policy.<span className="ml-0.5 text-rose-500">*</span>
           </span>
         </label>
-
-        <div className="mt-4">
-          <Field label="How did you hear about us?">
-            <ChoiceWithOther
-              options={HEARD_ABOUT}
-              value={draft.owner.heard_about}
-              onChange={(v) => setOwner("heard_about", v)}
-              ariaLabel="How did you hear about us"
-            />
-          </Field>
-        </div>
 
         <div className="mt-4">
           <p className="mb-1.5 text-[11px] font-medium text-ink-3">
@@ -664,146 +562,6 @@ function DogSection({
             />
           </Field>
         )}
-        <Field label="Flea program">
-          <ChoiceWithOther
-            options={FLEA_PROGRAMS}
-            value={dog.flea_program}
-            onChange={(v) => setDog(index, { flea_program: v })}
-            ariaLabel="Flea program"
-          />
-        </Field>
-        <Field label="Where did you get your dog?">
-          <input
-            value={dog.dog_source}
-            onChange={(e) => setDog(index, { dog_source: e.target.value })}
-            placeholder="Breeder, shelter, rescue…"
-            className={inputClass}
-          />
-        </Field>
-      </div>
-
-      <SubHeading>History</SubHeading>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <YesNoDetail
-          required
-          label="Has your dog ever growled at a person or another dog?"
-          value={dog.growled}
-          onChange={(v) => setDog(index, { growled: v })}
-          detail={dog.growled_note}
-          onDetailChange={(v) => setDog(index, { growled_note: v })}
-          detailLabel="What happened?"
-        />
-        <YesNoDetail
-          required
-          label="Has your dog ever bitten a person or another dog?"
-          value={dog.bitten}
-          onChange={(v) => setDog(index, { bitten: v })}
-          detail={dog.bitten_note}
-          onDetailChange={(v) => setDog(index, { bitten_note: v })}
-          detailLabel="What happened?"
-        />
-        <YesNoDetail
-          required
-          label="Has your dog ever climbed or jumped a fence?"
-          value={dog.climbed_fence}
-          onChange={(v) => setDog(index, { climbed_fence: v })}
-          detail={dog.fence_height}
-          onDetailChange={(v) => setDog(index, { fence_height: v })}
-          detailLabel="How high was it?"
-          detailPlaceholder="e.g. 5 ft"
-        />
-        <YesNoDetail
-          required
-          label="Has your dog ever been in a fight with another dog?"
-          value={dog.dog_fight}
-          onChange={(v) => setDog(index, { dog_fight: v })}
-          detail={dog.dog_fight_note}
-          onDetailChange={(v) => setDog(index, { dog_fight_note: v })}
-          detailLabel="What happened?"
-        />
-      </div>
-
-      <SubHeading>Health &amp; grooming</SubHeading>
-      <div className="space-y-3">
-        <YesNoDetail
-          required
-          label="Does your dog have any health problems?"
-          value={dog.health_problems}
-          onChange={(v) => setDog(index, { health_problems: v })}
-          detail={dog.health_notes}
-          onDetailChange={(v) => setDog(index, { health_notes: v })}
-          detailLabel="Please describe"
-        />
-        <Field label="Any activity restrictions?">
-          <CheckGrid
-            options={ACTIVITY_RESTRICTIONS}
-            value={dog.activity_restrictions}
-            onChange={(v) => setDog(index, { activity_restrictions: v })}
-            otherPlaceholder="Other restrictions, comma separated"
-          />
-        </Field>
-        <Field label="Any allergies?" hint="Leave blank if none.">
-          <CheckGrid
-            options={ALLERGENS}
-            value={dog.allergies}
-            onChange={(v) => setDog(index, { allergies: v })}
-            otherPlaceholder="Other allergies, comma separated"
-          />
-        </Field>
-        <YesNoDetail
-          required
-          label="Is your dog sensitive about being touched anywhere?"
-          value={dog.sensitive_areas}
-          onChange={(v) => setDog(index, { sensitive_areas: v })}
-          detail={dog.sensitive_areas_note}
-          onDetailChange={(v) => setDog(index, { sensitive_areas_note: v })}
-          detailLabel="Where?"
-          detailPlaceholder="Paws, ears, tail…"
-        />
-      </div>
-
-      <SubHeading>Behaviour</SubHeading>
-      <div className="space-y-3">
-        <Field label="Which of these describe your dog?" required>
-          <CheckGrid
-            options={BEHAVIOR_TRAITS}
-            value={dog.behavior_traits}
-            onChange={(v) => setDog(index, { behavior_traits: v })}
-            otherPlaceholder="Anything else, comma separated"
-          />
-        </Field>
-        <Field label="What is your dog like at play?" required>
-          <CheckGrid
-            options={PLAY_STYLES}
-            value={dog.play_style}
-            onChange={(v) => setDog(index, { play_style: v })}
-            otherPlaceholder="Anything else, comma separated"
-          />
-        </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="How often do you expect to visit?" required>
-            <ChoiceWithOther
-              options={ATTENDANCE_PLANS}
-              value={dog.attendance_plan}
-              onChange={(v) => setDog(index, { attendance_plan: v })}
-              ariaLabel="Expected visit frequency"
-            />
-          </Field>
-          <Field label="How is your dog around big dogs?" required>
-            <ChoiceWithOther
-              options={BIG_DOG_RESPONSES}
-              value={dog.big_dog_response}
-              onChange={(v) => setDog(index, { big_dog_response: v })}
-              ariaLabel="Around big dogs"
-            />
-          </Field>
-          <Field label="Crate trained?" required>
-            <YesNo value={dog.crate_trained} onChange={(v) => setDog(index, { crate_trained: v })} />
-          </Field>
-          <Field label="Kennel trained?" required>
-            <YesNo value={dog.kennel_trained} onChange={(v) => setDog(index, { kennel_trained: v })} />
-          </Field>
-        </div>
       </div>
 
       <SubHeading>Vaccinations</SubHeading>
@@ -878,16 +636,8 @@ function DogSection({
         </div>
       </Field>
 
-      <SubHeading>Before you finish</SubHeading>
+      <SubHeading>Your visit</SubHeading>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Interested in a daycare package?">
-          <ChoiceWithOther
-            options={PACKAGE_INTEREST}
-            value={dog.package_interest}
-            onChange={(v) => setDog(index, { package_interest: v })}
-            ariaLabel="Interested in a package"
-          />
-        </Field>
         <Field
           label="Preferred meet & greet date"
           hint={`${MEET_GREET_HOURS}. We'll confirm before it's booked.`}

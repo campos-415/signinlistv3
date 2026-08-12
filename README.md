@@ -265,7 +265,7 @@ Finally, run the enrollment migration — it adds the review queue, the uploads 
 cat enrollment-migration.sql
 ```
 
-Paste [enrollment-migration.sql](enrollment-migration.sql) and then [boarding-requests-migration.sql](boarding-requests-migration.sql) into the SQL editor and run them. Every statement is idempotent, so re-running is harmless.
+Paste [enrollment-migration.sql](enrollment-migration.sql), then [boarding-requests-migration.sql](boarding-requests-migration.sql), then [two-stage-enrollment-migration.sql](two-stage-enrollment-migration.sql) into the SQL editor and run them. Every statement is idempotent, so re-running is harmless. The last one adds the stage and the details token behind [two-stage enrollment](#two-stage-enrollment); without it the enrollment form and the review queue still work, and only the second stage is unavailable.
 
 > Copy the file **contents**, not the `cat` command — and note the comments in these files deliberately contain no apostrophes. The Supabase SQL editor splits statements on semicolons with a scanner that does not skip comments, so a lone `'` in a comment makes it swallow every following `;` and report one baffling syntax error.
 
@@ -284,6 +284,7 @@ Fill in `.env.local`:
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from Supabase.
 - `NEXT_PUBLIC_STAFF_UNLOCK_MINUTES` — optional, default 30. How long a staff screen stays unlocked with nothing open before it asks for the password again. Not the security boundary — see [Accounts and security](#accounts-and-security).
 - `RESEND_API_KEY` — optional. Only needed to email clients; see [Emailing clients](#emailing-clients). Leave it blank and nothing else changes.
+- `SUPABASE_SECRET_KEY` — the service key from Supabase → Settings → API. Server-side only, never `NEXT_PUBLIC_`. Needed by the [stage-two details form](#two-stage-enrollment), which has to read one household's submission back on a page with no sign-in. Leave it unset and that link explains itself; nothing else changes.
 
 ```bash
 npm run dev
@@ -293,7 +294,7 @@ Open http://localhost:3000 for the kiosk form, http://localhost:3000/signup for 
 
 ## How pre-registration works
 
-1. First-time visitors fill in the full **enrollment form** — at the kiosk on `/signup`, or from home on the public `/enroll` link. It collects owner and emergency contacts, the vet, and a full profile per dog (breed, colour, birthday, spay/neuter, flea program, bite/growl/fence/fight history, health problems, allergies, behaviour and play traits, crate/kennel training, vaccination dates and a photo or PDF of the records), then one signature covering the contract, the meet & greet policy, and every dog listed. **Multiple dogs** go on one submission — "+ Add another dog" repeats the whole dog section, and each keeps its own answers.
+1. First-time visitors fill in the **enrollment form** — at the kiosk on `/signup`, or from home on the public `/enroll` link. It is asked in [two stages](#two-stage-enrollment): stage one is what is needed to book a meet & greet safely (owner name, phone and email; each dog's breed, colour, birthday, weight, sex and spay/neuter; vaccination dates with a photo or PDF of the records; the contract and meet & greet policy; one signature; a requested date). The rest — address, vet, emergency contact, and the behaviour and health questions — is collected after the meet & greet passes. **Multiple dogs** go on one submission at either stage: "+ Add another dog" repeats the whole dog section, and each keeps its own answers.
 2. From then on, the kiosk home screen only asks for a phone number. Typing one in looks up every dog on file for that number and shows them for confirmation — no re-typing name/last name and no re-signing, since the waiver's already on file.
 3. **Multiple dogs, same phone number:** if a phone number matches more than one dog, the kiosk shows a picker where you tap every dog checking in together — both can be signed in (or out) in the same action, one tap on "Sign in" creates a separate record for each selected dog. Nothing auto-selects when there's more than one, so adding a second dog never hides the first.
 4. **Already-signed-in indicator:** the kiosk checks today's records for each matched dog — a dog currently dropped off (no pick-up logged yet) shows a "🟢 Signed in" badge in the picker and on their card. If Drop off is selected for a dog that's already signed in, a warning nudges toward Pick up instead — it doesn't hard-block (staff can still correct a mistake), but it catches the common accidental double-drop-off before it happens.
@@ -324,12 +325,39 @@ A household enrolling a second dog later doesn't produce a duplicate: an existin
 
 Required vaccines are set by `REQUIRED_VACCINES` in [lib/enrollment.ts](lib/enrollment.ts) — rabies, DHPP and bordetella by default. Influenza and leptospirosis are collected but optional, since not every dog gets them.
 
+## Two-stage enrollment
+
+Asking somebody twenty-five questions per dog before you have agreed to take their dog is how a form gets abandoned. So the questionnaire is split at the meet & greet.
+
+**Stage one** is the public form above. It asks only what is legally required, safety-critical, or needed to identify the household: names, phone, email, the dog basics, **vaccination dates and the uploaded record** (a dog cannot be on site without them, so they cannot wait), the agreements, the signature, and a requested meet & greet date. Roughly five minutes.
+
+**Stage two** is a link, emailed the moment staff record the meet & greet as **passed** on `/in-house`. It collects the address, the vet, the emergency contact and authorized pick-up, the bite/growl/fence/fight history, health problems, allergies, activity restrictions, touch sensitivity, traits, play style, big-dog response, crate/kennel training, attendance plan and package interest.
+
+| Piece | Where |
+| --- | --- |
+| The link | `/enroll/details/[token]` — no sign-in, no expiry |
+| The token | `enrollments.details_token`, a random uuid written when the enrollment is approved |
+| The trigger | `writeMeetGreetResult(row, "pass")` in [app/in-house/page.tsx](app/in-house/page.tsx) — one place, so there is one place to look when a client says it never arrived |
+| The wording | **Settings → Email → "Details form, after a meet & greet passes"**, which must contain `{{link}}` |
+| The state | **Requests → Details outstanding**, listing approved households that have not sent theirs back |
+
+The form prefills what stage one already collected and never asks for it twice, the same rule the boarding form follows. Submitting **merges into the existing dog records** rather than creating new ones; reopening a completed link shows what was sent instead of a blank form.
+
+Three consequences worth knowing:
+
+- The review checklist ([lib/enrollmentReview.ts](lib/enrollmentReview.ts)) takes a stage. At stage one a missing vet or emergency contact is *not yet asked*, not a gap, and the review panel says so out loud — otherwise a reviewer reads a form with no bite history and concludes the dog has none.
+- A dog profile whose household still owes stage two says **"⏳ Details outstanding"** and marks those sections as unasked rather than rendering them blank. Staff can still type the answers in themselves.
+- The public page talks to [app/api/enrollment-details/route.ts](app/api/enrollment-details/route.ts), not to the database. The anon key may only *insert* an enrollment (see [Accounts and security](#accounts-and-security)), and no RLS policy can express "the row whose token you supplied" — so the token is matched server-side with `SUPABASE_SECRET_KEY`, and what a link-holder can write is a fixed whitelist of stage-two columns. It cannot touch a vaccination date, a dog's name, the household's email, or the enrollment's status.
+
+Needs `two-stage-enrollment-migration.sql` and `SUPABASE_SECRET_KEY` in the environment. Without the key the details link explains itself and nothing else changes; without the migration the queue and the enrollment form keep working, and only the second stage is unavailable.
+
 ## Emailing clients
 
-Two messages, deliberately different in kind:
+Three messages, deliberately different in kind:
 
 - **The acknowledgement** is automatic, sent the moment a form is submitted. Off by default; turn it on under **Settings → Email**.
 - **The approve / decline message** is always written by hand. Deciding opens a compose box pre-filled from the template, and staff edit it before sending. The decision is already saved by then, so skipping the email is fine.
+- **The details form** is automatic, sent when a meet & greet is recorded as passed — see [Two-stage enrollment](#two-stage-enrollment). Its template must keep `{{link}}`; the settings page warns if it is missing, because without it the message asks for something nobody can do.
 
 Templates live in settings (so no deploy is needed to reword them) and support `{{owner}}`, `{{dogs}}`, `{{business}}` and `{{phone}}`.
 
@@ -415,6 +443,7 @@ Now:
 
 - **Sign-in is a Supabase session.** Every request carries a token, and Row Level Security decides what it may touch. Refusing happens in the database, not the interface.
 - **The anon key can do four things**, all of which the public pages need: read `settings`, read `site_photos`, insert into `enrollments`, insert into `boarding_requests`. Note both request tables are insert-only for the public — a visitor can submit a form but cannot read back what anyone else submitted.
+- **One public page needs more than that**, and gets it server-side rather than by widening the policy: the [stage-two details form](#two-stage-enrollment) has to read back one household's submission and update its dogs. A policy cannot distinguish "the row whose token you supplied" from "every row with a token", so the token is matched in [app/api/enrollment-details/route.ts](app/api/enrollment-details/route.ts) using `SUPABASE_SECRET_KEY`, which never reaches client JS — the same shape as the Resend key. The route writes a fixed whitelist of stage-two columns and nothing else.
 - **The kiosk has its own account.** It reads dogs and packages and writes sign-ins, so it cannot work signed out. It is set up once per tablet and stays signed in; the session refreshes itself. Clients never see that screen.
 - **The idle lock stayed**, but it is now a convenience on top of real auth: it re-prompts on an unattended back-office screen without ending the session.
 
