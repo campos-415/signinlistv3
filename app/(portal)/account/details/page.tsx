@@ -41,7 +41,26 @@ function Details({ household }: { household: Household }) {
     setSaved(false);
   }
 
+  // The database keeps one name. The form asks for two and joins them, which
+  // is the smaller change: splitting the column would mean a migration and
+  // every screen that reads owner_name. The last word is the surname, which
+  // is exactly the assumption the booking form already makes when it reads
+  // this back — so writing it in that shape is what makes the two agree.
+  const parts = form.owner_name.trim().split(/\s+/).filter(Boolean);
+  const firstName = parts.slice(0, -1).join(" ") || parts[0] || "";
+  const lastName = parts.length > 1 ? parts[parts.length - 1] : "";
+
+  function setName(first: string, last: string) {
+    set("owner_name", [first.trim(), last.trim()].filter(Boolean).join(" "));
+  }
+
   async function save() {
+    if (!firstName.trim() || !lastName.trim()) {
+      setError(
+        "We need a first name and a last name — a booking cannot be sent without both."
+      );
+      return;
+    }
     if (!form.email.trim()) {
       setError("We need an email address to reach you about your dog.");
       return;
@@ -73,11 +92,25 @@ function Details({ household }: { household: Household }) {
 
       <Card title="Contact">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
+          {/* Two fields, not one.
+              A single "Name" box gets a first name typed into it, and then a
+              boarding request cannot be sent: that form wants a surname, the
+              portal fills it in from here, and the client is left staring at
+              "enter your last name" above a field they cannot reach. Asking
+              for both is how the booking works at all. */}
+          <Field label="First name" required>
             <input
-              value={form.owner_name}
-              onChange={(e) => set("owner_name", e.target.value)}
-              autoComplete="name"
+              value={firstName}
+              onChange={(e) => setName(e.target.value, lastName)}
+              autoComplete="given-name"
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Last name" required>
+            <input
+              value={lastName}
+              onChange={(e) => setName(firstName, e.target.value)}
+              autoComplete="family-name"
               className={inputClass}
             />
           </Field>

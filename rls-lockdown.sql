@@ -194,7 +194,16 @@ declare
     -- requests arrive as authenticated, so the anon policy never applies to
     -- them. Leaving these at E would have left the public website working
     -- and broken signup on the kiosk - the failure nobody tests for.
-    array['enrollments',       'E',   'EK',  'E',   'M',           '-', '-', '-', '-'],
+    -- A client adding a second dog. It goes into the SAME pending queue the
+    -- public form feeds, because that is what it is: a new dog nobody here
+    -- has met, needing a meet & greet like any other. The household is
+    -- already known, so the trigger stamps the phone from the session rather
+    -- than reading it off the form, and OWN then checks it.
+    --
+    -- Select stays with staff. The queue holds other households applications
+    -- and a client has no business reading it; what they submitted comes
+    -- back to them through my_dogs once staff approve it.
+    array['enrollments',       'E',   'EK',  'E',   'M',           '-', 'OWN', '-', '-'],
     -- The one place a client writes something that reaches staff. It goes
     -- into the SAME pending queue the public form feeds - the portal offers
     -- no way to book, only to ask - and the trigger stamps owner_id and the

@@ -200,6 +200,17 @@ interface EditState {
   package_id: string; // "" means this visit spent no package day
 }
 
+// Just the first name on the sign-in list.
+//
+// The column holds whoever handed the dog over, and a full name pushes the
+// times out of line on a tablet — "Christina Villanueva-Reyes" against a
+// column sized for a time. Staff are matching a face at the door, and the
+// first name is what does that. The whole name is still on the row editor
+// and on the printed sheet, where there is room for it.
+function firstNameOnly(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? "";
+}
+
 function localDateKey(iso: string): string {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -1111,6 +1122,46 @@ function RecordsInner() {
       setError(
         "Could not save that result — if this is the first time, run meet-greet-result-migration.sql."
       );
+    } finally {
+      setMgBusyKey(null);
+    }
+  }
+
+  /**
+   * A meet & greet the dog stayed on from.
+   *
+   * Two hours is the plan; sometimes the dog settles and the household leaves
+   * them for the day, and then it is a daycare day — it belongs in that tab,
+   * it should be priced like one, and it should not sit in the meet & greet
+   * group looking unfinished.
+   *
+   * Every row of the visit moves, drop-off and pick-up alike, or the two
+   * halves would disagree about what the visit was and the pair would stop
+   * merging into one row.
+   *
+   * meet_greet_result is deliberately left alone. The assessment happened,
+   * and it is what lets this dog come back without another one.
+   */
+  async function convertToDaycare(row: MergedRow) {
+    const ids = row.allIds.filter(Boolean);
+    if (!ids.length) return;
+    setMgBusyKey(row.key);
+    setMgNotice("");
+    try {
+      const { error: err } = await getSupabase()
+        .from("signins")
+        .update({ service_type: "daycare" })
+        .in("id", ids);
+      if (err) throw err;
+      setRecords((prev) =>
+        prev.map((r) => (r.id && ids.includes(r.id) ? { ...r, service_type: "daycare" } : r))
+      );
+      setMgNotice(
+        `${row.dog_name} moved to daycare. The visit prices at pick-up like any other day.`
+      );
+    } catch (e) {
+      console.error("Moving the meet & greet to daycare failed:", e);
+      setError("Could not move that to daycare.");
     } finally {
       setMgBusyKey(null);
     }
@@ -2119,7 +2170,9 @@ function RecordsInner() {
                     <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="block text-ink-2">{timeOnly(r.drop_off_time)}</span>
                       {r.drop_off_by && (
-                        <span className="block text-[11px] text-ink-3">by {r.drop_off_by}</span>
+                        <span className="block text-[11px] text-ink-3" title={r.drop_off_by}>
+                          by {firstNameOnly(r.drop_off_by)}
+                        </span>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
@@ -2127,7 +2180,9 @@ function RecordsInner() {
                         <>
                           <span className="block text-ink-2">{timeOnly(r.pick_up_time)}</span>
                           {r.pick_up_by && (
-                            <span className="block text-[11px] text-ink-3">by {r.pick_up_by}</span>
+                            <span className="block text-[11px] text-ink-3" title={r.pick_up_by}>
+                              by {firstNameOnly(r.pick_up_by)}
+                            </span>
                           )}
                         </>
                       ) : r.pickup_window ? (
@@ -2177,6 +2232,24 @@ function RecordsInner() {
                                   </a>
                                 ) : null;
                               })()}
+                              {/* A meet & greet that turns into a day.
+                                  Offered only once the verdict is in, for two
+                                  reasons: the assessment is the point of the
+                                  visit and should not be skippable, and the
+                                  verdict controls live in this same cell — a
+                                  row converted first would lose them.
+
+                                  It costs no width anywhere else. Only a meet
+                                  & greet row renders this cell at all, so the
+                                  table stays the same size for the twenty
+                                  daycare dogs underneath it. */}
+                              <button
+                                onClick={() => convertToDaycare(r)}
+                                disabled={mgBusyKey === r.key}
+                                title="They stayed on for the day — move this to Daycare. The pass is kept, and the day is priced at pick-up like any other."
+                                className="rounded-md border border-line px-2 py-0.5 text-[11px] font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600 disabled:opacity-50">
+                                → Daycare
+                              </button>
                             </>
                           ) : r.meet_greet_result === "fail" ? (
                             <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">

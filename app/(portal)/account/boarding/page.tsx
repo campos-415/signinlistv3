@@ -54,6 +54,28 @@ function RequestBoarding({ household }: { household: Household }) {
   const firstName = parts.slice(0, -1).join(" ") || parts[0] || "";
   const lastName = parts.length > 1 ? parts[parts.length - 1] : "";
 
+  // A household stored with one word for a name cannot send a request: the
+  // form requires a surname, it is filled in from here, and it is locked —
+  // so the client would be told to enter a last name into a field they
+  // cannot reach. Sending them to fix it is the only way out of that.
+  if (!lastName) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-4">
+        <p className="text-sm font-medium text-amber-900">One thing first</p>
+        <p className="mt-1 text-sm leading-relaxed text-amber-900">
+          We only have one name on file for you, and a boarding request needs a first and last
+          name. Add your last name and this form will be ready.
+        </p>
+        <Link
+          href="/account/details"
+          className="mt-3 inline-block rounded-xl bg-accent-500 px-5 py-2 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600"
+        >
+          Add your last name
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div>
       {pending.length > 0 && (

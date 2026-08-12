@@ -111,6 +111,12 @@ function Overview() {
               We do not have a dog on file for you yet. Give us a ring if that looks wrong.
             </p>
           )}
+          <Link
+            href="/account/dogs/new"
+            className="block rounded-2xl border border-dashed border-line px-4 py-3 text-center text-sm font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
+          >
+            + Add another dog
+          </Link>
         </div>
       </section>
 
