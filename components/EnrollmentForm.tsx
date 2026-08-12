@@ -246,7 +246,7 @@ function EnrollmentFormInner({
         </p>
         {!embed && (
           <Link
-            href="/https://dog-daycare-website-two.vercel.app"
+            href="/"
             className="mt-2 rounded-xl bg-accent-500 px-6 py-2.5 text-sm font-medium text-accent-ink shadow-card transition hover:bg-accent-600">
             Back to the start
           </Link>

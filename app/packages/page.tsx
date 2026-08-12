@@ -14,6 +14,8 @@ import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import { PackageRow } from "@/components/PackageBits";
 import { useUnpaid } from "@/components/useUnpaid";
+import useRole from "@/components/useRole";
+import { isManagerOrAbove } from "@/lib/roles";
 import { packageChargeKey } from "@/lib/billing";
 
 export default function PackagesPage() {
@@ -33,6 +35,9 @@ function Packages() {
   const [search, setSearch] = useState("");
   // A package sale is a charge like any other, so it can be outstanding.
   const { stateFor } = useUnpaid();
+  // Selling and deleting packages are manager actions in the policy matrix.
+  const { account, unavailable: rolesUnavailable } = useRole();
+  const mayManage = rolesUnavailable || isManagerOrAbove(account?.role ?? null);
 
   // New-package form: look the number up, then pick which dogs it's for.
   const [phone, setPhone] = useState("");
@@ -369,7 +374,9 @@ function Packages() {
         </p>
       </div>
 
-      {/* New package */}
+      {/* Selling a package is an insert, which the policy matrix puts at
+          manager. An employee is not shown a form whose save would fail. */}
+      {mayManage && (
       <div className="mb-8 rounded-2xl border border-line bg-surface p-5 shadow-card">
         <p className="mb-4 text-sm font-medium text-ink-2">Sell a package</p>
 
@@ -572,6 +579,7 @@ function Packages() {
         </button>
         {error && <p className="mt-3 text-xs font-medium text-rose-500">{error}</p>}
       </div>
+      )}
 
       {loading ? (
         <p className="text-sm text-ink-3">Loading…</p>
@@ -609,7 +617,7 @@ function Packages() {
                   )}
                 </div>
                 {h.packages.map((p) => (
-                  <PackageRow key={p.id} pkg={p} {...rowProps} payState={stateFor(packageChargeKey(p.id ?? ""))} />
+                  <PackageRow key={p.id} pkg={p} {...rowProps} mayManage={mayManage} payState={stateFor(packageChargeKey(p.id ?? ""))} />
                 ))}
               </div>
             ))}
@@ -630,6 +638,7 @@ function Packages() {
                     pkg={p}
                     {...rowProps}
                     showOwner
+                    mayManage={mayManage}
                     payState={stateFor(packageChargeKey(p.id ?? ""))}
                   />
                 ))}

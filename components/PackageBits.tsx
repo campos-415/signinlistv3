@@ -42,6 +42,7 @@ export function PackageRow({
   deletingId,
   showOwner,
   payState,
+  mayManage,
 }: {
   pkg: Package;
   allDogs: Dog[];
@@ -58,6 +59,8 @@ export function PackageRow({
   showOwner?: boolean;
   /** Whether the sale itself has been paid for. */
   payState: PayState;
+  /** Selling and deleting packages are manager actions. */
+  mayManage: boolean;
 }) {
   const left = daysLeft(pkg);
   const history = pkg.id ? (usesByPackage.get(pkg.id) ?? []) : [];
@@ -175,12 +178,14 @@ export function PackageRow({
             </button>
           )}
 
-          <button
-            onClick={() => deletePackage(pkg)}
-            disabled={deletingId === pkg.id}
-            className="ml-auto rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-500 hover:border-rose-300 disabled:opacity-60">
-            {deletingId === pkg.id ? "Deleting…" : "Delete"}
-          </button>
+          {mayManage && (
+            <button
+              onClick={() => deletePackage(pkg)}
+              disabled={deletingId === pkg.id}
+              className="ml-auto rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-500 hover:border-rose-300 disabled:opacity-60">
+              {deletingId === pkg.id ? "Deleting…" : "Delete"}
+            </button>
+          )}
         </div>
 
         {/* Saying so here is the guard against the count being taken twice —

@@ -18,6 +18,8 @@ import {
 import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
+import useRole from "@/components/useRole";
+import { isManagerOrAbove } from "@/lib/roles";
 import RecordPreview from "@/components/RecordPreview";
 import { Enrollment, EnrollmentStage, EnrollmentStatus, VACCINES } from "@/types";
 import { reviewChecks } from "@/lib/enrollmentReview";
@@ -56,6 +58,12 @@ interface Compose {
 
 export default function Enrollments({ onChanged }: { onChanged?: () => void } = {}) {
   const { settings } = useSettings();
+  // Deleting is a manager action in the policy matrix, so an employee is not
+  // shown a button the database is going to refuse. A database without the
+  // roles migration keeps the old behaviour rather than hiding it from
+  // everybody.
+  const { account, unavailable: rolesUnavailable } = useRole();
+  const mayDelete = rolesUnavailable || isManagerOrAbove(account?.role ?? null);
   const [rows, setRows] = useState<Enrollment[]>([]);
   const [tab, setTab] = useState<QueueTab>("pending");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -522,6 +530,7 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                         Open the client profile →
                       </Link>
                     )}
+                    {mayDelete && (
                     <button
                       onClick={() => removeRow(row)}
                       disabled={busyId === row.id}
@@ -530,6 +539,7 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                     >
                       🗑 Delete this submission
                     </button>
+                    )}
                   </div>
                 </div>
               )}

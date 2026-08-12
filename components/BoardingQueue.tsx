@@ -7,6 +7,8 @@ import { prettyDateKey, todayKey } from "@/lib/dates";
 import { dogHref, ownerHref } from "@/lib/dogs";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
+import useRole from "@/components/useRole";
+import { isManagerOrAbove } from "@/lib/roles";
 import {
   BoardingRequestDraft,
   NOTICE_DAYS,
@@ -61,6 +63,12 @@ interface DogCheck {
 
 export default function BoardingRequests({ onChanged }: { onChanged?: () => void } = {}) {
   const { settings } = useSettings();
+  // Deleting is a manager action in the policy matrix, so an employee is not
+  // shown a button the database is going to refuse. A database without the
+  // roles migration keeps the old behaviour rather than hiding it from
+  // everybody.
+  const { account, unavailable: rolesUnavailable } = useRole();
+  const mayDelete = rolesUnavailable || isManagerOrAbove(account?.role ?? null);
   const [rows, setRows] = useState<BoardingRequest[]>([]);
   const [tab, setTab] = useState<EnrollmentStatus>("pending");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -499,6 +507,7 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                       >
                         Open the owner profile →
                       </Link>
+                      {mayDelete && (
                       <button
                         onClick={() => removeRow(row)}
                         disabled={busyId === row.id}
@@ -507,6 +516,7 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                       >
                         🗑 Delete this request
                       </button>
+                      )}
                     </div>
                   </div>
                 )}
