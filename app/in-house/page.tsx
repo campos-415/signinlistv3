@@ -41,6 +41,7 @@ import {
   packageKind,
   packagesBoughtOn,
 } from "@/lib/dogs";
+import { sendDetailsRequest } from "@/lib/enrollment";
 import StaffNav from "@/components/StaffNav";
 import Money from "@/components/Money";
 import { useUnpaid } from "@/components/useUnpaid";
@@ -1046,12 +1047,14 @@ function RecordsInner() {
   // pass cannot be recorded without one — the file picker opens first, and
   // the verdict is only written once the photo has saved.
   const [mgBusyKey, setMgBusyKey] = useState<string | null>(null);
+  const [mgNotice, setMgNotice] = useState("");
   const mgPhotoInput = useRef<HTMLInputElement | null>(null);
   const mgPendingRow = useRef<MergedRow | null>(null);
 
   async function writeMeetGreetResult(row: MergedRow, result: MeetGreetResult) {
     if (!row.drop_off_id) return;
     setMgBusyKey(row.key);
+    setMgNotice("");
     try {
       const supabase = getSupabase();
       const { error: err } = await supabase
@@ -1062,6 +1065,14 @@ function RecordsInner() {
       setRecords((prev) =>
         prev.map((r) => (r.id === row.drop_off_id ? { ...r, meet_greet_result: result } : r))
       );
+      // A pass is the moment the rest of the enrollment is worth asking for:
+      // the household has been in, the dog has been seen, and the questions
+      // that were held back are now questions between people who have met.
+      //
+      // Sent from here and nowhere else, so that when a client says the form
+      // never arrived there is one place to look. Never throws — the verdict
+      // is what is being saved, and it must survive a bounced email.
+      if (result === "pass") await requestDetailsFor(row);
     } catch (e) {
       console.error("Saving the meet & greet result failed:", e);
       setError(
@@ -1069,6 +1080,37 @@ function RecordsInner() {
       );
     } finally {
       setMgBusyKey(null);
+    }
+  }
+
+  async function requestDetailsFor(row: MergedRow) {
+    const outcome = await sendDetailsRequest(row.phone);
+    switch (outcome.status) {
+      case "sent":
+        setMgNotice(`✓ ${row.dog_name} passed — details form emailed to ${outcome.to}.`);
+        break;
+      case "no-email":
+        setMgNotice(
+          `${row.dog_name} passed, but there is no email on their enrollment — the details form is on Requests, ready to read out.`
+        );
+        break;
+      case "not-configured":
+        setMgNotice(
+          `${row.dog_name} passed. Email is not set up here, so the details form was not sent — copy the link from Requests.`
+        );
+        break;
+      case "failed":
+        setMgNotice(
+          `${row.dog_name} passed, but the details form could not be emailed${
+            outcome.detail ? ` (${outcome.detail})` : ""
+          } — the link is on Requests.`
+        );
+        break;
+      // "no-enrollment" and "already-submitted" are the ordinary quiet cases:
+      // a dog enrolled before two-stage forms existed, one added by staff, or
+      // a household that has already sent their details back. Nothing to say.
+      default:
+        break;
     }
   }
 
@@ -1516,6 +1558,23 @@ function RecordsInner() {
         <p className="text-xs font-medium text-rose-500 print:hidden">
           {error}
         </p>
+      )}
+      {mgNotice && (
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 print:hidden">
+          <p className="text-sm font-medium text-emerald-800">{mgNotice}</p>
+          <Link
+            href="/requests?tab=enrollments"
+            className="text-xs font-medium text-emerald-700 underline hover:text-emerald-900"
+          >
+            Open Requests
+          </Link>
+          <button
+            onClick={() => setMgNotice("")}
+            className="ml-auto text-xs font-medium text-emerald-700 hover:text-emerald-900"
+          >
+            Dismiss
+          </button>
+        </div>
       )}
 
       {/* One Edit and one Delete for the whole table, driven by what is

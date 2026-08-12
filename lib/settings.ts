@@ -98,6 +98,11 @@ export interface EmailSettings {
   approvedBody: string;
   declinedSubject: string;
   declinedBody: string;
+  // The second half of the enrollment, sent when a meet & greet is recorded
+  // as passed. {{link}} is the household's own details form — without it the
+  // message has nothing to act on, so the settings page says so.
+  detailsRequestSubject: string;
+  detailsRequestBody: string;
   // Boarding requests. Separate wording from enrollment, because these also
   // carry dates — {{dropoff}}, {{pickup}} and {{nights}} work here too.
   boardingAckSubject: string;
@@ -311,6 +316,18 @@ After that, checking in is just your phone number ({{phone}}) at the front desk.
 
 See you soon,
 {{business}}`,
+    detailsRequestSubject: "{{dogs}} passed — a few last details for {{business}}",
+    detailsRequestBody: `Hi {{owner}},
+
+{{dogs}} did well at the meet & greet, and we would love to see them again.
+
+There is one thing left: the rest of your profile. It takes a couple of minutes and covers the things we need before a full day — your address, your vet, an emergency contact, and how {{dogs}} is around other dogs.
+
+{{link}}
+
+The link is yours alone and does not expire, so finish it whenever suits. If you would rather do it at the front desk, just say so when you next come in.
+
+— {{business}}`,
     declinedSubject: "About your enrollment at {{business}}",
     declinedBody: `Hi {{owner}},
 

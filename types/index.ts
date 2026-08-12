@@ -451,8 +451,19 @@ export interface Enrollment {
   data: any;
   review_note?: string | null;
   reviewed_at?: string | null;
+  // Two-stage enrollment. Stage one is the public form; stage two is the
+  // link emailed once the meet & greet has passed. See enrollmentStage() in
+  // lib/enrollment.ts, and two-stage-enrollment-migration.sql — a row
+  // written before that migration has none of these three, which reads as a
+  // complete, single-stage submission.
+  stage?: EnrollmentStage | null;
+  details_token?: string | null;
+  details_submitted_at?: string | null;
   created_at?: string;
 }
+
+/** 1 while the details form is outstanding, 2 once it has been returned. */
+export type EnrollmentStage = 1 | 2;
 
 // A client asking for a stay. Same shape of idea as Enrollment: the public
 // form is open to anyone, so a submission is a request for dates, not a

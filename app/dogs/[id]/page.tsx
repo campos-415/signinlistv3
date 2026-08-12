@@ -46,7 +46,8 @@ import {
   WalkLog,
 } from "@/types";
 import { Balance, loadBalanceFor } from "@/lib/billing";
-import { ageFromBirthdate } from "@/lib/enrollment";
+import { Enrollment } from "@/types";
+import { ageFromBirthdate, detailsLink, loadOutstandingDetails } from "@/lib/enrollment";
 import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
@@ -93,6 +94,11 @@ function DogProfile() {
   const [baseline, setBaseline] = useState("");
 
   const [docs, setDocs] = useState<DogDoc[]>([]);
+  // The household's approved enrollment when the second half of the form has
+  // not come back. What makes an empty behaviour section readable: "not
+  // asked yet" and "answered no" look identical otherwise.
+  const [awaitingDetails, setAwaitingDetails] = useState<Enrollment | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Editable draft, seeded from the loaded profile. Covers the basics plus
   // every enrollment answer, so staff can correct anything a client typed
@@ -288,6 +294,8 @@ function DogProfile() {
         console.error("Loading balance failed:", e);
       }
 
+      setAwaitingDetails(await loadOutstandingDetails(dog.phone));
+
       const stayIds = stays.map((b) => b.id).filter(Boolean) as string[];
       if (stayIds.length) {
         const { data: walkData, error: walkErr } = await supabase
@@ -310,6 +318,18 @@ function DogProfile() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function copyDetailsLinkFor(row: Enrollment) {
+    if (!row.details_token) return;
+    const link = detailsLink(row.details_token);
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopiedLink(true);
+    } catch {
+      // Needs a secure context and permission; the prompt always works.
+      window.prompt("Copy this link and send it to the client:", link);
+    }
+  }
 
   async function saveInfo() {
     if (!dog?.id) return;
@@ -701,6 +721,11 @@ function DogProfile() {
   const yn = (v: boolean | null | undefined, yes: string, no: string) =>
     v === true ? yes : v === false ? no : "";
 
+  // What an empty questionnaire section says. A dog whose household has not
+  // sent the details form back has not declined to answer — nobody has asked
+  // yet, and the two read very differently on a behaviour section.
+  const unanswered = awaitingDetails ? "⏳ Waiting on the details form" : "Not answered";
+
   const healthSummary = [
     yn(dog?.health_problems, `Health: ${dog?.health_notes || "see notes"}`, "No health problems"),
     dog?.allergies?.length ? `Allergies: ${dog.allergies.join(", ")}` : "",
@@ -718,7 +743,9 @@ function DogProfile() {
     ? `⚠️ ${historyFlags.join(", ")}`
     : dog?.bitten === false || dog?.growled === false
       ? "Nothing recorded"
-      : "Not asked";
+      : awaitingDetails
+        ? unanswered
+        : "Not asked";
 
   const behaviourSummary = [
     dog?.behavior_traits?.length ? dog.behavior_traits.slice(0, 3).join(", ") : "",
@@ -832,6 +859,14 @@ function DogProfile() {
                 ⚠️ No waiver on file
               </span>
             )}
+            {awaitingDetails && (
+              <span
+                title="The second half of their enrollment has not come back yet"
+                className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700"
+              >
+                ⏳ Details outstanding
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -848,6 +883,41 @@ function DogProfile() {
               <li key={f}>{f}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Which half of the profile is actually missing, said once at the top
+          rather than left for staff to infer from three empty sections. */}
+      {awaitingDetails && (
+        <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+            ⏳ Second half of the enrollment outstanding
+          </p>
+          <p className="text-sm text-amber-900">
+            This household enrolled in two stages and has not sent the details form back yet, so
+            the address, the vet, the emergency contact, and the history, health and behaviour
+            answers below are <strong className="font-semibold">unasked, not blank</strong>. It
+            was emailed when the meet &amp; greet passed.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {awaitingDetails.details_token && (
+              <button
+                onClick={() => copyDetailsLinkFor(awaitingDetails)}
+                className="rounded-xl border border-amber-300 bg-white/70 px-3 py-1.5 text-[11px] font-medium text-amber-900 hover:border-amber-400"
+              >
+                {copiedLink ? "✓ Link copied" : "Copy their link"}
+              </button>
+            )}
+            <Link
+              href="/requests?tab=enrollments"
+              className="text-[11px] font-medium text-amber-800 underline hover:text-amber-900"
+            >
+              Everyone still outstanding →
+            </Link>
+            <span className="text-[11px] text-amber-800">
+              Anything typed in here is saved to the profile as usual.
+            </span>
+          </div>
         </div>
       )}
 
@@ -997,7 +1067,8 @@ function DogProfile() {
       </Panel>
 
       {/* Health & grooming — the enrollment answers, editable */}
-      <Panel id="dog-health" title="Health &amp; grooming" summary={healthSummary || "Not answered"} tone={healthSummary.includes("Allergies") || healthSummary.startsWith("Health:") ? "alert" : "default"}>
+      <Panel id="dog-health" title="Health &amp; grooming" summary={healthSummary || unanswered} tone={healthSummary.includes("Allergies") || healthSummary.startsWith("Health:") ? "alert" : "default"}>
+        {!healthSummary && <AwaitingDetails show={!!awaitingDetails} />}
         <div className="space-y-3">
           <YesNoDetail
             label="Any health problems?"
@@ -1037,6 +1108,7 @@ function DogProfile() {
 
       {/* Incident history */}
       <Panel id="dog-history" title="History" summary={historySummary} tone={historyFlags.length ? "alert" : "default"}>
+        {!historyFlags.length && <AwaitingDetails show={!!awaitingDetails} />}
         <div className="grid gap-3 sm:grid-cols-2">
           <YesNoDetail
             label="Has growled at a person or dog?"
@@ -1074,7 +1146,8 @@ function DogProfile() {
       </Panel>
 
       {/* Behaviour */}
-      <Panel id="dog-behaviour" title="Behaviour &amp; play" summary={behaviourSummary || "Not answered"}>
+      <Panel id="dog-behaviour" title="Behaviour &amp; play" summary={behaviourSummary || unanswered}>
+        {!behaviourSummary && <AwaitingDetails show={!!awaitingDetails} />}
         <div className="space-y-3">
           <Field label="Traits">
             <CheckGrid
@@ -1492,6 +1565,20 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="mb-1 block text-[11px] text-ink-3">{label}</label>
       {children}
     </div>
+  );
+}
+
+// Sits at the top of a section whose questions have never been put to this
+// household. Without it a screen of unanswered yes/no questions looks like a
+// profile somebody could not be bothered to fill in, and staff either chase
+// answers that are already coming or assume the dog has no history.
+function AwaitingDetails({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+      ⏳ Not asked yet — these come from the details form the owner has not sent back. Blank here
+      does not mean &ldquo;no&rdquo;. Fill anything in yourself and it saves as normal.
+    </p>
   );
 }
 

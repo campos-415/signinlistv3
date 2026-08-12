@@ -1152,6 +1152,25 @@ function Settings() {
           onSubject={(v) => patchEmail({ declinedSubject: v })}
           onBody={(v) => patchEmail({ declinedBody: v })}
         />
+        <EmailTemplate
+          label="Details form, after a meet & greet passes"
+          subject={draft.email.detailsRequestSubject}
+          body={draft.email.detailsRequestBody}
+          onSubject={(v) => patchEmail({ detailsRequestSubject: v })}
+          onBody={(v) => patchEmail({ detailsRequestBody: v })}
+        />
+        <p className="mt-1 text-[11px] text-ink-3">
+          Sent automatically the moment staff record a meet &amp; greet as passed. It must
+          contain <code className="rounded bg-surface-3 px-1">{"{{link}}"}</code> — that is
+          the household&apos;s own link to the second half of the enrollment form, and
+          without it there is nothing for them to fill in.
+        </p>
+        {!draft.email.detailsRequestBody.includes("{{link}}") && (
+          <p className="mt-2 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
+            ⚠️ This message has no {"{{link}}"} in it, so nobody who receives it can
+            complete their details.
+          </p>
+        )}
 
         <p className="mt-5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
           Boarding requests
@@ -1689,14 +1708,23 @@ const SAMPLE = {
   dropoff: "Fri, Aug 14",
   pickup: "Mon, Aug 17",
   nights: "3",
+  link: "https://example.com/enroll/details/8f14e45f-ceea-467a-9f77-2c3b0a1d5e42",
 };
 
-type PreviewKey = "ack" | "approved" | "declined" | "back" | "bconfirmed" | "bdeclined";
+type PreviewKey =
+  | "ack"
+  | "approved"
+  | "declined"
+  | "details"
+  | "back"
+  | "bconfirmed"
+  | "bdeclined";
 
 const PREVIEW_TABS: { key: PreviewKey; label: string }[] = [
   { key: "ack", label: "Enroll · ack" },
   { key: "approved", label: "Enroll · approved" },
   { key: "declined", label: "Enroll · declined" },
+  { key: "details", label: "Enroll · details form" },
   { key: "back", label: "Boarding · ack" },
   { key: "bconfirmed", label: "Boarding · confirmed" },
   { key: "bdeclined", label: "Boarding · declined" },
@@ -1723,6 +1751,7 @@ function EmailPreview({
     ack: { subject: email.ackSubject, body: email.ackBody },
     approved: { subject: email.approvedSubject, body: email.approvedBody },
     declined: { subject: email.declinedSubject, body: email.declinedBody },
+    details: { subject: email.detailsRequestSubject, body: email.detailsRequestBody },
     back: { subject: email.boardingAckSubject, body: email.boardingAckBody },
     bconfirmed: { subject: email.boardingConfirmedSubject, body: email.boardingConfirmedBody },
     bdeclined: { subject: email.boardingDeclinedSubject, body: email.boardingDeclinedBody },
