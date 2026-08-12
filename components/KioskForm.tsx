@@ -50,6 +50,14 @@ export default function KioskForm() {
   const { settings } = useSettings();
   const business = settings.business;
   const [action, setAction] = useState<SignAction>("drop_off");
+  // Whether anybody has actually said which of the two this is.
+  //
+  // `action` has always defaulted to drop_off, and the button rendered as
+  // chosen — so the strongest thing on the screen was a decision nobody made.
+  // Somebody collecting their dog would go straight to the keypad and sign a
+  // second visit in. A separate flag rather than making `action` nullable:
+  // it is read in three dozen places, none of which need a third state.
+  const [actionChosen, setActionChosen] = useState(false);
   const [phone, setPhone] = useState("");
   const [dropOffBy, setDropOffBy] = useState("");
   const [service, setService] = useState<ServiceType>("daycare");
@@ -323,6 +331,7 @@ export default function KioskForm() {
 
   function selectAction(next: SignAction) {
     setAction(next);
+    setActionChosen(true);
     if (next === "pick_up") {
       setAddonsByDog({});
       seededFromBoarding.current.clear();
@@ -358,6 +367,9 @@ export default function KioskForm() {
     setPickupWindowByDog({});
     seededFromBoarding.current.clear();
     setAction("drop_off");
+    // The next person at the kiosk must choose for themselves. Without this
+    // they would inherit whichever way the last client went.
+    setActionChosen(false);
     setPackages([]);
     setMatches([]);
     setSelectedIds([]);
@@ -713,7 +725,7 @@ export default function KioskForm() {
           <button
             onClick={() => selectAction("drop_off")}
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
-              action === "drop_off"
+              actionChosen && action === "drop_off"
                 ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
                 : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
@@ -722,7 +734,7 @@ export default function KioskForm() {
           <button
             onClick={() => selectAction("pick_up")}
             className={`rounded-2xl border px-4 py-3 text-sm font-medium transition ${
-              action === "pick_up"
+              actionChosen && action === "pick_up"
                 ? "border-accent-500 bg-accent-500 text-accent-ink shadow-card"
                 : "border-line bg-surface text-ink-2 hover:border-line"
             }`}>
@@ -740,8 +752,15 @@ export default function KioskForm() {
             placeholder="(123) 456-7890"
             inputMode="numeric"
             autoFocus
-            className="w-full rounded-xl border border-line bg-surface-2 px-4 py-3 text-base text-ink outline-none transition focus:border-accent-500 focus:bg-surface focus:ring-2 focus:ring-accent-100"
+            disabled={!actionChosen}
+            className="w-full rounded-xl border border-line bg-surface-2 px-4 py-3 text-base text-ink outline-none transition focus:border-accent-500 focus:bg-surface focus:ring-2 focus:ring-accent-100 disabled:cursor-not-allowed disabled:opacity-50"
           />
+
+          {!actionChosen && (
+            <p className="mt-2 text-xs text-ink-3">
+              Choose drop off or pick up to start.
+            </p>
+          )}
 
           {phoneEntered && dogsLoading && (
             <p className="mt-2 text-xs text-ink-3">Looking you up…</p>
