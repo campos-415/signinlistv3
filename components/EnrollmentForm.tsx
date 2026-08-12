@@ -269,9 +269,7 @@ function EnrollmentFormInner({
           <>
             <p className="text-sm text-ink-3">
               Once the meet &amp; greet has gone well we&apos;ll email you a link to set up your
-              account. You&apos;ll pick a password, and the last few questions are waiting inside
-              — your address, your vet, and how{" "}
-              {draft.dogs.length > 1 ? "they get on" : "your dog gets on"} with other dogs.
+              account.
             </p>
             <p className="text-xs text-ink-3">
               That account is also where you&apos;ll find{" "}
