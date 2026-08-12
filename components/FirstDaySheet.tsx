@@ -6,9 +6,29 @@ import { Dog, Owner } from "@/types";
 
 // The sheet a household takes home after a meet & greet.
 //
-// Split out from the page so it can be rendered on its own — the page sits
-// behind a staff sign-in, and a print layout that can only be looked at by
-// somebody who is signed in is a print layout nobody checks.
+// It is designed to survive the car journey and end up on a fridge, which is
+// a different brief from the other reports in this app. Those are operational
+// documents — a day sheet, a stay sheet — and they are laid out as tables
+// because staff read them in a hurry. Nobody keeps a table.
+//
+// So this one is built around three things:
+//
+//   The photograph is the hero. It is the first day of a dog somebody is
+//   besotted with, and the picture is the reason the paper gets kept. It gets
+//   the top third of the page rather than an avatar in a corner.
+//
+//   The answers read as sentences about one dog, not as fields. On screen
+//   staff tap chips; on paper the unchosen options vanish and what is left
+//   is "Took a few minutes to settle, then picked a friend". A form with
+//   boxes ticked reads as paperwork and gets filed or binned.
+//
+//   It ends by looking forward. The last thing on the page is what happens
+//   next and an invitation, because a keepsake that also books the second
+//   visit is doing both jobs.
+//
+// Split out from the page so it can be rendered and checked without a staff
+// sign-in — a print layout only reachable behind a login is one nobody looks
+// at, which is how it shipped blank three times.
 
 export interface FirstDayReport {
   settled: string;
@@ -30,12 +50,19 @@ export const EMPTY_REPORT: FirstDayReport = {
   staff: "",
 };
 
-// Offered as taps rather than free text, because this gets filled in at a
-// desk with somebody waiting.
-const SETTLED = ["Straight in", "Took a few minutes", "Needed some time", "Found it hard"];
-const PLAY = ["Played with everyone", "Picked a friend", "Watched first", "Preferred people", "Kept to themselves"];
-const ENERGY = ["Calm", "Steady", "Busy", "Full tilt"];
-const RECOMMEND = ["Ready for full days", "Start with half days", "Two days a week to settle", "Small group only", "Let us talk it through"];
+// Offered as taps rather than free text, because this is filled in at a desk
+// with somebody waiting. The wording is what will be READ by the household,
+// so it is phrased as the finished sentence rather than as a category.
+const SETTLED = ["Straight in, no nerves", "Took a few minutes", "Needed some time", "Found it a big day"];
+const PLAY = ["Played with everyone", "Picked a favourite friend", "Watched before joining in", "Preferred the humans", "Enjoyed their own company"];
+const ENERGY = ["Calm and easy", "Steady all day", "Busy from the off", "Full tilt"];
+const RECOMMEND = [
+  "Ready for full days",
+  "Start with half days",
+  "Two days a week to settle in",
+  "Best in the small group",
+  "Let us talk it through",
+];
 
 export default function FirstDaySheet({
   dog,
@@ -56,128 +83,162 @@ export default function FirstDaySheet({
   const set = <K extends keyof FirstDayReport>(key: K, value: string) =>
     onChange({ ...report, [key]: value });
 
+  const subtitle = [dog.breed, age].filter(Boolean).join(" · ");
+
   return (
-    <article className="rounded-2xl border border-line bg-surface p-6 shadow-card print:rounded-none print:border-0 print:bg-white print:p-0 print:shadow-none">
-      {/* The same print block every other report on this app carries.
-          print-color-adjust: exact is the important line — without it the
-          browser drops background colours when printing, which is why this
-          sheet came out plain while the day and stay reports came out
-          branded. It travels inside the component so it reaches the print
-          document along with the sheet. */}
+    <article className="overflow-hidden rounded-3xl border border-line bg-surface shadow-card print:rounded-none print:border-0 print:bg-white print:shadow-none">
+      {/* The print block every report in this app carries. print-color-adjust
+          is the line that matters: without it the browser drops background
+          colours, and this page is mostly background colour. */}
       <style>{`
         @media print {
-          @page { margin: 0.5in; size: portrait; }
+          @page { margin: 0.45in; size: portrait; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .print-header {
+          .fd-band {
             background: linear-gradient(135deg, rgb(var(--print-from)) 0%, rgb(var(--print-to)) 100%);
-            border-radius: 20px;
           }
+          .fd-sheet { break-inside: avoid; }
         }
       `}</style>
 
-      {/* The banner the other reports lead with. Print only: on screen the
-          page already has a heading, and the household is looking at their
-          own dog rather than at a document. */}
-      <div className="print-header mb-5 hidden px-6 py-5 print:block">
-        <h2 className="font-display text-2xl font-bold text-white">🐾 {businessName}</h2>
-        <p className="text-base font-medium text-white/90">
-          My first day — {dog.dog_name}
+      {/* ---- The banner, and the photograph sitting over it ---------------
+          The overlap is the whole trick: it turns a document header into a
+          portrait frame, and it is what stops the page looking like a
+          receipt. */}
+      <div className="fd-band relative bg-gradient-to-br from-accent-500 to-accent-600 px-8 pb-20 pt-7 text-center">
+        <p className="font-display text-lg font-bold tracking-tight text-white">
+          🐾 {businessName}
+        </p>
+        <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-white/80">
+          My first day
         </p>
       </div>
 
-      <header className="flex items-start gap-4 border-b border-line-soft pb-4 print:break-inside-avoid print:border-paper-rule">
+      {/* relative z-10 so the portrait sits OVER the band. The band is
+          positioned, which lifts it above an unpositioned sibling however
+          late that sibling comes in the document — without this the top half
+          of the dog disappears behind the header. */}
+      <div className="relative z-10 -mt-16 flex justify-center">
         {dog.photo_data ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={dog.photo_data}
             alt={dog.dog_name}
-            className="h-28 w-28 shrink-0 rounded-2xl object-cover print:h-24 print:w-24"
+            className="h-32 w-32 rounded-full border-4 border-surface object-cover shadow-card print:h-28 print:w-28 print:border-white"
           />
         ) : (
-          <div className="flex h-28 w-28 shrink-0 items-center justify-center rounded-2xl bg-surface-2 text-4xl">
+          <div className="flex h-32 w-32 items-center justify-center rounded-full border-4 border-surface bg-surface-2 text-5xl shadow-card print:h-28 print:w-28 print:border-white">
             🐕
           </div>
         )}
-        <div className="min-w-0 flex-1">
-          {/* On screen this names the business; in print the banner above
-              already has, so it would be the second time in two inches. */}
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-accent-600 print:hidden">
-            My first day at {businessName}
-          </p>
-          <h2 className="font-display text-2xl font-semibold text-ink">{dog.dog_name}</h2>
-          <p className="mt-0.5 text-sm text-ink-3 print:text-ink-2">
-            {[dog.breed, age, dog.sex === "female" ? "girl" : dog.sex === "male" ? "boy" : ""]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-          <p className="mt-1 text-xs text-ink-3 print:text-ink-2">
-            {prettyDateKey(todayKey())}
-            {owner?.owner_name ? ` · ${owner.owner_name}` : ""}
-          </p>
+      </div>
+
+      <div className="px-8 pb-7 pt-3 text-center">
+        <h2 className="font-display text-3xl font-bold tracking-tight text-ink">{dog.dog_name}</h2>
+        {subtitle && <p className="mt-0.5 text-sm text-ink-3 print:text-ink-2">{subtitle}</p>}
+        <p className="mt-1 text-xs text-ink-3 print:text-ink-2">
+          {prettyDateKey(todayKey())}
+          {owner?.owner_name ? ` · with ${owner.owner_name}` : ""}
+        </p>
+      </div>
+
+      {/* ---- How it went -------------------------------------------------
+          Two columns so the four short answers read as a card of facts about
+          a dog rather than a list of questions. */}
+      <div className="fd-sheet px-8 pb-2">
+        <div className="grid grid-cols-2 gap-3">
+          <Tile icon="🚪" label="Settling in">
+            <Chips options={SETTLED} value={report.settled} onChange={(v) => set("settled", v)} />
+          </Tile>
+          <Tile icon="🐕" label="With the other dogs">
+            <Chips options={PLAY} value={report.play} onChange={(v) => set("play", v)} />
+          </Tile>
+          <Tile icon="⚡" label="Energy">
+            <Chips options={ENERGY} value={report.energy} onChange={(v) => set("energy", v)} />
+          </Tile>
+          <Tile icon="⭐" label="Favourite thing">
+            <Line
+              value={report.favourite}
+              onChange={(v) => set("favourite", v)}
+              placeholder="The paddling pool, a tennis ball…"
+            />
+          </Tile>
         </div>
-      </header>
 
-      <Row label="How they settled in">
-        <Chips options={SETTLED} value={report.settled} onChange={(v) => set("settled", v)} />
-      </Row>
-      <Row label="With the other dogs">
-        <Chips options={PLAY} value={report.play} onChange={(v) => set("play", v)} />
-      </Row>
-      <Row label="Energy">
-        <Chips options={ENERGY} value={report.energy} onChange={(v) => set("energy", v)} />
-      </Row>
-      <Row label="What they loved">
-        <Line
-          value={report.favourite}
-          onChange={(v) => set("favourite", v)}
-          placeholder="The paddling pool, the big lad from next door, a tennis ball…"
-        />
-      </Row>
-      <Row label="What we will work on">
-        <Line
-          value={report.working}
-          onChange={(v) => set("working", v)}
-          placeholder="Sharing toys, settling at nap time, coming when called…"
-        />
-      </Row>
-      <Row label="What we suggest next">
-        <Chips options={RECOMMEND} value={report.recommend} onChange={(v) => set("recommend", v)} />
-      </Row>
+        <div className="mt-3">
+          <Tile icon="🎓" label="What we will work on together">
+            <Line
+              value={report.working}
+              onChange={(v) => set("working", v)}
+              placeholder="Sharing toys, settling at nap time…"
+            />
+          </Tile>
+        </div>
+      </div>
 
-      <div className="mt-5 flex items-end justify-between gap-4 border-t border-line-soft pt-3 print:break-inside-avoid print:border-paper-rule">
-        <div className="flex-1">
+      {/* ---- The invitation ----------------------------------------------
+          Last thing on the page on purpose. A keepsake that also says "bring
+          them back" is doing both jobs, and this is the moment the household
+          is most pleased with us. */}
+      <div className="fd-sheet mx-8 mb-6 mt-4 rounded-2xl border border-accent-200 bg-accent-50 px-5 py-4 text-center print:border-paper-rule">
+        <p className="font-display text-base font-semibold text-ink">
+          We would love to see {dog.dog_name} again
+        </p>
+        <div className="mt-1.5">
+          <Chips
+            options={RECOMMEND}
+            value={report.recommend}
+            onChange={(v) => set("recommend", v)}
+            center
+          />
+        </div>
+      </div>
+
+      <div className="mx-8 mb-7 flex items-end justify-between gap-4 border-t border-line-soft pt-3 print:border-paper-rule">
+        <div className="min-w-0 flex-1 text-left">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-3 print:text-ink-2">
             Looked after by
           </p>
-          {/* An input prints as an input: a box with a border the browser
-              draws its own way. On a sheet somebody is handed it should be a
-              name on a line. */}
+          {/* An input prints as an input — a box with a border the browser
+              draws its own way. On a keepsake it should be a signature. */}
           <input
             value={report.staff}
             onChange={(e) => set("staff", e.target.value)}
             placeholder="Your name"
-            className="mt-0.5 w-full max-w-[14rem] border-b border-line bg-transparent pb-0.5 text-sm text-ink outline-none focus:border-accent-500 print:hidden"
+            className="mt-0.5 w-full max-w-[13rem] border-b border-line bg-transparent pb-0.5 font-display text-base text-ink outline-none focus:border-accent-500 print:hidden"
           />
-          <p className="mt-0.5 hidden min-h-[1.4em] max-w-[14rem] border-b border-paper-line text-sm text-ink print:block">
+          <p className="mt-0.5 hidden min-h-[1.5em] max-w-[13rem] border-b border-paper-line font-display text-base text-ink print:block">
             {report.staff}
           </p>
         </div>
-        <p className="text-right text-[11px] text-ink-3 print:text-ink-2">
+        <p className="shrink-0 text-right text-[10px] leading-relaxed text-ink-3 print:text-ink-2">
           {businessName}
-          {businessPhone ? ` · ${businessPhone}` : ""}
+          {businessPhone ? (
+            <>
+              <br />
+              {businessPhone}
+            </>
+          ) : null}
         </p>
       </div>
     </article>
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+/** One answer, framed so the page reads as a card rather than a questionnaire. */
+function Tile({
+  icon,
+  label,
+  children,
+}: {
+  icon: string;
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
-    // break-inside-avoid so a question and its answer are never split across
-    // two sheets, which is the one way a one-page handout becomes two.
-    <section className="mt-4 print:break-inside-avoid">
-      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-3 print:text-ink-2">
-        {label}
+    <section className="rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 print:break-inside-avoid print:border-paper-line print:bg-white">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-3 print:text-ink-2">
+        <span aria-hidden>{icon}</span> {label}
       </p>
       {children}
     </section>
@@ -185,30 +246,32 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /**
- * A row of choices that also prints.
+ * Choices on screen, a sentence on paper.
  *
- * On screen they are buttons; on paper the unchosen ones would be noise, so
- * only the chosen one prints — a handout should read like a sentence about
- * one dog, not a form with boxes ticked.
+ * The unchosen options are not printed. A handout with four boxes and one
+ * ticked reads as a form somebody filled in; the same answer on its own
+ * reads as something written about your dog.
  */
 function Chips({
   options,
   value,
   onChange,
+  center = false,
 }: {
   options: string[];
   value: string;
   onChange: (v: string) => void;
+  center?: boolean;
 }) {
   return (
     <>
-      <div className="flex flex-wrap gap-1.5 print:hidden">
+      <div className={`mt-1.5 flex flex-wrap gap-1.5 print:hidden ${center ? "justify-center" : ""}`}>
         {options.map((o) => (
           <button
             key={o}
             type="button"
             onClick={() => onChange(value === o ? "" : o)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
               value === o
                 ? "border-accent-500 bg-accent-500 text-accent-ink"
                 : "border-line bg-surface text-ink-2 hover:border-accent-400"
@@ -218,12 +281,18 @@ function Chips({
           </button>
         ))}
       </div>
-      <p className="hidden text-sm text-ink print:block">{value || "—"}</p>
+      <p
+        className={`mt-1 hidden font-display text-[15px] leading-snug text-ink print:block ${
+          center ? "text-center" : ""
+        }`}
+      >
+        {value || " "}
+      </p>
     </>
   );
 }
 
-/** A written line. Prints as the text, with a rule under it when empty. */
+/** A written line. Prints as the words, on a rule when there are none. */
 function Line({
   value,
   onChange,
@@ -239,9 +308,9 @@ function Line({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100 print:hidden"
+        className="mt-1.5 w-full rounded-xl border border-line bg-surface px-3 py-1.5 text-xs text-ink outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100 print:hidden"
       />
-      <p className="hidden min-h-[1.4em] border-b border-paper-line text-sm text-ink print:block">
+      <p className="mt-1 hidden min-h-[1.4em] border-b border-paper-line font-display text-[15px] leading-snug text-ink print:block">
         {value}
       </p>
     </>
