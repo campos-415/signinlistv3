@@ -203,3 +203,60 @@ A route group of its own, so the staff chrome cannot leak in.
 
 Direct booking without staff approval, online payment, and MFA for customers
 (the requirements ask for MFA on staff accounts only).
+
+---
+
+# 4. Client requests, 12 August
+
+## 4a. Customer portal behind a settings switch
+
+The portal must be something management turns on, not something that exists
+the day the app is installed. A daycare that has not opened has no customers,
+and a sign-in page for accounts nobody holds is a support call waiting to
+happen.
+
+`settings.portal.enabled`, defaulting to **off**. When off: no `/account`
+route, no invite button on the owner profile, and no portal link anywhere in
+the staff app. Follow the pattern already used for the marketing website
+(`site.enabled`) — including the part that took a bug to learn, that the
+switch has to actually stop the route rendering rather than only hide a link.
+
+## 4b. Owners upload the vaccination record; staff type the dates
+
+Owners currently type five expiry dates. They mistype them, and staff verify
+against the uploaded document anyway — so the typing is work that produces
+something nobody trusts.
+
+Change: the enrollment form asks only for the **document**. Dates become a
+staff task on the dog profile, where the record is on screen beside the
+fields.
+
+Consequences to handle rather than discover:
+
+- `lib/enrollmentReview.ts` currently blocks approval on missing vaccination
+  dates. At submission there will never be dates, so that check has to move
+  to "no record uploaded" instead — otherwise every enrollment arrives with a
+  red blocker.
+- The dog profile needs the dates to be obviously outstanding, or a dog gets
+  approved with a record nobody read.
+- Expiry reminders key off those dates. Until staff enter them the dog has no
+  expiry, which must not read as "expired".
+
+## 4c. Mobile
+
+Reported on an iPhone, and visible in the screenshot: the staff navigation
+takes four rows before any content appears — an account row (sign out, theme,
+kiosk) and three rows of wrapped page pills. On a phone that is most of the
+first screen.
+
+`components/StaffNav.tsx` is 169 lines with four responsive classes in it. It
+was built for a desk and wraps on a phone rather than adapting.
+
+What it wants: a compact bar on small screens — current page plus a menu —
+expanding to the present layout at `sm:` and up. The account controls belong
+inside that menu on mobile, not on their own row.
+
+Also seen: the sign-in table scrolls sideways on a phone, so the IN column is
+cut mid-word. The scroll is deliberate and the alternative is worse, but it
+needs to look scrollable — a fade at the edge, or the columns that matter
+most moved left.
