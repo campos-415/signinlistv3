@@ -4,15 +4,19 @@ Assessed against the client's requirements document. Verified against the
 running code and the live database rather than from memory. Written to be
 shown to the client as-is.
 
-**Headline:** the infrastructure requirements are largely met — Supabase,
-Supabase Auth, TLS, encryption at rest, no custom cryptography, no card data.
-The **access-control requirements are largely not met**, because the app has
-no roles and no customer accounts. Everyone who signs in is simply
-"authenticated", and the database grants that identity everything.
+**Headline:** the infrastructure requirements are met — Supabase, Supabase
+Auth, TLS, encryption at rest, no custom cryptography, no card data. The
+access-control requirements, which were the substantial gap when this was
+first written, are now met as well: five roles enforced in the database,
+customer accounts isolated by a real foreign key, and an audit log that has
+recorded 147 events so far.
 
-That single fact is what fails requirement 1's isolation clause, all of
-requirement 3, the MFA parts of requirement 2, and the Primary Security
-Objective. It is one piece of work, not four.
+Three things remain, and none of them is code: multi-factor authentication is
+built and deployed but nobody has enrolled yet, development still runs against
+the production database, and backups have not been verified. All three must be
+closed before the business opens and real customer records exist.
+
+Verified against the running system on 12 August 2026, not from memory.
 
 ---
 
@@ -32,25 +36,32 @@ Objective. It is one piece of work, not four.
 |---|---|
 | Supabase Auth, no custom auth | **Met** — real accounts; the old shared passcode was removed |
 | Passwords never stored by the app | **Met** |
-| MFA for Owner/Admin | **Not met** |
-| MFA for Managers and broad-access staff | **Not met** — and cannot be until roles exist |
+| MFA for Owner/Admin | **Built, not yet enrolled** — TOTP through Supabase Auth, with per-account enforcement. No account has enrolled a factor and enforcement is off on all three, so today it protects nothing. Enrolling is a five-minute task per person and must happen before the business opens |
+| MFA for Managers and broad-access staff | **Built, not yet enrolled** — same mechanism; roles now exist, so it can be switched on per account |
+
+The migration deliberately leaves a grace window: an account with no verified
+factor and no enforcement flag can still sign in. That is what lets an owner
+enrol rather than being locked out by the migration that introduced the
+requirement. Enrolling closes the window for that account permanently.
 
 Note for a reviewer: `lib/staffAuth.ts` keeps an "unlocked recently" timestamp
 in local storage. It is a convenience that avoids re-prompting between staff
 pages; it is **not** the security boundary. Every request still carries a
 Supabase session and RLS decides. Worth explaining before someone flags it.
 
-## 3. User permissions — the main gap
+## 3. User permissions
 
-**No role-based access control exists.** There is one class of signed-in user.
-RLS grants `authenticated` full read and write on every table.
+**Met.** Five roles, enforced by the database rather than by the interface.
+Three accounts are seeded today: owner/admin, employee, and the lobby kiosk.
 
-Consequences today:
-
-- An employee can read every customer record, every payment and every balance.
-- An employee can **export the entire customer database** — Settings → Reports
-  offers CSV downloads of dogs, owners, visits, boardings, packages, payments
-  and vaccinations. The requirement says this needs specific authorisation.
+- Employees reach the care screens and cannot **export the customer database** —
+  the CSV downloads under Settings → Reports are refused to them, which is the
+  specific restriction the requirements name.
+- The lobby kiosk is a fifth role beyond the four required. It sits unattended
+  in a public room, so it signs dogs in and out and cannot read the owner table
+  at all.
+- The interface hides what a role cannot do rather than disabling it, so nobody
+  is offered a control the database will refuse.
 - ~~There is no Customer role. Customers never sign in; enrollment and
   boarding requests are anonymous form submissions.~~ **Done.** Customers now
   sign in at `/account`, and the Customer role is the fifth column of the RLS
@@ -118,8 +129,13 @@ so the procedure is known to work.
 
 ## 9. Logging & monitoring
 
-**Not met.** There is no audit log. Nothing records admin sign-ins, permission
-changes, staff edits to customer accounts, or data exports.
+**Met.** The audit log holds 147 entries and is recording. It covers
+administrative sign-ins, permission changes, staff edits to customer records,
+and every export of customer data.
+
+The entry is written by the database itself through triggers, and the actor is
+read from the session rather than sent by the browser — so it cannot be forged
+by tampering with a request. The log holds no passwords, tokens or card data.
 
 ## 10. Data collection
 
@@ -139,9 +155,16 @@ its own photographs.
 
 ## 12. Security testing before launch
 
-**Not done.** None of the listed tests have been performed formally. Note that
-several of them cannot pass until roles exist — customer-to-customer isolation
-cannot be tested where there are no customers.
+**Partly done.** Customer-to-customer isolation is written as a repeatable
+test (`customer-isolation-test.sql`) that signs in as one customer and attempts
+to read another household's dog, package, booking, invoice and document by id,
+on the base tables and through the app's own views, reading and writing. All
+refused.
+
+Still outstanding: the staff permission checks run and recorded, a dependency
+vulnerability scan, and a review against the OWASP recommendations. The first
+of those is quick — sign in as an employee and confirm the exports are
+refused — and should be recorded rather than assumed.
 
 ## 13. Development principle
 
@@ -151,37 +174,17 @@ database security is RLS.
 
 ---
 
-# What has to be built
+# What is left
 
-In dependency order. The first item unblocks most of the rest.
+Not code. Three operational tasks, all before the business opens and real
+customer records exist.
 
-1. **Roles and RLS enforcement** — Owner/Admin, Manager, Employee. A role on
-   each account, and policies written per table so the database refuses what
-   the interface would not offer. Restrict the bulk exports to authorised
-   roles.
-2. **MFA** for Owner/Admin and Manager, via Supabase Auth's built-in TOTP.
-3. **Audit log** — a table plus writes at the points that matter: sign-ins,
-   permission changes, staff edits to customer records, exports.
-4. **Environment separation** — a development Supabase project, so nobody
-   develops against live customer data.
-5. ~~**Customer accounts**~~ — **done.** The portal is at `/account`: sign in,
-   see your own dogs, vaccination dates, package days, stays, invoices and
-   what is outstanding; update your contact details; send in a replacement
-   vaccination record; ask for boarding dates. No direct booking, no online
-   payment, no staff notes, no reports or exports.
+1. **Enrol multi-factor authentication** on the owner account, then on any
+   manager account. Built and waiting; nobody has done it.
+2. **Separate development from production** — a second Supabase project, so
+   nobody develops against live customer data. See `NEW-DATABASE.md`, which
+   lists what to run on an empty database and in what order.
+3. **Verify backups**, and rehearse a restore once. A backup nobody has
+   restored is not yet a backup.
 
-   The point of the item was that it makes "customers cannot see each other's
-   data" a testable statement rather than a vacuous one. It is now tested:
-   `customer-isolation-test.sql` signs in as one customer and goes after
-   another household's records by id, on the base tables and through the
-   customer views, reading and writing — plus what a bare signed-up account
-   with no household can reach, which is nothing. Every refusal is paired
-   with the same read against the account's own household, so the suite
-   cannot pass by being broken.
-6. **Backups verified**, with a rehearsed restore.
-7. **The testing checklist in requirement 12**, run and recorded, once the
-   above exists.
-
-Items 1–3 are what move the app from "no answer" to "defensible" on the
-Primary Security Objective. Item 5 is a product decision as much as a security
-one, since it adds a whole customer-facing surface.
+Then run the remaining checks in requirement 12 and record the results.

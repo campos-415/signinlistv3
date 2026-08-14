@@ -276,7 +276,8 @@ function StaffPanel() {
       </div>
       <p className="mt-0.5 text-xs leading-relaxed text-ink-3">
         The role decides what the database will accept from an account, not just what the app
-        offers. Every change here is recorded in the activity log below.
+        offers. Every change here is recorded in the activity log below. Client accounts are not
+        listed here and cannot be given a staff role by mistake.
       </p>
 
       {rows === null ? (

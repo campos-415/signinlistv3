@@ -1,4 +1,4 @@
--- Roles, enforced in the database.
+-- change Roles in LN365, enforced in the database.
 --
 -- Until now there was one class of signed-in user. RLS granted
 -- authenticated full read and write on every table, so the front desk, the
@@ -261,6 +261,19 @@ begin
       u.last_sign_in_at
     from auth.users u
     left join public.staff_roles r on r.user_id = u.id
+    -- Customers hold accounts too, and they were being listed here beside
+    -- the staff with the same role dropdown next to them - so the screen for
+    -- managing who works here offered to make a client a manager. Nothing
+    -- ever assigned one automatically, but offering the choice at all is the
+    -- kind of mistake that gets made at a busy front desk.
+    --
+    -- Anybody who already holds a staff role stays listed whatever else they
+    -- are, so a member of staff who also brings their own dog here does not
+    -- vanish from the list and become unmanageable.
+    where r.user_id is not null
+       or not exists (
+            select 1 from public.owners o where o.user_id = u.id
+          )
     order by r.role nulls first, u.email;
 end
 $fn$;
@@ -352,24 +365,50 @@ create trigger staff_roles_guard
 do $seed$
 declare
   -- EDIT ME. Left column is the sign-in email, right column the role.
+  --
+  -- These must be accounts that ALREADY EXIST. Create them first, in the
+  -- Supabase dashboard under Authentication, with Auto Confirm User ticked.
+  -- An email here with no account behind it is skipped, not created, and if
+  -- that happens to the owner_admin row this block refuses to finish.
+  --
+  -- At least one owner_admin is required. The other two are the usual shape
+  -- of a daycare and can be renamed, removed or added to.
+  --
+  -- You can skip editing this entirely by creating a table called
+  -- public.staff_seed with email and role columns and putting the rows there.
+  -- If that table exists and has anything in it, it wins over the list below.
+  -- That is how scripts/setup.mjs seeds roles without rewriting this file.
   seeds text[][] := array[
   ['cesar@staff.local', 'owner_admin'],
   ['kiosk@staff.local', 'kiosk'],
   ['frontdesk@staff.local', 'employee']
 ];
+  from_table text[][];
   i int;
   seed_email text;
   seed_role text;
   seed_id uuid;
   unassigned text;
+  missing text[] := '{}';
   owners int;
 begin
+  if to_regclass('public.staff_seed') is not null then
+    execute
+      'select array_agg(array[s.email, s.role] order by s.email) from public.staff_seed s'
+      into from_table;
+    if from_table is not null then
+      seeds := from_table;
+      raise notice 'Seeding roles from the staff_seed table, not the list in this file.';
+    end if;
+  end if;
+
   for i in 1 .. array_length(seeds, 1) loop
     seed_email := seeds[i][1];
     seed_role := seeds[i][2];
 
     select id into seed_id from auth.users where lower(email) = lower(seed_email);
     if seed_id is null then
+      missing := missing || (seed_email || ' (' || seed_role || ')');
       raise notice 'No account found for %, skipped', seed_email;
       continue;
     end if;
@@ -392,7 +431,14 @@ begin
 
   select count(*) into owners from public.staff_roles where role = 'owner_admin';
   if owners = 0 then
-    raise exception 'Refusing to finish: no owner_admin exists, so rls-lockdown.sql would lock everyone out. Fix the seed list at the top of this file and run it again.';
+    if array_length(missing, 1) > 0 then
+      raise exception
+        'Refusing to finish: no owner_admin exists, so rls-lockdown.sql would lock everyone out. These seed emails have no account behind them: %. Create them under Authentication in the Supabase dashboard with Auto Confirm User ticked, or edit the seed list in section 4 near the end of this file to the emails you actually created. Then run this file again.',
+        array_to_string(missing, ', ');
+    else
+      raise exception
+        'Refusing to finish: no owner_admin exists, so rls-lockdown.sql would lock everyone out. The accounts exist but none of them is seeded as owner_admin. Set the role in the seed list in section 4 near the end of this file and run it again.';
+    end if;
   end if;
 
   raise notice 'Roles in place. owner_admin accounts: %', owners;
