@@ -290,9 +290,12 @@ async function main() {
   say();
   projects.forEach((p, i) => say(`   ${i + 1}. ${p.name} ${c.dim(`(${p.region}, ${p.status})`)}`));
   say();
-  const choice = await ask(`Which project? 1-${projects.length}:`, "1");
-  const project = projects[Number(choice) - 1];
-  if (!project) die("That was not one of the numbers listed.");
+  let project = null;
+  while (!project) {
+    const choice = await ask(`Which project? 1-${projects.length}:`, "1");
+    project = projects[Number(choice) - 1] ?? null;
+    if (!project) warn(`Pick a number between 1 and ${projects.length}.`);
+  }
 
   const ref = project.ref ?? project.id;
   const url = `https://${ref}.supabase.co`;
@@ -354,13 +357,26 @@ async function main() {
     ["kiosk", "kiosk@staff.local"],
   ];
 
+  // Ask again rather than giving up. Throwing away a token, a project choice
+  // and two good passwords because the third was short is not a good trade.
+  const MIN_PASSWORD = 8;
+
   for (const [role, suggestion] of defaults) {
     const email = await ask(`${role} email (blank to skip):`, suggestion);
     if (!email) continue;
-    const password = await askSecret(`   password for ${email}:`);
-    if (!password || password.length < 8) {
-      die("That password is under 8 characters. Supabase will refuse it.");
+
+    let password = "";
+    for (;;) {
+      password = await askSecret(`   password for ${email}:`);
+      if (password.length >= MIN_PASSWORD) break;
+      warn(
+        password
+          ? `Too short - ${password.length} character${password.length === 1 ? "" : "s"}. ` +
+              `Use at least ${MIN_PASSWORD}: this account can read every customer record.`
+          : `A password is needed. At least ${MIN_PASSWORD} characters.`
+      );
     }
+
     staff.push({ email, password, role });
   }
 
