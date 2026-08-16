@@ -30,7 +30,15 @@
 
 set -euo pipefail
 
-SOURCE_DEFAULT="git@github.com:campos-415/signinlistv3.git"
+# HTTPS, not SSH. This script is meant to be the FIRST thing run on a machine
+# that has nothing on it, and an SSH clone needs a key that has been generated,
+# added to GitHub and loaded into the agent. That is the chicken-and-egg this
+# script exists to break: you cannot get the repository until you can clone the
+# repository. The source repo is public, so https needs nothing at all.
+#
+# Paste an SSH URL at the prompt if you would rather; the remote below follows
+# whichever style you used.
+SOURCE_DEFAULT="https://github.com/campos-415/signinlistv3.git"
 
 # ---------------------------------------------------------------------
 # Output
@@ -107,8 +115,11 @@ step "Cloning"
 note "Shallow clone - the history is discarded in a moment anyway."
 git clone --depth 1 --quiet "$SOURCE" "$CLIENT" || die "Could not clone $SOURCE.
 
-If it is a private repository, this needs your SSH key or a credential helper
-set up. Check with: ssh -T git@github.com"
+The default source is public and needs no key, so a failure here is usually
+no network, or a typo in the address.
+
+If you pasted an SSH address (git@github.com:...) it needs your key loaded.
+Check with: ssh -T git@github.com"
 cd "$CLIENT"
 ok "cloned into $CLIENT/"
 
