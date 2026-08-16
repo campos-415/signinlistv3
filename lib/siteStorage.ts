@@ -40,6 +40,27 @@ export function isStoredImage(value: string | null | undefined): boolean {
 }
 
 /**
+ * Which half of the job failed.
+ *
+ * Worth the type, because the two need opposite responses and the screens
+ * used to report both as "could not read that image — try a different file".
+ * A refused upload has nothing to do with the file: on a database where
+ * site-storage-migration.sql has not been run there are no policies on
+ * storage.objects, so every upload is denied and the person at the keyboard
+ * tries five perfectly good images before giving up.
+ */
+export class SiteImageError extends Error {
+  constructor(
+    readonly kind: "decode" | "upload",
+    message: string,
+    readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "SiteImageError";
+  }
+}
+
+/**
  * Compresses, uploads, and returns the public URL to store instead of the
  * image itself.
  *
@@ -52,7 +73,15 @@ export async function uploadSiteImage(
   maxDim: number,
   targetBytes: number
 ): Promise<string> {
-  const dataUrl = await fileToBudgetedJpeg(file, maxDim, targetBytes);
+  let dataUrl: string;
+  try {
+    dataUrl = await fileToBudgetedJpeg(file, maxDim, targetBytes);
+  } catch (e) {
+    // Genuinely the file: an SVG the browser will not draw, a HEIC straight
+    // off a phone, something that is not an image at all.
+    throw new SiteImageError("decode", "That file could not be read as an image.", e);
+  }
+
   const supabase = getSupabase();
   // Random name, so replacing an image can never be served from a stale cache
   // under the name the old one had.
@@ -68,7 +97,14 @@ export async function uploadSiteImage(
     // costs a revalidation round trip per image per page view.
     cacheControl: "31536000",
   });
-  if (error) throw error;
+  if (error) {
+    console.error("Uploading to the site-photos bucket failed:", error);
+    throw new SiteImageError(
+      "upload",
+      "The image was fine, but storage refused to save it.",
+      error
+    );
+  }
 
   return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 }

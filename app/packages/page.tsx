@@ -17,6 +17,7 @@ import { useUnpaid } from "@/components/useUnpaid";
 import useRole from "@/components/useRole";
 import { isManagerOrAbove } from "@/lib/roles";
 import { packageChargeKey } from "@/lib/billing";
+import { activeDogs } from "@/lib/retire";
 
 export default function PackagesPage() {
   return (
@@ -127,7 +128,8 @@ function Packages() {
           .eq("phone", phone.trim())
           .order("created_at", { ascending: true });
         if (err) throw err;
-        const found = (data as Dog[]) ?? [];
+        // A package is bought for a dog that is still coming.
+        const found = activeDogs((data as Dog[]) ?? []);
         setDogMatches(found);
         if (found.length === 1 && found[0].id) setSelectedIds([found[0].id]);
       } catch (e) {

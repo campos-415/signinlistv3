@@ -23,6 +23,7 @@ import { ADDON_PRICES, PRICING } from "@/lib/pricing";
 import { logRefusal } from "@/lib/audit";
 import { canExport } from "@/lib/roles";
 import useRole from "@/components/useRole";
+import CardTable from "@/components/CardTable";
 
 // Settings -> Reports.
 //
@@ -325,10 +326,29 @@ export default function ReportsSection() {
                 <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-ink-3">
                   Packages
                 </p>
+                {/* The count under each figure. "$325 sold" is three ten-day
+                    blocks or one big one, and which it is changes what the
+                    number means — one household on a annual block is not the
+                    same business as three families buying in. */}
                 <div className="grid gap-2 sm:grid-cols-3">
-                  <Stat label="Sold this month" value={money(pkgs.sold.amount)} />
-                  <Stat label="Sold last month" value={money(pkgs.soldPrev.amount)} />
-                  <Stat label="Unredeemed" value={money(pkgs.unredeemed.amount)} tone="amber" />
+                  <Stat
+                    label="Sold this month"
+                    value={money(pkgs.sold.amount)}
+                    sub={packageCount(pkgs.sold.count)}
+                  />
+                  <Stat
+                    label="Sold last month"
+                    value={money(pkgs.soldPrev.amount)}
+                    sub={packageCount(pkgs.soldPrev.count)}
+                  />
+                  <Stat
+                    label="Unredeemed"
+                    value={money(pkgs.unredeemed.amount)}
+                    // Active packages, not packages ever sold: an exhausted
+                    // block owes nothing and has no business inflating this.
+                    sub={`${packageCount(pkgs.active.count)} still open`}
+                    tone="amber"
+                  />
                 </div>
                 <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
                   Unredeemed runs the other way from the balances above: it is money already taken
@@ -357,7 +377,7 @@ export default function ReportsSection() {
 
             {owing.length > 0 && (
               <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[34rem] border-collapse text-left text-xs">
+                <CardTable className="w-full min-w-[34rem] border-collapse text-left text-xs">
                   <thead>
                     <tr className="border-b border-line text-ink-3">
                       <th className="py-1.5 pr-3 font-medium">Household</th>
@@ -401,7 +421,7 @@ export default function ReportsSection() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </CardTable>
                 {owing.length > 12 && (
                   <p className="mt-1.5 text-[11px] text-ink-3">
                     Showing the 12 largest of {owing.length}. The export has them all.
@@ -496,7 +516,7 @@ export default function ReportsSection() {
             </div>
 
             <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[30rem] border-collapse text-left text-xs">
+              <CardTable className="w-full min-w-[30rem] border-collapse text-left text-xs">
                 <thead>
                   <tr className="border-b border-line text-ink-3">
                     <th className="py-1.5 pr-3 font-medium">Table</th>
@@ -523,7 +543,7 @@ export default function ReportsSection() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </CardTable>
             </div>
 
             <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
@@ -663,11 +683,14 @@ function unusedUnits(t: ReturnType<typeof packageTotals>): string {
 function Stat({
   label,
   value,
+  sub,
   tone,
   small,
 }: {
   label: string;
   value: string;
+  /** The count behind the money — how many things make up the figure above. */
+  sub?: string;
   tone?: "rose" | "emerald" | "amber";
   small?: boolean;
 }) {
@@ -683,8 +706,14 @@ function Stat({
     <div className="rounded-xl border border-line bg-surface-2/60 px-3 py-2">
       <p className="text-[10px] font-medium uppercase tracking-wide text-ink-3">{label}</p>
       <p className={`${small ? "text-sm" : "text-lg"} font-semibold ${colour}`}>{value}</p>
+      {sub && <p className="mt-0.5 text-[11px] text-ink-3">{sub}</p>}
     </div>
   );
+}
+
+/** "1 package" / "3 packages" — the count under a money figure. */
+function packageCount(n: number): string {
+  return `${n.toLocaleString()} package${n === 1 ? "" : "s"}`;
 }
 
 function Download({

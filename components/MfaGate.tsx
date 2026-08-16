@@ -135,7 +135,13 @@ export default function MfaGate({
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5">
-                <p className="min-w-0 flex-1 text-xs leading-relaxed text-amber-900">
+                {/* basis-full so the two buttons drop to their own line on a
+                    phone. The row wraps already, but flex-1 with min-w-0 lets
+                    this paragraph shrink instead — so the buttons kept their
+                    width and squeezed a four-line warning into eleven lines
+                    down the left edge. It sits on every staff page, so it was
+                    the first thing anyone saw on a phone. */}
+                <p className="min-w-0 flex-1 basis-full text-xs leading-relaxed text-amber-900 sm:basis-0">
                   <span className="font-semibold">Two-factor sign-in is not set up.</span> Your role
                   can read every client record and download the client list, so a password on its
                   own is not enough. Exports, deletions and permission changes are refused until it

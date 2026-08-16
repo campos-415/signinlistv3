@@ -6,6 +6,7 @@ import { signIn } from "@/lib/auth";
 import { isStaffUnlocked, markStaffUnlocked } from "@/lib/staffAuth";
 import MfaGate from "@/components/MfaGate";
 import useRole from "@/components/useRole";
+import { useSettings } from "@/components/SettingsProvider";
 
 // The login every staff page sits behind.
 //
@@ -35,6 +36,22 @@ export default function StaffGate({
   title: string;
   children: React.ReactNode;
 }) {
+  // The business this deployment belongs to, shown on the way in. A staff
+  // sign-in that carries no branding could be anyone's, and this screen is
+  // the first thing the front desk sees every morning.
+  const { name: businessName, logoData } = useSettings().settings.business;
+  const brand = (
+    <div className="flex items-center gap-2.5">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={logoData || "/logo.svg"}
+        alt=""
+        className="h-10 w-auto max-w-[7rem] shrink-0 object-contain"
+      />
+      <span className="truncate font-display text-base font-semibold text-ink">{businessName}</span>
+    </div>
+  );
+
   const [checking, setChecking] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
@@ -103,7 +120,8 @@ export default function StaffGate({
 
     if (!account?.role) {
       return (
-        <div className="mx-auto mt-28 max-w-sm px-5">
+        <div className="mx-auto mt-24 max-w-sm px-5">
+          <div className="mb-3">{brand}</div>
           <h1 className="font-display text-xl font-semibold text-ink">No access yet</h1>
           <p className="mt-2 text-sm leading-relaxed text-ink-2">
             This account is signed in but has not been given a role, so the database will refuse it
@@ -111,9 +129,9 @@ export default function StaffGate({
           </p>
           <button
             onClick={async () => {
-              const { signOut } = await import("@/lib/auth");
+              const { signOut, STAFF_SIGNED_OUT_HREF } = await import("@/lib/auth");
               await signOut();
-              window.location.href = "/";
+              window.location.href = STAFF_SIGNED_OUT_HREF;
             }}
             className="mt-4 rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-3 hover:border-rose-300 hover:text-rose-500"
           >
@@ -131,7 +149,8 @@ export default function StaffGate({
   }
 
   return (
-    <div className="mx-auto mt-28 flex max-w-xs flex-col gap-3 px-5">
+    <div className="mx-auto mt-24 flex max-w-xs flex-col gap-3 px-5">
+      {brand}
       <h1 className="font-display text-xl font-semibold text-ink">{title}</h1>
       <p className="-mt-1 text-xs text-ink-3">
         {signedIn ? "Locked after a spell of inactivity — sign in again." : "Staff sign-in."}

@@ -8,6 +8,10 @@ Budget about half a day, most of it waiting for a domain to verify.
 
 ---
 
+**`CLIENT-INTAKE.md` is the long version of the list below** — every price,
+every field, and the decisions to put to the owner. Take that one to the
+meeting; this one is the deployment.
+
 ## Before you start, collect from the client
 
 - Business name, street address, phone, email

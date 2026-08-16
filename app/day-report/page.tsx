@@ -4,18 +4,65 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { todayKey } from "@/lib/dates";
 import { Category, DailyInput, computeDailyTotals, loadDailyData } from "@/lib/daily";
+import Link from "next/link";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import DateField from "@/components/DateField";
 import { useSettings } from "@/components/SettingsProvider";
+import useRole from "@/components/useRole";
+import { isManagerOrAbove } from "@/lib/roles";
 import BarChart from "@/components/BarChart";
 
 export default function DailyPage() {
   return (
     <StaffGate title="End-of-day report">
-      <Daily />
+      <ManagersOnly>
+        <Daily />
+      </ManagersOnly>
     </StaffGate>
   );
+}
+
+/**
+ * The day's takings are a manager's business, not the whole front desk's.
+ *
+ * The check is here as well as on the nav link, and both are needed for
+ * different reasons: hiding the link stops an employee being offered
+ * something that will refuse them, and this stops the one who types the
+ * address anyway. A hidden link on its own is decoration.
+ *
+ * A database with no roles migration run has no roles to read, so it lets
+ * the page through rather than locking the owner out over a missing table —
+ * the same call app/settings/page.tsx makes.
+ */
+function ManagersOnly({ children }: { children: React.ReactNode }) {
+  const { account, loading, unavailable } = useRole();
+
+  if (loading) return <p className="px-6 py-10 text-sm text-ink-3">Checking your account…</p>;
+  if (!unavailable && !isManagerOrAbove(account?.role ?? null)) {
+    return (
+      <div className="mx-auto max-w-lg px-6 py-16 text-center">
+        <p className="text-3xl" aria-hidden>
+          🔒
+        </p>
+        <h1 className="font-display mt-3 text-lg font-semibold text-ink">
+          The day report needs a manager account
+        </h1>
+        <p className="mt-2 text-sm leading-relaxed text-ink-3">
+          It totals the day&apos;s takings, which is a manager or owner matter. The In House list
+          has everything you need for the floor.
+        </p>
+        <Link
+          href="/in-house"
+          className="mt-6 inline-block rounded-xl bg-accent-500 px-5 py-2.5 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600"
+        >
+          Back to In House
+        </Link>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
 
 function Daily() {
@@ -140,7 +187,7 @@ function Daily() {
           <button
             onClick={() => window.print()}
             className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600">
-            🖨️ Print / Save as PDF
+            🖨️ Print<span className="hidden sm:inline"> / Save as PDF</span>
           </button>
         </div>
       </div>

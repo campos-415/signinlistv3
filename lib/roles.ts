@@ -195,6 +195,39 @@ export async function loadStaffList(): Promise<StaffListEntry[]> {
 }
 
 /**
+ * Creates a staff account and gives it a role, in one go.
+ *
+ * Goes through /api/staff rather than doing it here, because creating an
+ * auth account needs the secret key and the secret key must never reach a
+ * browser. The session token is forwarded so the database can decide whether
+ * the caller is allowed — see the note at the top of that route.
+ *
+ * Returns the generated password, which is shown once and then gone: this
+ * app never stores it, and Supabase keeps only its hash.
+ */
+export async function addStaffAccount(
+  email: string,
+  role: StaffRole
+): Promise<{ email: string; role: StaffRole; password: string }> {
+  const { data } = await getSupabase().auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Sign in again before adding someone.");
+
+  const res = await fetch("/api/staff", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ email, role }),
+  });
+  const body = (await res.json().catch(() => null)) as
+    | { email: string; role: StaffRole; password: string; error?: string }
+    | null;
+  if (!res.ok || !body?.password) {
+    throw new Error(body?.error ?? "Could not add that account.");
+  }
+  return body;
+}
+
+/**
  * Grants or changes a role. Owner only, enforced by the manage roles
  * policy; the audit_role_changes trigger records it whatever route it
  * takes.

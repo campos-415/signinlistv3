@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import MeetGreetCard from "@/components/MeetGreetCard";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
-import { estimatePrice } from "@/lib/pricing";
+import { bathSizeForWeight, estimatePrice } from "@/lib/pricing";
 import { prettyDateKey, todayKey } from "@/lib/dates";
 import {
   daysLeft,
@@ -33,9 +33,9 @@ import {
   SignAction,
   SignInRecord,
 } from "@/types";
-import lombardlogo from "@/public/lombardlogo.avif";
 import { useSettings } from "@/components/SettingsProvider";
 import SquarePayButton from "@/components/SquarePayButton";
+import TerminalPayButton from "@/components/TerminalPayButton";
 import Image from "next/image";
 
 interface ConfirmedDog {
@@ -453,7 +453,15 @@ export default function KioskForm() {
           addons: dogAddons,
           pickupWindow:
             dogAddons.includes("bath") && dog.id ? (pickupWindowByDog[dog.id] ?? null) : null,
-          bathSize: dog.id ? (bathSizeByDog[dog.id] ?? null) : null,
+          // Falls back to the size the dog's weight puts it in.
+          //
+          // Nothing at the kiosk ever asked for a size — it was only filled
+          // in from a boarding reservation that already had one — so a bath
+          // added here carried none, and a visit with no size is charged
+          // nothing for the bath. Baths booked at the lobby iPad were free.
+          bathSize: dog.id
+            ? (bathSizeByDog[dog.id] ?? bathSizeForWeight(dog.weight_lb))
+            : null,
           openVisit: dog.id ? (openVisits.get(dog.id) ?? null) : null,
           pkg: packageFor(dog),
           packagesSold: soldToday(dog),
@@ -592,7 +600,15 @@ export default function KioskForm() {
 
   // What this dog owes for the visit it is being collected from. Null on a
   // drop-off, or when nothing is open.
-  function pickUpEstimate(dog: Dog) {
+  //
+  // `additional` is the second-dog rate. The kiosk is the one place that can
+  // see a household as a household — these dogs were looked up on one phone
+  // number and are being collected together — so position in that selection
+  // is what decides it. A dog covered by a package is not counted as one of
+  // the paying dogs, or the first dog on a package would silently push the
+  // second onto the discounted rate and the household would pay less than it
+  // should for both.
+  function pickUpEstimate(dog: Dog, additional = false) {
     const open = dog.id ? openVisits.get(dog.id) : undefined;
     if (action !== "pick_up" || !open) return null;
     const pkg = packageFor(dog);
@@ -605,16 +621,31 @@ export default function KioskForm() {
       open.bathSize,
       true,
       soldToday(dog),
-      walkAppliesNow(dog, open)
+      walkAppliesNow(dog, open),
+      additional
     );
   }
 
-  // Today's charges, one line per dog being collected.
+  /** Which of the selected dogs are paying a base rate, in order. */
+  function payingDogIds(): string[] {
+    return selectedDogs
+      .filter((dog) => {
+        const open = dog.id ? openVisits.get(dog.id) : undefined;
+        if (!open) return false;
+        return !packageAppliesNow(dog, open, packageFor(dog), now);
+      })
+      .map((dog) => dog.id ?? dog.dog_name);
+  }
+
+  // Today's charges, one line per dog being collected. The first paying dog
+  // of the household pays the full rate; the rest take the second-dog rate.
+  const paying = payingDogIds();
   const dueTodayItems = selectedDogs
     .map((dog) => {
-      const est = pickUpEstimate(dog);
+      const id = dog.id ?? dog.dog_name;
+      const est = pickUpEstimate(dog, paying.indexOf(id) > 0);
       return est && est.amount > 0
-        ? { key: dog.id ?? dog.dog_name, dogName: dog.dog_name, label: est.label, amount: est.amount }
+        ? { key: id, dogName: dog.dog_name, label: est.label, amount: est.amount }
         : null;
     })
     .filter((x): x is { key: string; dogName: string; label: string; amount: number } => !!x);
@@ -702,16 +733,12 @@ export default function KioskForm() {
             so a fresh install still looks finished. */}
         <div className="mb-3 flex items-center gap-2.5">
           <span className="flex items-center justify-center rounded-2xl text-xl text-white shadow-card">
-            {business.logoData ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={business.logoData}
-                alt={business.name}
-                className="h-[100px] w-[100px] object-contain"
-              />
-            ) : (
-              <Image src={lombardlogo} alt={business.name} width={100} height={100} className="object-cover" />
-            )}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={business.logoData || "/logo.svg"}
+              alt={business.name}
+              className="h-[100px] w-[100px] object-contain"
+            />
           </span>
         </div>
         <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
@@ -845,7 +872,14 @@ export default function KioskForm() {
                   action === "pick_up"
                     ? packageAppliesNow(dog, open, pkg, now)
                     : false;
-                const priceEstimate = pickUpEstimate(dog);
+                // Same second-dog reckoning as the total below it. Left out,
+                // this card would show one dog the full rate while the total
+                // charged the discounted one, and the two would disagree in
+                // front of the client.
+                const priceEstimate = pickUpEstimate(
+                  dog,
+                  paying.indexOf(dog.id ?? dog.dog_name) > 0
+                );
                 const showBreakdown = breakdownOpenFor === dog.id;
                 const reservation = activeBoardingFor(dog);
                 // Only today's stay drives the add-on prefill; an upcoming
@@ -1139,6 +1173,11 @@ export default function KioskForm() {
                 <span className="text-base font-semibold text-emerald-900">
                   Total due ${amountDue.toFixed(2)}
                 </span>
+                {/* One or the other, never both — each returns null unless
+                    the configured mode is its own. Which one a business gets
+                    is decided by its hardware, not its preference: a Reader
+                    paired to a tablet can only be handed off to, and a
+                    Terminal can only be driven remotely. */}
                 <span className="ml-auto">
                   <SquarePayButton
                     amount={amountDue}
@@ -1152,17 +1191,41 @@ export default function KioskForm() {
                     label="Pay now"
                     beforePay={signOutBeforePaying}
                   />
+                  <TerminalPayButton
+                    amount={amountDue}
+                    note={[
+                      ...dueTodayItems.map((i) => `${i.dogName}: ${i.label}`),
+                      ...previousDue.map((c) => `${c.label} (${c.date})`),
+                    ].join(" | ")}
+                    phone={phone.trim()}
+                    dogNames={selectedDogs.map((d) => d.dog_name)}
+                    // The visit being paid for. Square deduplicates on this,
+                    // so a double tap is the same payment rather than a
+                    // second one — see the note in the API route.
+                    reference={`${phone.trim()}-${todayKey()}`}
+                    beforePay={signOutBeforePaying}
+                  />
                 </span>
               </div>
-              {/* Only true when there is actually a visit left to close. Once
-                  the dog is out, this box is settling an outstanding balance
-                  and nothing gets signed out. */}
+              {/* What this line says depends on whether there is anything to
+                  pay WITH.
+
+                  Card payment is something a business switches on. With it
+                  off there is no Pay now button beside this total, so
+                  "paying signs the dog out first" describes a control that
+                  is not on the screen — and a client reads it, looks for the
+                  button, and asks the front desk where it is.
+
+                  The second half is only an alternative when there is a
+                  first half. On its own it is the whole instruction. */}
               <p className="mt-1.5 text-[11px] text-emerald-800">
-                {hasAlreadySignedOut
-                  ? "This settles what is still owed. Or settle with a staff member."
-                  : `Paying signs ${
-                      selectedDogs.length > 1 ? "them" : "the dog"
-                    } out first. Or settle with a staff member.`}
+                {!settings.square.enabled
+                  ? "A staff member will take payment."
+                  : hasAlreadySignedOut
+                    ? "This settles what is still owed. Or settle with a staff member."
+                    : `Paying signs ${
+                        selectedDogs.length > 1 ? "them" : "the dog"
+                      } out first. Or settle with a staff member.`}
               </p>
             </div>
           )}

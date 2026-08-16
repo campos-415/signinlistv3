@@ -18,6 +18,7 @@
 // — which is how a checklist stops being read.
 
 import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
+import { REQUIRED_VACCINES } from "@/lib/enrollment";
 import { EnrollmentStage, VACCINES } from "@/types";
 
 export type CheckLevel = "blocker" | "warning";
@@ -85,23 +86,52 @@ export function reviewChecks(
 function dogChecks(dog: DogDraft, today: string): { level: CheckLevel; label: string }[] {
   const out: { level: CheckLevel; label: string }[] = [];
 
-  const missing = VACCINES.filter((v) => !dog.vaccines?.[v.key]?.expires_on);
-  // Expiry is checked as well as presence: a date typed in from a certificate
-  // that ran out last spring reads as complete on the form and is not.
+  // The document is the blocker now, not the dates.
+  //
+  // Owners are no longer asked to type expiry dates - they upload the
+  // certificate and confirm the three required shots are current, and staff
+  // read the dates off it afterwards. So at this point a dog has no dates by
+  // design, and blocking on that would put a red mark on every enrollment
+  // that arrives.
+  if (!dog.doc) out.push({ level: "blocker", label: "No vaccination record uploaded" });
+  if (!dog.vaccinesConfirmed)
+    out.push({ level: "blocker", label: "Vaccinations not confirmed by the owner" });
+
+  // The dates are still required — they moved, they did not go away. Staff
+  // read them off the uploaded record on this screen, and until the required
+  // three are in, approving would create a dog with no expiry that nothing
+  // would ever chase.
+  const missingRequired = VACCINES.filter(
+    (v) => REQUIRED_VACCINES.includes(v.key) && !dog.vaccines?.[v.key]?.expires_on
+  );
+  const missingOptional = VACCINES.filter(
+    (v) => !REQUIRED_VACCINES.includes(v.key) && !dog.vaccines?.[v.key]?.expires_on
+  );
+
+  if (missingRequired.length > 0)
+    out.push({
+      level: "blocker",
+      label: `Enter the expiry date for ${missingRequired.map((v) => v.label).join(", ")} from the record`,
+    });
+  if (missingOptional.length > 0)
+    out.push({
+      level: "warning",
+      label: `No date for ${missingOptional.map((v) => v.label).join(", ")}`,
+    });
+
+  // Expiry is checked as well as presence: a date read off a certificate that
+  // ran out last spring reads as complete and is not. This fires once staff
+  // have entered dates, and on enrollments submitted before the form stopped
+  // asking for them.
   const expired = VACCINES.filter((v) => {
     const on = dog.vaccines?.[v.key]?.expires_on;
     return !!on && on < today;
   });
-
-  if (missing.length === VACCINES.length) out.push({ level: "blocker", label: "No vaccination dates at all" });
-  else if (missing.length > 0)
-    out.push({ level: "warning", label: `No date for ${missing.map((v) => v.label).join(", ")}` });
   if (expired.length > 0)
     out.push({
       level: "blocker",
       label: `Expired: ${expired.map((v) => v.label).join(", ")}`,
     });
-  if (!dog.doc) out.push({ level: "blocker", label: "No vaccination record uploaded" });
 
   // Behaviour the front desk needs to know on day one. Warnings, never
   // blockers — an honest answer about a dog that has growled is a reason to

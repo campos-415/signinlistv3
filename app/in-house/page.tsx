@@ -4,7 +4,7 @@ import { ChangeEvent, Fragment, useCallback, useEffect, useMemo, useRef, useStat
 import Link from "next/link";
 import { prettyDateKey } from "@/lib/dates";
 import { getSupabase } from "@/lib/supabase";
-import { fileToBudgetedJpeg } from "@/lib/image";
+import { fileToBudgetedJpeg, unreadableImageMessage } from "@/lib/image";
 import {
   BATH_PRICES,
   estimateBoardingTotal,
@@ -52,6 +52,7 @@ import DateField from "@/components/DateField";
 import { useSettings } from "@/components/SettingsProvider";
 import DogLink from "@/components/DogLink";
 import StaffCheckIn from "@/components/StaffCheckIn";
+import CardTable from "@/components/CardTable";
 
 const BATH_SIZES: BathSize[] = ["S", "M", "L"];
 
@@ -1145,6 +1146,45 @@ function RecordsInner() {
   async function convertToDaycare(row: MergedRow) {
     const ids = row.allIds.filter(Boolean);
     if (!ids.length) return;
+
+    // A dog that has already gone home is a different decision.
+    //
+    // This button is for "they stayed on for the day" — it says so, and it
+    // promises the day is priced at pick-up. On a visit that is already
+    // closed there is no pick-up left to price at, so converting re-prices
+    // what happened: a meet & greet is free, a daycare day is not, and a
+    // twenty-minute assessment becomes a half day the client never agreed
+    // to. Staff still need it — somebody who forgot to convert a dog that
+    // genuinely stayed all day has to be able to put it right — so the
+    // charge is shown rather than the button taken away.
+    if (row.pick_up_time && row.drop_off_time) {
+      const from = new Date(row.drop_off_time);
+      const to = new Date(row.pick_up_time);
+      const minutes = Math.max(0, Math.round((to.getTime() - from.getTime()) / 60_000));
+      const estimate = estimatePrice(
+        "daycare",
+        from,
+        to,
+        row.addons ?? [],
+        false,
+        row.bath_size ?? null,
+        true
+      );
+      const length = minutes < 60 ? `${minutes} minutes` : `${(minutes / 60).toFixed(1)} hours`;
+      const priced = estimate
+        ? `${isFullDayVisit(from, to) ? "a full day" : "a half day"}, $${estimate.amount.toFixed(2)}`
+        : "the usual daycare rate";
+      if (
+        !window.confirm(
+          `${row.dog_name} was picked up already — this visit lasted ${length}.\n\n` +
+            `Moving it to daycare charges ${priced}. A meet & greet is free, so this is a new charge on their account.\n\n` +
+            `Go ahead?`
+        )
+      ) {
+        return;
+      }
+    }
+
     setMgBusyKey(row.key);
     setMgNotice("");
     try {
@@ -1157,7 +1197,9 @@ function RecordsInner() {
         prev.map((r) => (r.id && ids.includes(r.id) ? { ...r, service_type: "daycare" } : r))
       );
       setMgNotice(
-        `${row.dog_name} moved to daycare. The visit prices at pick-up like any other day.`
+        row.pick_up_time
+          ? `${row.dog_name} moved to daycare. The visit is closed, so it is priced now — check the total on their profile.`
+          : `${row.dog_name} moved to daycare. The visit prices at pick-up like any other day.`
       );
     } catch (e) {
       console.error("Moving the meet & greet to daycare failed:", e);
@@ -1226,8 +1268,27 @@ function RecordsInner() {
       return;
     }
     setMgBusyKey(row.key);
+
+    // Reading the picture and storing it are two different failures and they
+    // were reported as one. "Could not save that photo, try again" is a lie
+    // when the file is an iPhone HEIC the browser will never open — trying
+    // again with the same file fails identically, forever, and says nothing
+    // about why.
+    let dataUrl: string;
     try {
-      const dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
+      dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
+    } catch (err) {
+      console.error("Reading the meet & greet photo failed:", err, {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      });
+      setError(unreadableImageMessage(file));
+      setMgBusyKey(null);
+      return;
+    }
+
+    try {
       const supabase = getSupabase();
       const { error: err } = await supabase
         .from("dogs")
@@ -1237,7 +1298,11 @@ function RecordsInner() {
       setDogs((prev) => prev.map((d) => (d.id === dog.id ? { ...d, photo_data: dataUrl } : d)));
     } catch (err) {
       console.error("Saving the meet & greet photo failed:", err);
-      setError("Could not save that photo, so the pass was not recorded. Try again.");
+      setError(
+        `The photo opened but could not be saved to ${row.dog_name}'s profile, so the pass was not recorded. ${
+          (err as { message?: string })?.message ?? "Try again."
+        }`
+      );
       setMgBusyKey(null);
       return;
     }
@@ -1552,7 +1617,12 @@ function RecordsInner() {
             </span>
           )}
         </h1>
-        <div className="flex shrink-0 items-center gap-2">
+        {/* shrink-0 keeps this on one line beside the heading at a desk, which
+            is right there and wrong on a phone: at 375px these controls come
+            to 832px, and refusing to shrink made the whole PAGE scroll
+            sideways rather than the toolbar wrap. Below sm it takes the full
+            width and wraps; from sm up it behaves exactly as before. */}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:shrink-0">
           <DateField
             value={selectedDate}
             onChange={setSelectedDate}
@@ -1593,12 +1663,24 @@ function RecordsInner() {
                 ? "bg-slate-700 text-white shadow-card hover:bg-slate-800"
                 : "border border-line bg-surface text-ink-2 hover:border-line"
             }`}>
-            {deskOpen ? "✕ Close front desk" : "🚗 Sign a dog in / out"}
+            {/* Short on a phone, where this and Print each took a row of
+                their own. "a dog" and "front desk" are the words that can go:
+                the list underneath is dogs, and the panel this opens says
+                Front desk at the top of it. */}
+            {deskOpen ? (
+              <>
+                ✕ Close<span className="hidden sm:inline"> front desk</span>
+              </>
+            ) : (
+              <>
+                🚗 Sign<span className="hidden sm:inline"> a dog</span> in / out
+              </>
+            )}
           </button>
           <button
             onClick={() => window.print()}
             className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600">
-            🖨️ Print / Save as PDF
+            🖨️ Print<span className="hidden sm:inline"> / Save as PDF</span>
           </button>
         </div>
       </div>
@@ -1780,7 +1862,7 @@ function RecordsInner() {
 
       {view === "signins" && (
       <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card print:overflow-visible print:rounded-2xl print:border print:border-paper-rule print:shadow-none">
-        <table className="w-full text-left text-sm print:border-collapse">
+        <CardTable className="table-cards w-full text-left text-sm print:border-collapse">
           <thead>
             <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
               {/* No selection column at all. The row tints when it is
@@ -1845,6 +1927,7 @@ function RecordsInner() {
                 <tr key={`${r.key}-group`}>
                   <td
                     colSpan={8}
+                    data-span="2"
                     className="bg-surface-3 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-3 print:border print:border-paper-rule print:bg-paper-band print:px-2 print:text-paper-ink">
                     {groupInfo
                       ? `${groupInfo.icon} ${groupInfo.label}`
@@ -1858,7 +1941,11 @@ function RecordsInner() {
                   <Fragment key={r.key}>
                     {groupHeader}
                     <tr className="border-b border-line-soft bg-accent-50/40 align-top print:hidden">
-                      <td className="w-8 px-3 py-3" />
+                      {/* There was a spacer cell here, left over from a
+                          selection column that no longer exists. It gave this
+                          row nine cells against eight headers, so every cell
+                          in an open editor sat one column right of the one it
+                          was headed by. */}
                       <td className="px-3 py-3 font-medium text-ink">
                         {r.dog_name}
                       </td>
@@ -2090,7 +2177,7 @@ function RecordsInner() {
                           ? "border-l-4 border-l-emerald-400 bg-emerald-50/40 hover:bg-emerald-50/70 dark:bg-emerald-400/10 print:bg-transparent"
                           : "border-l-4 border-l-transparent hover:bg-surface-2"
                     }`}>
-                    <td className="whitespace-nowrap px-3 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Dog" data-span="2" className="whitespace-nowrap px-3 py-3 font-medium text-ink print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="inline-flex items-center gap-1.5">
                         <DogLink
                           dog={findDog(dogs, { dogName: r.dog_name, phone: r.phone })}
@@ -2148,7 +2235,7 @@ function RecordsInner() {
                         )}
                       </span>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Status" className="whitespace-nowrap px-3 py-3 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {stillIn ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-800 print:bg-transparent print:px-0 print:font-bold">
                           🟢 In
@@ -2163,11 +2250,11 @@ function RecordsInner() {
                         and the person who handed the dog over belongs with
                         the time they did it — twelve columns did not fit on
                         a laptop, so Price was scrolled off the right. */}
-                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Owner" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="block text-ink-2">{r.last_name}</span>
                       <span className="block text-[11px] text-ink-3">{r.phone}</span>
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="In" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       <span className="block text-ink-2">{timeOnly(r.drop_off_time)}</span>
                       {r.drop_off_by && (
                         <span className="block text-[11px] text-ink-3" title={r.drop_off_by}>
@@ -2175,7 +2262,7 @@ function RecordsInner() {
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Out" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {r.pick_up_time ? (
                         <>
                           <span className="block text-ink-2">{timeOnly(r.pick_up_time)}</span>
@@ -2196,7 +2283,7 @@ function RecordsInner() {
                       )}
                     </td>
 
-                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Add-ons" data-span="2" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {/* Tap to add or remove, but only while the dog is
                           here. Once it has gone home the visit is priced and
                           often paid, so the row freezes on what was actually
@@ -2233,23 +2320,42 @@ function RecordsInner() {
                                 ) : null;
                               })()}
                               {/* A meet & greet that turns into a day.
-                                  Offered only once the verdict is in, for two
-                                  reasons: the assessment is the point of the
-                                  visit and should not be skippable, and the
-                                  verdict controls live in this same cell — a
-                                  row converted first would lose them.
+                                  Offered once the verdict is in — the
+                                  assessment is the point of the visit and
+                                  should not be skippable, and the verdict
+                                  controls live in this same cell, so a row
+                                  converted first would lose them.
+
+                                  And only while the dog is still here. This
+                                  means "they stayed on for the day", which is
+                                  a decision somebody makes with the dog in
+                                  front of them. On a row that has gone home
+                                  it re-prices a visit that already happened:
+                                  a meet & greet is free, a daycare day is
+                                  not, so one tap turned a twenty-minute
+                                  assessment into a charge the client never
+                                  agreed to — and greyed to match the other
+                                  quiet controls, it read as something you
+                                  could not press at all.
+
+                                  The cost of hiding it is that a dog which
+                                  genuinely stayed all day, and was signed out
+                                  as a meet & greet by mistake, stays free.
+                                  That is the safer way to be wrong.
 
                                   It costs no width anywhere else. Only a meet
                                   & greet row renders this cell at all, so the
                                   table stays the same size for the twenty
                                   daycare dogs underneath it. */}
-                              <button
-                                onClick={() => convertToDaycare(r)}
-                                disabled={mgBusyKey === r.key}
-                                title="They stayed on for the day — move this to Daycare. The pass is kept, and the day is priced at pick-up like any other."
-                                className="rounded-md border border-line px-2 py-0.5 text-[11px] font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600 disabled:opacity-50">
-                                → Daycare
-                              </button>
+                              {stillIn && (
+                                <button
+                                  onClick={() => convertToDaycare(r)}
+                                  disabled={mgBusyKey === r.key}
+                                  title="They stayed on for the day — move this to Daycare. The pass is kept, and the day is priced at pick-up like any other."
+                                  className="rounded-md border border-line px-2 py-0.5 text-[11px] font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600 disabled:opacity-50">
+                                  → Daycare
+                                </button>
+                              )}
                             </>
                           ) : r.meet_greet_result === "fail" ? (
                             <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
@@ -2376,7 +2482,7 @@ function RecordsInner() {
                         </span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Package" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
                       {/* Which block this visit draws from, changeable in
                           place. Only offered where it can actually apply: a
                           daycare day for the daycare block, a booked walk for
@@ -2497,7 +2603,7 @@ function RecordsInner() {
                         );
                       })()}
                     </td>
-                    <td className="px-4 py-3 text-right align-top font-medium print:border print:border-paper-line print:px-2 print:py-1.5">
+                    <td data-label="Price" data-align="right" className="px-4 py-3 text-right align-top font-medium print:border print:border-paper-line print:px-2 print:py-1.5">
                       {(() => {
                         const estimate = computeEstimate(r, pkg);
                         if (!estimate)
@@ -2662,13 +2768,13 @@ function RecordsInner() {
               </tr>
             )}
           </tbody>
-        </table>
+        </CardTable>
       </div>
       )}
 
       {view === "boarding" && (
         <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card print:overflow-visible print:rounded-2xl print:border print:border-paper-rule print:shadow-none">
-          <table className="w-full text-left text-sm print:border-collapse">
+          <CardTable className="w-full text-left text-sm print:border-collapse">
             <thead>
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
                 <th className="px-3 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
@@ -2837,13 +2943,13 @@ function RecordsInner() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </CardTable>
         </div>
       )}
 
       {view === "walklog" && (
         <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card print:overflow-visible print:rounded-2xl print:border print:border-paper-rule print:shadow-none">
-          <table className="w-full text-left text-sm print:border-collapse">
+          <CardTable className="w-full text-left text-sm print:border-collapse">
             <thead>
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3 print:border-b-2 print:border-paper-rule print:bg-paper-band print:text-paper-ink">
                 <th className="px-3 py-3 print:border print:border-paper-rule print:px-2 print:py-1.5">
@@ -3049,7 +3155,7 @@ function RecordsInner() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </CardTable>
         </div>
       )}
 

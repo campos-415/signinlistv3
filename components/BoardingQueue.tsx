@@ -8,6 +8,7 @@ import { dogHref, ownerHref } from "@/lib/dogs";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
 import useRole from "@/components/useRole";
+import DeclineNote from "@/components/DeclineNote";
 import { isManagerOrAbove } from "@/lib/roles";
 import {
   BoardingRequestDraft,
@@ -72,6 +73,8 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
   const [rows, setRows] = useState<BoardingRequest[]>([]);
   const [tab, setTab] = useState<EnrollmentStatus>("pending");
   const [openId, setOpenId] = useState<string | null>(null);
+  // The row whose decline note is being written, if any.
+  const [decliningId, setDecliningId] = useState<string | null>(null);
   const [checks, setChecks] = useState<Record<string, DogCheck[]>>({});
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -212,18 +215,14 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
     }
   }
 
-  async function reject(row: BoardingRequest) {
-    const note = window.prompt(
-      `Decline ${row.owner_name}'s request for ${prettyDateKey(row.start_date)}?\n\nOptionally note why. Staff-only — you'll write the client's message next:`,
-      ""
-    );
-    if (note === null) return;
+  async function reject(row: BoardingRequest, note: string) {
     setBusyId(row.id ?? null);
     setError("");
     try {
       const full = await withData(row);
       await rejectBoardingRequest(row, note);
       setOpenId(null);
+      setDecliningId(null);
       openCompose(full, "rejected", full.data as BoardingRequestDraft);
       load();
       onChanged?.();
@@ -412,7 +411,13 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
             return (
               <div key={row.id} className="rounded-2xl border border-line bg-surface shadow-card">
                 <div className="flex flex-wrap items-center gap-3 p-4">
-                  <div className="min-w-0 flex-1">
+                  {/* basis-full is what actually moves the buttons onto their
+                      own line. The row already wrapped, but min-w-0 flex-1
+                      told this block it was allowed to shrink to nothing - so
+                      instead of wrapping, the buttons held their width and
+                      squeezed the name, dates and phone into a column about
+                      a hundred pixels wide, one word per line. */}
+                  <div className="min-w-0 flex-1 basis-full sm:basis-0">
                     <p className="text-sm font-medium text-ink">
                       🛏️ {row.dog_names?.join(", ") || "—"}
                       {dogCount > 1 && (
@@ -460,7 +465,9 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                   {row.status === "pending" ? (
                     <>
                       <button
-                        onClick={() => reject(row)}
+                        onClick={() =>
+                          setDecliningId(decliningId === row.id ? null : (row.id ?? null))
+                        }
                         disabled={busyId === row.id}
                         className="rounded-xl border border-rose-200 px-3.5 py-2 text-xs font-medium text-rose-500 hover:border-rose-300 disabled:opacity-60"
                       >
@@ -487,6 +494,18 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                   )}
 
                 </div>
+
+                {decliningId === row.id && (
+                  <DeclineNote
+                    title={`Decline ${row.owner_name}'s request for ${prettyDateKey(
+                      row.start_date
+                    )}?`}
+                    hint="You'll write the client's message next."
+                    busy={busyId === row.id}
+                    onConfirm={(note) => reject(row, note)}
+                    onCancel={() => setDecliningId(null)}
+                  />
+                )}
 
                 {openId === row.id && (
                   <div className="border-t border-line-soft p-4">
@@ -611,9 +630,11 @@ const inputClass =
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
-    <div className="flex gap-3 py-0.5 text-xs">
-      <span className="w-36 shrink-0 text-ink-3">{label}</span>
-      <span className="min-w-0 flex-1 whitespace-pre-wrap text-ink-2">{value}</span>
+    // Stacked on a phone: a fixed label column plus an email address is
+    // wider than the screen, and an address has no space to wrap at.
+    <div className="flex flex-col gap-0.5 py-1 text-xs sm:flex-row sm:gap-3 sm:py-0.5">
+      <span className="text-ink-3 sm:w-36 sm:shrink-0">{label}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-ink-2">{value}</span>
     </div>
   );
 }

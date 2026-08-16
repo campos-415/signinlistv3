@@ -26,6 +26,7 @@ import { fileToBudgetedJpeg } from "@/lib/image";
 import StaffNav from "@/components/StaffNav";
 import StaffGate from "@/components/StaffGate";
 import DateField from "@/components/DateField";
+import { activeDogs } from "@/lib/retire";
 
 // What's shared by every dog on one booking — the family drops off and
 // picks up together, so the phone and dates are entered once.
@@ -89,7 +90,15 @@ interface MeetGreet {
   phone: string;
   meet_greet_on: string;
   meet_greet_window: string | null;
+  retired_at?: string | null;
 }
+
+// The meet & greet list, and the same list without the column
+// dog-retire-migration.sql adds — see the fallback where it is queried.
+const MEET_COLUMNS =
+  "id, dog_name, last_name, phone, photo_data, meet_greet_on, meet_greet_window, retired_at";
+const LEGACY_MEET_COLUMNS =
+  "id, dog_name, last_name, phone, photo_data, meet_greet_on, meet_greet_window";
 
 type CalView = "all" | "boardings" | "meets";
 
@@ -148,9 +157,16 @@ function BoardingsInner() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Dogs on file for the phone number typed into the form — staff pick
-  // which ones are boarding instead of retyping names by hand. Mirrors
-  // the kiosk's lookup + multi-dog picker (see components/KioskForm.tsx).
+  // What was typed into the lookup box: a phone number, or a name.
+  //
+  // Kept apart from form.phone, which is the household this reservation is
+  // actually for. Searching by name means the number is not known until a dog
+  // is picked, and the row written to `boardings` needs the real one.
+  const [query, setQuery] = useState("");
+
+  // Dogs on file matching the lookup — staff pick which ones are boarding
+  // instead of retyping names by hand. Mirrors the kiosk's lookup +
+  // multi-dog picker (see components/KioskForm.tsx).
   const [dogMatches, setDogMatches] = useState<Dog[]>([]);
   const [dogsLoading, setDogsLoading] = useState(false);
   const [dogsChecked, setDogsChecked] = useState(false);
@@ -211,8 +227,12 @@ function BoardingsInner() {
       setSelectedDogs([]);
       setConfigByDog({});
     }
-    const digits = form.phone.replace(/\D/g, "");
-    if (digits.length < 7) {
+    const raw = query.trim();
+    const digits = raw.replace(/\D/g, "");
+    // A name if there is a letter in it. Everything else — digits, dashes,
+    // brackets, the spaces formatPhoneInput puts in — is a phone number.
+    const byName = /[a-z]/i.test(raw);
+    if (byName ? raw.length < 2 : digits.length < 7) {
       setDogMatches([]);
       setDogsChecked(false);
       return;
@@ -221,14 +241,25 @@ function BoardingsInner() {
       setDogsLoading(true);
       try {
         const supabase = getSupabase();
-        const { data, error: err } = await supabase
-          .from("dogs")
-          .select("*")
-          .eq("phone", form.phone.trim())
-          .order("created_at", { ascending: true });
+        // The characters PostgREST reads as filter syntax. A comma would end
+        // the `or` clause early and a bracket would close it, so a client
+        // called O'Brien (Smith, Jr.) searches as plain text instead of
+        // returning an error nobody can act on.
+        const safe = raw.replace(/[,()%*\\]/g, " ").trim();
+        const lookup = supabase.from("dogs").select("*");
+        const { data, error: err } = byName
+          ? await lookup
+              .or(`dog_name.ilike.%${safe}%,last_name.ilike.%${safe}%`)
+              .order("dog_name", { ascending: true })
+              .limit(25)
+          : await lookup.eq("phone", raw).order("created_at", { ascending: true });
         if (err) throw err;
-        const found = (data as Dog[]) ?? [];
+        // Nothing retired can be booked, so nothing retired is offered.
+        const found = activeDogs((data as Dog[]) ?? []);
         setDogMatches(found);
+        // A number typed in full is the household, whether or not a dog gets
+        // picked out of it. A name is not — that phone arrives with the dog.
+        if (!byName && !editingId) setForm((f) => ({ ...f, phone: raw }));
         if (editingId) {
           // Backfill the pinned dog's photo now that its profile is loaded.
           setSelectedDogs((prev) =>
@@ -252,7 +283,7 @@ function BoardingsInner() {
       }
     }, 400);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.phone]);
+  }, [query]);
 
   async function load() {
     setLoading(true);
@@ -295,13 +326,25 @@ function BoardingsInner() {
       // Only the columns the calendar needs — `clients` rows carry photo
       // and document data that would be pointless to pull here.
       try {
-        const { data: meetData, error: meetErr } = await supabase
-          .from("dogs")
-          .select("id, dog_name, last_name, phone, photo_data, meet_greet_on, meet_greet_window")
-          .not("meet_greet_on", "is", null)
-          .order("meet_greet_on", { ascending: true });
+        const fetchMeets = (columns: string) =>
+          supabase
+            .from("dogs")
+            .select(columns)
+            .not("meet_greet_on", "is", null)
+            .order("meet_greet_on", { ascending: true });
+
+        let { data: meetData, error: meetErr } = await fetchMeets(MEET_COLUMNS);
+        if (meetErr) {
+          // No retired_at column: dog-retire-migration.sql has not been run
+          // here. Asking for a column that does not exist fails the whole
+          // query, and the calendar predates retiring — it works without it.
+          console.warn("Falling back to the pre-retire columns:", meetErr.message);
+          ({ data: meetData, error: meetErr } = await fetchMeets(LEGACY_MEET_COLUMNS));
+        }
         if (meetErr) throw meetErr;
-        setMeets((meetData as MeetGreet[]) ?? []);
+        // A retired dog has no meet & greet coming up. Filtered here rather
+        // than in the query so the fallback above still returns its rows.
+        setMeets(activeDogs((meetData as unknown as MeetGreet[]) ?? []));
       } catch (e) {
         console.error("Loading meet & greets failed:", e);
       }
@@ -315,6 +358,7 @@ function BoardingsInner() {
 
   function resetForm() {
     setForm(EMPTY_FORM);
+    setQuery("");
     setEditingId(null);
     setDogMatches([]);
     setDogsChecked(false);
@@ -334,20 +378,35 @@ function BoardingsInner() {
   // config, seeded blank the first time it's picked.
   function toggleDog(c: Dog) {
     const key = c.id ?? c.dog_name;
+    const dogPhone = (c.phone ?? "").trim();
+    // A name search can return two households at once — three dogs called
+    // Buki belonging to three different families. One reservation covers one
+    // family, so picking a dog from a different number starts that family's
+    // booking rather than adding a stranger's dog to this one.
+    const switching =
+      !!dogPhone &&
+      !!form.phone &&
+      dogPhone.replace(/\D/g, "") !== form.phone.replace(/\D/g, "");
+
     setSelectedDogs((prev) => {
-      if (prev.some((d) => d.key === key)) return prev.filter((d) => d.key !== key);
-      return [
-        ...prev,
-        {
-          key,
-          dog_name: c.dog_name,
-          last_name: c.last_name,
-          dog_id: c.id ?? null,
-          profile_photo: c.photo_data ?? null,
-        },
-      ];
+      if (!switching && prev.some((d) => d.key === key)) {
+        return prev.filter((d) => d.key !== key);
+      }
+      const picked = {
+        key,
+        dog_name: c.dog_name,
+        last_name: c.last_name,
+        dog_id: c.id ?? null,
+        profile_photo: c.photo_data ?? null,
+      };
+      return switching ? [picked] : [...prev, picked];
     });
-    setConfigByDog((prev) => (prev[key] ? prev : { ...prev, [key]: EMPTY_DOG_CONFIG }));
+    setConfigByDog((prev) =>
+      switching ? { [key]: EMPTY_DOG_CONFIG } : prev[key] ? prev : { ...prev, [key]: EMPTY_DOG_CONFIG }
+    );
+    // The number the reservation is written against. Typing a phone sets this
+    // already; picking a dog by name is the only way it gets set otherwise.
+    if (dogPhone) setForm((f) => ({ ...f, phone: dogPhone }));
   }
 
   function toggleDogAddon(key: string, addon: BoardingAddonKey) {
@@ -362,6 +421,8 @@ function BoardingsInner() {
   function startEdit(b: Boarding) {
     setEditingId(b.id ?? null);
     const key = b.dog_id ?? MANUAL_KEY;
+    // Drives the lookup, which is what backfills the dog's photo below.
+    setQuery(b.phone);
     setForm({
       phone: b.phone,
       start_date: b.start_date,
@@ -427,12 +488,22 @@ function BoardingsInner() {
   }
 
   async function saveBoarding() {
-    if (!form.phone.trim() || !form.start_date || !form.end_date) {
-      setError("Enter a phone number and both dates.");
+    if (selectedDogs.length === 0) {
+      setError("Find the client, then pick which dog (or dogs) this reservation is for.");
       return;
     }
-    if (selectedDogs.length === 0) {
-      setError("Pick which dog (or dogs) this reservation is for.");
+    // Only reachable from a dog with no number on its profile: a name search
+    // takes the phone off the dog that was picked, and a phone search has one
+    // by definition. Saving anyway would write a reservation the stay report
+    // and the sign-in screen both look up by phone and never find.
+    if (!form.phone.trim()) {
+      setError(
+        `No phone number on ${selectedDogs[0].dog_name}'s profile — add one there first, or search by number.`
+      );
+      return;
+    }
+    if (!form.start_date || !form.end_date) {
+      setError("Enter both dates.");
       return;
     }
     if (form.end_date < form.start_date) {
@@ -674,6 +745,9 @@ function BoardingsInner() {
   const today = todayKey();
   const selectedDayBoardings = selectedDay ? boardingsOn(selectedDay) : [];
   const selectedDayMeets = selectedDay ? meetsOn(selectedDay) : [];
+  // Which kind of lookup is on screen. A name can match dogs from several
+  // households, so the results have to say more than a phone lookup's do.
+  const searchingByName = /[a-z]/i.test(query.trim());
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-10">
@@ -684,20 +758,25 @@ function BoardingsInner() {
         <p className="mb-4 text-sm font-medium text-ink-2">
           {editingId ? "Edit reservation" : "Add a new reservation"}
         </p>
-        {/* Dog lookup — staff type the phone number, then pick the dog
-            from what's already on file instead of retyping names. */}
+        {/* Dog lookup — staff find the client, then pick the dog from what's
+            already on file instead of retyping names. Either the number or a
+            name gets there: the phone is exact and unambiguous, but it is not
+            what a client says at the desk, and it is not what staff remember
+            about the dog in front of them. */}
         <div className="mb-3">
-          <label className="mb-1 block text-[11px] text-ink-3">Phone number</label>
+          <label className="mb-1 block text-[11px] text-ink-3" htmlFor="client-lookup">
+            Client
+          </label>
           <input
-            value={form.phone}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                phone: formatPhoneInput(e.target.value),
-              })
-            }
-            placeholder="(123) 456-7890"
-            inputMode="numeric"
+            id="client-lookup"
+            value={query}
+            onChange={(e) => {
+              const typed = e.target.value;
+              // Formatted as a phone only while it could still be one. Doing
+              // it unconditionally would strip the letters out of a name.
+              setQuery(/[a-z]/i.test(typed) ? typed : formatPhoneInput(typed));
+            }}
+            placeholder="Name or phone number"
             className="w-full max-w-xs rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100"
           />
 
@@ -705,7 +784,9 @@ function BoardingsInner() {
 
           {!dogsLoading && dogsChecked && dogMatches.length === 0 && (
             <p className="mt-2 text-xs text-amber-700">
-              No dog on file for that number — the client needs an approved enrollment first.
+              {searchingByName
+                ? `Nothing on file matching “${query.trim()}” — try the last name, or the phone number.`
+                : "No dog on file for that number — the client needs an approved enrollment first."}
             </p>
           )}
 
@@ -720,7 +801,14 @@ function BoardingsInner() {
               <p className="mb-1 text-[11px] text-ink-3">
                 {dogMatches.length === 1
                   ? "Dog on file"
-                  : "Which dog (or dogs)? Tap all that are boarding together."}
+                  : searchingByName
+                    ? // Two families can both have a dog called Buki, and one
+                      // reservation belongs to one of them. Picking across
+                      // households starts that household's booking instead of
+                      // adding to this one — hence the warning rather than the
+                      // "tap all of them" wording below.
+                      "Matching dogs. Tap the right one — check the number if there are two of a name."
+                    : "Which dog (or dogs)? Tap all that are boarding together."}
               </p>
               <div className="flex flex-wrap gap-2">
                 {dogMatches.map((c) => {
@@ -753,8 +841,22 @@ function BoardingsInner() {
                           🐕
                         </span>
                       )}
-                      {selected ? "✓ " : ""}
-                      {c.dog_name} · {c.last_name}
+                      <span className="text-left">
+                        {selected ? "✓ " : ""}
+                        {c.dog_name} · {c.last_name}
+                        {/* The number is what tells two dogs of the same name
+                            apart, so a name search shows it. A phone search
+                            already knows it — every result has the same one. */}
+                        {searchingByName && c.phone && (
+                          <span
+                            className={`block text-[10px] font-normal ${
+                              selected ? "text-accent-ink/70" : "text-ink-3"
+                            }`}
+                          >
+                            {c.phone}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}

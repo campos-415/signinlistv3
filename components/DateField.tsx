@@ -181,7 +181,12 @@ export default function DateField({
           setText(isoToUs(e.target.value));
           onChange(e.target.value);
         }}
-        className="absolute right-1.5 h-6 w-6 cursor-pointer opacity-0 print:hidden"
+        // Bigger than the icon it sits under, on purpose. This input is
+        // invisible, so its size is a hit area and nothing else: at the 24px
+        // the icon is drawn at, it was a target a thumb misses. Full height
+        // and 44px wide is the usual floor for a touch target, and because
+        // it is transparent the field looks exactly the same.
+        className="absolute inset-y-0 right-0 w-11 cursor-pointer opacity-0 print:hidden"
       />
       {preview && (
         <span className="pointer-events-none absolute -bottom-4 left-0 text-[10px] text-ink-3">

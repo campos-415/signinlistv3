@@ -4,7 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { fileToBudgetedJpeg, fileToRecordJpeg } from "@/lib/image";
+import { fileToBudgetedJpeg, fileToRecordJpeg, unreadableImageMessage } from "@/lib/image";
 import {
   daysLeft,
   findPackageFor,
@@ -47,13 +47,21 @@ import {
 } from "@/types";
 import { Balance, loadBalanceFor } from "@/lib/billing";
 import { Enrollment } from "@/types";
-import { ageFromBirthdate, detailsLink, loadOutstandingDetails } from "@/lib/enrollment";
+import {
+  ageFromBirthdate,
+  detailsLink,
+  isMissingColumn,
+  loadOutstandingDetails,
+} from "@/lib/enrollment";
+import { copyText } from "@/lib/clipboard";
+import { RETIRE_REASONS, isRetired, retireReasonLabel } from "@/lib/retire";
 import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import DateField from "@/components/DateField";
 import { CheckGrid, ChoiceWithOther, YesNo, YesNoDetail } from "@/components/FormBits";
 import Panel from "@/components/Panel";
+import CardTable from "@/components/CardTable";
 
 export default function DogProfilePage() {
   return (
@@ -99,6 +107,10 @@ function DogProfile() {
   // asked yet" and "answered no" look identical otherwise.
   const [awaitingDetails, setAwaitingDetails] = useState<Enrollment | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  // Retiring: the panel is open while staff pick a reason, and saving covers
+  // both directions since bringing a dog back is the same write in reverse.
+  const [retiring, setRetiring] = useState(false);
+  const [savingRetire, setSavingRetire] = useState(false);
 
   // Editable draft, seeded from the loaded profile. Covers the basics plus
   // every enrollment answer, so staff can correct anything a client typed
@@ -283,7 +295,16 @@ function DogProfile() {
       } catch (e) {
         console.error("Loading client documents failed:", e);
       }
-      const stays = (boardingRes.data as Boarding[]) ?? [];
+      // Queried by phone + name because reservations predate dog_id, but a
+      // household can now hold two dogs of the same name — a retired one and
+      // the dog that came after it. Where the reservation says which dog it is
+      // for, that wins; only rows with no dog_id fall back to the name, since
+      // for those there is nothing better to go on. Without this the new dog
+      // inherits the old one's stays on sight, which is the confusion retiring
+      // exists to prevent.
+      const stays = ((boardingRes.data as Boarding[]) ?? []).filter(
+        (b) => !b.dog_id || b.dog_id === dogId
+      );
       setBoardings(stays);
       setVaccinations((vaxRes.data as Vaccination[]) ?? []);
 
@@ -322,12 +343,50 @@ function DogProfile() {
   async function copyDetailsLinkFor(row: Enrollment) {
     if (!row.details_token) return;
     const link = detailsLink(row.details_token);
-    try {
-      await navigator.clipboard.writeText(link);
+    if (await copyText(link)) {
       setCopiedLink(true);
-    } catch {
-      // Needs a secure context and permission; the prompt always works.
-      window.prompt("Copy this link and send it to the client:", link);
+      return;
+    }
+    // Clipboard unavailable — put the link where it can be selected or read
+    // out rather than losing it behind a dialog.
+    setError(`Couldn't reach the clipboard. The link is ${link}`);
+  }
+
+  /**
+   * Takes a dog off the books, or puts it back.
+   *
+   * Nothing is deleted. The visits, payments, vaccinations and uploaded
+   * records all stay on this row — the dog simply stops appearing anywhere
+   * that books, charges or checks one in, and stops being a name a new
+   * enrollment can land on top of. Passing null for `reason` is the undo.
+   */
+  async function setRetired(reason: string | null, note: string) {
+    if (!dog?.id) return;
+    setSavingRetire(true);
+    setError("");
+    const patch = {
+      retired_at: reason ? new Date().toISOString() : null,
+      retired_reason: reason,
+      retired_note: reason ? note.trim() || null : null,
+    };
+    try {
+      const supabase = getSupabase();
+      const { error: err } = await supabase.from("dogs").update(patch).eq("id", dog.id);
+      if (err) throw err;
+      setDog({ ...dog, ...patch });
+      setRetiring(false);
+    } catch (e) {
+      console.error("Retiring the dog failed:", e);
+      // Worth naming precisely. Everything else on this page works without
+      // the migration, so a generic failure here would look like a bug in
+      // the button rather than a migration nobody has run.
+      setError(
+        isMissingColumn(e)
+          ? "Retiring needs a column this database does not have yet — run dog-retire-migration.sql in the Supabase SQL editor, then try again."
+          : "Could not update this dog."
+      );
+    } finally {
+      setSavingRetire(false);
     }
   }
 
@@ -419,8 +478,23 @@ function DogProfile() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file || !dog?.id) return;
+    // Two separate failures, said separately. "Try a different file" is only
+    // advice when the file is the problem; when the database refused the
+    // write, a different file fails the same way.
+    let dataUrl: string;
     try {
-      const dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
+      dataUrl = await fileToBudgetedJpeg(file, 640, 120 * 1024);
+    } catch (e) {
+      console.error("Reading dog photo failed:", e, {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      });
+      setError(unreadableImageMessage(file));
+      return;
+    }
+
+    try {
       const supabase = getSupabase();
       const { error: err } = await supabase
         .from("dogs")
@@ -430,7 +504,9 @@ function DogProfile() {
       setDog({ ...dog, photo_data: dataUrl });
     } catch (e) {
       console.error("Saving dog photo failed:", e);
-      setError("Could not save that photo — try a different file.");
+      setError(
+        `The photo opened but could not be saved. ${(e as { message?: string })?.message ?? ""}`.trim()
+      );
     }
   }
 
@@ -797,7 +873,11 @@ function DogProfile() {
           </label>
         </div>
 
-        <div className="min-w-0 flex-1">
+        {/* basis-full on a phone. The photo beside this is a fixed 96px and
+            does not shrink, so flex-1 with min-w-0 left the name, surname,
+            phone and profile link sharing about 170px of a 327px row. Below
+            sm the details take the width and sit under the photo. */}
+        <div className="min-w-0 flex-1 basis-full sm:basis-0">
           <h1 className="font-display text-2xl font-semibold text-ink">{dog.dog_name}</h1>
           <p className="text-sm text-ink-3">{dog.last_name}
             <br /> {dog.phone}
@@ -846,6 +926,11 @@ function DogProfile() {
                 </span>
               )
             )}
+            {isRetired(dog) && (
+              <span className="rounded-full bg-surface-3 px-2.5 py-1 text-[11px] font-semibold text-ink-3">
+                Retired
+              </span>
+            )}
             {!hasWaiver(dog) && (
               <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
                 ⚠️ No waiver on file
@@ -863,7 +948,38 @@ function DogProfile() {
         </div>
       </div>
 
-      {error && <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>}
+      {error && <p className="mb-4 break-words text-xs font-medium text-rose-500">{error}</p>}
+
+      {/* Said at the top, plainly. Everything below still works on a retired
+          dog — the history is the reason the record is kept — so without this
+          the profile looks like any other and the missing kiosk entry looks
+          like a bug. */}
+      {isRetired(dog) && (
+        <div className="mb-5 rounded-2xl border border-line bg-surface-2 p-4">
+          <p className="text-sm font-medium text-ink">
+            {dog.dog_name} is retired — {retireReasonLabel(dog.retired_reason).toLowerCase()}
+            {dog.retired_at && (
+              <span className="font-normal text-ink-3">
+                {" "}
+                · {prettyDateKey(dog.retired_at.slice(0, 10))}
+              </span>
+            )}
+          </p>
+          {dog.retired_note && <p className="mt-1 text-xs text-ink-2">{dog.retired_note}</p>}
+          <p className="mt-2 text-xs leading-relaxed text-ink-3">
+            Everything on this page stays. {dog.dog_name} is only kept out of the kiosk lookup,
+            the reservation picker, the packages screen and the calendar — and a new enrollment
+            using this name will add a dog rather than write over this one.
+          </p>
+          <button
+            onClick={() => setRetired(null, "")}
+            disabled={savingRetire}
+            className="mt-3 rounded-xl border border-line bg-surface px-4 py-2 text-xs font-medium text-ink-2 hover:border-accent-300 disabled:opacity-60"
+          >
+            {savingRetire ? "Working…" : `Bring ${dog.dog_name} back`}
+          </button>
+        </div>
+      )}
 
       {careFlags.length > 0 && (
         <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -1217,7 +1333,7 @@ function DogProfile() {
       {/* Vaccines */}
       <Panel id="dog-vaccines" title="Vaccines" summary={vaccineSummary} defaultOpen>
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <CardTable className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Vaccine</th>
@@ -1262,7 +1378,7 @@ function DogProfile() {
                 );
               })}
             </tbody>
-          </table>
+          </CardTable>
         </div>
 
         {/* The paperwork behind those dates — uploaded with the enrollment
@@ -1311,7 +1427,7 @@ function DogProfile() {
       {/* Packages */}
       <Panel id="dog-packages" title="Packages" count={relevantPackages.length} summary={dogPackage || dogWalkPackage ? "Active" : "None on file"}>
         <ScrollBox>
-          <table className="w-full text-left text-sm">
+          <CardTable className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Bought</th>
@@ -1384,14 +1500,14 @@ function DogProfile() {
               ))}
               {relevantPackages.length === 0 && <EmptyRow colSpan={6}>No packages on file.</EmptyRow>}
             </tbody>
-          </table>
+          </CardTable>
         </ScrollBox>
       </Panel>
 
       {/* Stays */}
       <Panel id="dog-stays" title="Boarding stays" count={boardings.length} summary={upcomingStays.length ? `${upcomingStays.length} upcoming` : "None upcoming"}>
         <ScrollBox>
-          <table className="w-full text-left text-sm">
+          <CardTable className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Dates</th>
@@ -1424,14 +1540,14 @@ function DogProfile() {
               ))}
               {boardings.length === 0 && <EmptyRow colSpan={4}>No boarding stays on file.</EmptyRow>}
             </tbody>
-          </table>
+          </CardTable>
         </ScrollBox>
       </Panel>
 
       {/* Visits */}
       <Panel id="dog-visits" title="Visits" count={visits.length} summary={visits[0] ? `Last: ${visits[0].date}` : "No visits yet"}>
         <ScrollBox>
-          <table className="w-full text-left text-sm">
+          <CardTable className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Date</th>
@@ -1464,14 +1580,14 @@ function DogProfile() {
               ))}
               {visits.length === 0 && <EmptyRow colSpan={6}>No visits on file.</EmptyRow>}
             </tbody>
-          </table>
+          </CardTable>
         </ScrollBox>
       </Panel>
 
       {/* Walks */}
       <Panel id="dog-walks" title="Walks" count={walkRows.length} summary={walkRows[0] ? `Last: ${walkRows[0].date}` : "None logged"}>
         <ScrollBox>
-          <table className="w-full text-left text-sm">
+          <CardTable className="w-full text-left text-sm">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-line-soft text-xs font-medium uppercase tracking-wide text-ink-3">
                 <th className="py-2 pr-3">Date</th>
@@ -1495,9 +1611,32 @@ function DogProfile() {
               ))}
               {walkRows.length === 0 && <EmptyRow colSpan={6}>No walks logged yet.</EmptyRow>}
             </tbody>
-          </table>
+          </CardTable>
         </ScrollBox>
       </Panel>
+
+      {/* Housekeeping, at the bottom and away from everything that edits the
+          profile. Retiring is not a correction to the record — it is the end
+          of one. */}
+      {!isRetired(dog) && (
+        <div className="mt-5">
+          {retiring ? (
+            <RetirePanel
+              dogName={dog.dog_name}
+              busy={savingRetire}
+              onConfirm={(reason, note) => setRetired(reason, note)}
+              onCancel={() => setRetiring(false)}
+            />
+          ) : (
+            <button
+              onClick={() => setRetiring(true)}
+              className="text-xs font-medium text-ink-3 transition hover:text-ink-2"
+            >
+              Retire {dog.dog_name} — passed away, moved, or no longer coming
+            </button>
+          )}
+        </div>
+      )}
 
       {/* One save for the whole profile. Every panel edits the same row, so
           four identical buttons only raised the question of which one saved
@@ -1524,6 +1663,87 @@ function DogProfile() {
 
 const inputClass =
   "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+
+/**
+ * Taking a dog off the books.
+ *
+ * A reason is required, and it is the first thing asked, because the three
+ * answers are not the same event: staff writing "passed away" are recording
+ * something they may have to say out loud to the owner next week, and the
+ * profile should be able to show it back to them. The note is theirs.
+ */
+function RetirePanel({
+  dogName,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  dogName: string;
+  busy: boolean;
+  onConfirm: (reason: string, note: string) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+
+  return (
+    <div className="rounded-2xl border border-line bg-surface p-5 shadow-card">
+      <p className="text-sm font-medium text-ink">Retire {dogName}</p>
+      <p className="mt-1 text-xs leading-relaxed text-ink-3">
+        Nothing is deleted. {dogName} keeps every visit, payment, vaccination and document, and
+        can be brought back at any time — they just stop appearing anywhere staff book, charge or
+        check a dog in.
+      </p>
+
+      <p className="mb-1.5 mt-4 text-[11px] text-ink-3">What happened?</p>
+      <div className="flex flex-wrap gap-2">
+        {RETIRE_REASONS.map((r) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => setReason(r.key)}
+            className={`rounded-xl border px-3.5 py-2 text-xs font-medium transition ${
+              reason === r.key
+                ? "border-accent-500 bg-accent-500 text-accent-ink"
+                : "border-line bg-surface text-ink-2 hover:border-accent-300"
+            }`}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      <label className="mb-1 mt-4 block text-[11px] text-ink-3" htmlFor="retire-note">
+        Note (optional)
+      </label>
+      <input
+        id="retire-note"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="Anything worth remembering"
+        className={inputClass}
+      />
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => onConfirm(reason, note)}
+          disabled={busy || !reason}
+          className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? "Working…" : `Retire ${dogName}`}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-xl border border-line bg-surface px-4 py-2 text-sm font-medium text-ink-2 hover:border-line disabled:opacity-60"
+        >
+          Cancel
+        </button>
+        {!reason && <p className="text-[11px] text-ink-3">Pick a reason first.</p>}
+      </div>
+    </div>
+  );
+}
 
 function Section({
   title,

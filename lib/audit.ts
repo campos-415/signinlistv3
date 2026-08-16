@@ -181,6 +181,7 @@ export function describeAction(action: string): string {
     "auth.mfa_verified": "Two-factor code accepted",
     "auth.mfa_enrolled": "Authenticator set up",
     "auth.mfa_removed": "Authenticator removed",
+    "auth.password_changed": "Password changed",
     "role.granted": "Role granted",
     "role.changed": "Role changed",
     "role.revoked": "Role revoked",

@@ -14,12 +14,49 @@ export interface PricingSettings {
   daycareFullDay: number;
   daycareHalfDay: number;
   daycareHalfDayThresholdHours: number;
+  // What the SECOND and any further dog from the same household pays on the
+  // same day. The first dog pays the full rate above.
+  //
+  // Every daycare prices this way and this app did not, so a household
+  // bringing two dogs was billed twice the single rate — against a discount
+  // the business advertises on its own price list and rings up on its own
+  // till. Set either to 0 to charge the full rate for every dog.
+  daycareSecondDogFullDay: number;
+  daycareSecondDogHalfDay: number;
   boardingPerNight: number;
   // Discounted nightly rate for a second dog from the same household.
   boardingSecondDogPerNight: number;
+  // Before the doors open, somebody has to be there to open them. Charged
+  // once per visit, on a drop-off or a pick-up earlier than this hour.
+  //
+  // A fee of 0 means the business does not charge it.
+  earlyHour: number;
+  earlyFee: number;
+  // Late pick-up, which is two different rules at most daycares and was one
+  // field here. These two are the BOARDING rule: an hour, and a flat fee
+  // charged once when the dog actually goes home.
   latePickupHour: number;
   latePickupFee: number;
+  // And these are the DAYCARE rule, which is usually later in the day and
+  // charged by the hour rather than once — closing time is a staffing cost,
+  // so it goes up the longer somebody has to stay.
+  //
+  // A rate of 0 means the business does not charge it, and nothing is added.
+  daycareLatePickupHour: number;
+  daycareLatePickupPerHour: number;
   bath: { S: number; M: number; L: number };
+  // Which bath size a dog gets from its weight, in pounds: S up to `S`, M up
+  // to `M`, and anything heavier is L.
+  //
+  // Chosen from the weight rather than asked for, because the weight is
+  // already on the profile and the question has one right answer. Staff can
+  // still change it on the visit — a heavy-coated dog is more work than the
+  // scale suggests — so this decides the starting point, not the outcome.
+  //
+  // It also closes a hole: the kiosk had no size picker at all, so a bath
+  // added there carried no size, and a visit with no size was charged
+  // nothing for the bath.
+  bathWeightMax: { S: number; M: number };
   // Walk-in add-on prices, keyed by add-on. Custom add-ons added on
   // /settings land here too.
   addons: Record<string, number>;
@@ -158,6 +195,16 @@ export interface SiteSettings {
   externalUrl: string;
 }
 
+export interface PortalSettings {
+  // Off until management turns it on, and off is the honest default: a
+  // daycare that has not opened has no clients, so a sign-in page for
+  // accounts nobody holds is a support call waiting to happen.
+  //
+  // Off means the route does not render, not that the link is hidden. That
+  // distinction is the whole point — see app/(portal)/layout.tsx.
+  enabled: boolean;
+}
+
 // Card payments through the Square Point of Sale app. Neither value is a
 // secret — the application ID travels in the deep link the browser opens,
 // so both live in settings rather than in an env var, and each business
@@ -175,6 +222,24 @@ export interface SquareSettings {
   // Payments recorded this way are marked TEST and can be cleared from
   // Settings. Nothing is ever charged.
   testMode: boolean;
+  // Which of the two Square integrations this daycare uses. They are not
+  // alternatives so much as consequences of the hardware:
+  //
+  //   "app"       a Reader paired to a phone or tablet. The browser hands
+  //               off to the Square app, the card is tapped there, and
+  //               Square returns to /pay/return. No secret, no server.
+  //
+  //   "terminal"  a Square Terminal or Register — a device with its own
+  //               screen. The server pushes the amount to it over Square's
+  //               API and the client never leaves this app. Needs a secret
+  //               access token, which is why it runs server-side.
+  //
+  // A Reader cannot be driven remotely, so a business with a Stand and a
+  // Reader cannot use "terminal" however much it might prefer to.
+  mode: "app" | "terminal";
+  // The paired Terminal, from Settings → pairing. Not a secret: it names a
+  // device, and only a request carrying the access token can drive it.
+  terminalDeviceId: string;
 }
 
 // Who can be recorded as having done a walk. Kept as a list rather than a
@@ -191,6 +256,7 @@ export interface StaffSettings {
 
 export interface AppSettings {
   site: SiteSettings;
+  portal: PortalSettings;
   // Every word the marketing pages say. See lib/siteContent.ts.
   content: SiteContent;
   reviews: ReviewsSettings;
@@ -209,63 +275,74 @@ export interface AppSettings {
 // baseline a fresh install starts from.
 export const DEFAULT_SETTINGS: AppSettings = {
   site: { enabled: true, externalUrl: "" },
+  portal: { enabled: false },
   content: DEFAULT_CONTENT,
+  // No reviews ship with the app, and the section is off until a business
+  // turns it on under Settings → Reviews.
+  //
+  // This used to hold four real Yelp reviews written by four real, named
+  // customers of one particular daycare. Shipping those to every deployment
+  // put other people's words on a stranger's website. Inventing plausible
+  // replacements would be worse: a daycare that opens next month would launch
+  // with testimonials from customers it has never had, which is a lie told to
+  // the people deciding where to leave their dog.
+  //
+  // A new business has no reviews. The honest default is none.
   reviews: {
-    enabled: true,
-    source: "Yelp",
-    items: [
-      {
-        name: "Rowena W.",
-        date: "October 2025",
-        rating: 5,
-        quote:
-          "One of the cleanest doggy daycares — spacious, light and airy, with dependable, attentive staff.",
-      },
-      {
-        name: "Carmen E.",
-        date: "August 2024",
-        rating: 5,
-        quote:
-          "Never experienced a doggie daycare as pristine clean as this! The place is immaculate.",
-      },
-      {
-        name: "Catrina L.",
-        date: "June 2024",
-        rating: 5,
-        quote:
-          "My dog loves going so much that all I have to do is say daycare in the morning and he runs to the front door.",
-      },
-      { name: "Sara B.", date: "June 2024", rating: 5, quote: "The facility is clean and bright." },
-    ],
+    enabled: false,
+    source: "Google",
+    items: [],
   },
+  // What a deployment looks like before anybody has been to Settings → Brand.
+  //
+  // Every field here is either generic or blank on purpose. It used to carry
+  // one real daycare's name, street, dialable phone number, support address
+  // and Instagram - so a new install advertised somebody else's business, and
+  // a missed field on the settings page sent a customer to their phone.
+  //
+  // Blank beats plausible for contact details: an empty phone number is
+  // obviously unfinished, whereas a made-up one looks finished and quietly
+  // fails. The hours are filled in because every daycare has some, and they
+  // are a starting point rather than a claim about anyone.
   business: {
-    name: "Lombard Doggy Daycare",
+    name: "Doggy Daycare",
     tagline: "Sign your pup in or out",
     logoData: null,
     accentColor: "#4a72ef",
     printColor: "#f59e0b",
-    phone: "(415) 535-8520",
-    email: "support@lombarddoggydaycare.com",
-    street: "1488 Lombard Street",
-    city: "San Francisco",
-    state: "CA",
-    zip: "94123",
+    phone: "",
+    email: "",
+    street: "",
+    city: "",
+    state: "",
+    zip: "",
     hoursWeekday: "Monday – Friday, 7:00 AM – 7:00 PM",
-    hoursWeekend: "Saturday - Sunday 9:00 AM - 5:00 PM",
+    hoursWeekend: "Saturday - Sunday, 9:00 AM - 5:00 PM",
     hoursBoarding: "Overnight care, 7 days a week",
-    instagram: "https://www.instagram.com/lombard_doggy_daycare",
-    instagramHandle: "@lombard_doggy_daycare",
-    domain: "https://www.lombarddoggydaycare.com",
+    instagram: "",
+    instagramHandle: "",
+    domain: "",
   },
   pricing: {
     daycareFullDay: 70,
     daycareHalfDay: 50,
     daycareHalfDayThresholdHours: 4,
+    daycareSecondDogFullDay: 60,
+    daycareSecondDogHalfDay: 50,
     boardingPerNight: 90,
     boardingSecondDogPerNight: 80,
+    // Most daycares open at seven. A fee of 0 switches the charge off.
+    earlyHour: 7,
+    earlyFee: 0,
     latePickupHour: 12,
     latePickupFee: 50,
+    daycareLatePickupHour: 19,
+    // Nothing until a business prices it. An upgrade must not start billing
+    // a fee that nobody agreed to, so the daycare late charge is off until
+    // somebody puts a number in.
+    daycareLatePickupPerHour: 0,
     bath: { S: 60, M: 80, L: 100 },
+    bathWeightMax: { S: 25, M: 60 },
     addons: { walk: 30, nail_trim: 25 },
     boardingWalkPerWalk: 25,
     boardingMedicationPerDay: 10,
@@ -294,7 +371,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { kind: "daycare", days: 20, price: 1100 },
     { kind: "walk", days: 10, price: 250 },
   ],
-  square: { enabled: false, applicationId: "", locationId: "", testMode: false },
+  square: {
+    enabled: false,
+    applicationId: "",
+    locationId: "",
+    testMode: false,
+    // The app hand-off is the default because it needs no secret and no
+    // server. Terminal is opted into by a business that has the hardware.
+    mode: "app",
+    terminalDeviceId: "",
+  },
   staff: { names: [], walkDayStartHour: 6, walkDayEndHour: 21, walkStepMinutes: 30 },
   email: {
     autoAcknowledge: false,
@@ -316,7 +402,7 @@ If anything changes in the meantime, just reply to this email.
 
 Good news — {{dogs}} is approved and on our books.
 
-Next step is the meet & greet. Give us a call or reply here and we'll find a time that works.
+Next step is the meet & greet — {{meetgreet}}. Reply here if that no longer suits and we'll find another time.
 
 After that, checking in is just your phone number ({{phone}}) at the front desk.
 
@@ -445,6 +531,12 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
       ...DEFAULT_SETTINGS.pricing,
       ...(stored.pricing ?? {}),
       bath: { ...DEFAULT_SETTINGS.pricing.bath, ...(stored.pricing?.bath ?? {}) },
+      // Nested, so a settings row saved before weight ranges existed gets the
+      // defaults rather than an undefined it would later compare against.
+      bathWeightMax: {
+        ...DEFAULT_SETTINGS.pricing.bathWeightMax,
+        ...(stored.pricing?.bathWeightMax ?? {}),
+      },
       addons: { ...DEFAULT_SETTINGS.pricing.addons, ...(stored.pricing?.addons ?? {}) },
     },
     addons: stored.addons?.length ? stored.addons : DEFAULT_SETTINGS.addons,
@@ -464,6 +556,10 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
     square: { ...DEFAULT_SETTINGS.square, ...(stored.square ?? {}) },
     staff: { ...DEFAULT_SETTINGS.staff, ...(stored.staff ?? {}) },
     site: { ...DEFAULT_SETTINGS.site, ...(stored.site ?? {}) },
+    // A settings row written before the portal existed has no portal key,
+    // and the default it falls back to is off — which is the safe direction:
+    // an upgrade never switches a client-facing sign-in page on by itself.
+    portal: { ...DEFAULT_SETTINGS.portal, ...(stored.portal ?? {}) },
     content: deepMerge(DEFAULT_CONTENT, stored.content),
     reviews: {
       ...DEFAULT_SETTINGS.reviews,

@@ -4,15 +4,13 @@ import Link from "next/link";
 import { NAV_LINKS } from "@/lib/business";
 import { useBusiness } from "@/components/useBusiness";
 import { useSettings } from "@/components/SettingsProvider";
-import Image from "next/image";
-import lombardlogo from "../public/lombardlogo.avif";
 
 
 export default function Footer() {
   const BUSINESS = useBusiness();
   // Both used to be hardcoded: the bundled logo regardless of what was
-  // uploaded, and a sentence naming Lombard Street in the middle of a
-  // paragraph on every page of every deployment.
+  // uploaded, and a sentence naming one street in the middle of a paragraph
+  // on every page of every deployment.
   const { business, content } = useSettings().settings;
   const logoData = business.logoData;
   return (
@@ -21,22 +19,12 @@ export default function Footer() {
         <div className="md:col-span-2">
           <div className="mb-3 flex items-center gap-2.5">
             <span className="flex items-center justify-center">
-              {logoData ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={logoData}
-                  alt={BUSINESS.name}
-                  className="h-[52px] w-auto max-w-[180px] object-contain"
-                />
-              ) : (
-                <Image
-                  src={lombardlogo}
-                  alt={BUSINESS.name}
-                  width={100}
-                  height={100}
-                  className="h-[52px] w-auto object-contain"
-                />
-              )}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={logoData || "/logo.svg"}
+                alt={BUSINESS.name}
+                className="h-[52px] w-auto max-w-[180px] object-contain"
+              />
             </span>
           </div>
           <p className="max-w-sm text-sm leading-relaxed text-slate-500">

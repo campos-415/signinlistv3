@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import BusyButton from "@/components/BusyButton";
 import Panel from "@/components/Panel";
 import useRole from "@/components/useRole";
+import { useSettings } from "@/components/SettingsProvider";
 import { isOwnerAdmin } from "@/lib/roles";
 import { getSupabase } from "@/lib/supabase";
 import { getSettings } from "@/lib/settings";
@@ -41,6 +42,10 @@ export default function CustomerAccountPanel({
   email: string;
   dogNames: string[];
 }) {
+  // Nothing to offer while the portal is switched off: an invitation would
+  // send a client to a page that redirects them straight back out.
+  const portalOn = useSettings().settings.portal.enabled;
+
   const { account } = useRole();
   const [state, setState] = useState<AccountState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,6 +78,7 @@ export default function CustomerAccountPanel({
     load();
   }, [load]);
 
+  if (!portalOn) return null;
   if (!ownerId || !state) return null;
 
   const summary = state.claimedAt

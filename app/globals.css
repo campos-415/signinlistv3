@@ -109,6 +109,139 @@ select:not([multiple]) {
   height: 100%;
 }
 
+/* ---------------------------------------------------------------------
+   Checkboxes are 16px, and a thumb is not.
+
+   Every checkbox in this app sits inside a label, so the label is what gets
+   tapped rather than the box - which is the right shape already. What it was
+   missing is height: a one-line label like "I understand the meet and greet
+   policy" came to 20px, and a miss on that one is a client who cannot submit
+   an enrollment and does not know why.
+
+   Done here rather than on each label because there are fifteen of them
+   across the forms and settings, and the sixteenth would have been written
+   without it. Below sm only: a mouse can hit 20px.
+   --------------------------------------------------------------------- */
+label:has(> input[type="checkbox"]) {
+  cursor: pointer;
+}
+
+@media (max-width: 639px) {
+  label:has(> input[type="checkbox"]) {
+    min-height: 44px;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Phones: a table stops being a table.
+
+   The sign-in list is eight columns wide. On a phone that is a sideways
+   scroll through a grid with the headers off-screen, so a staff member
+   reading a time cannot see which dog it belongs to - the one thing the
+   row exists to say.
+
+   Below sm each row becomes a card, and the cells lay out in a two-column
+   grid in the order the DOM already has them: the dog across the top, then
+   status beside owner, in beside out, add-ons across, package beside price.
+   Each cell grows its own label from data-label, because the header row it
+   used to rely on is gone.
+
+   This reflows the real cells rather than rendering a second mobile-only
+   list. Everything the row can already do - inline editing, the note and
+   meal buttons, the package pickers, the unpaid colouring - keeps working,
+   and there is no second copy to drift out of step.
+   --------------------------------------------------------------------- */
+@media (max-width: 639px) {
+  .table-cards,
+  .table-cards tbody,
+  .table-cards tr,
+  .table-cards td {
+    display: block;
+    width: auto;
+  }
+
+  /* Several of these tables carry a min-w-[26rem] or wider, put there to keep
+     the columns readable while the container scrolls sideways. That is the
+     behaviour being replaced, and left alone it holds the card open past the
+     edge of the screen. Typed as table.table-cards so it outranks the utility
+     class without needing !important. */
+  table.table-cards {
+    min-width: 0;
+  }
+
+  /* The headers move into the cells themselves. */
+  .table-cards thead {
+    display: none;
+  }
+
+  .table-cards tr {
+    display: grid;
+    /* minmax(0, 1fr) rather than 1fr. A plain 1fr is minmax(auto, 1fr), and
+       auto refuses to go below the content minimum - so one date input with
+       an intrinsic width of 160px held each column open at 190px and pushed
+       the table past the screen it was meant to fit. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    /* Row gap is the larger of the two on purpose. Each cell is a label above
+       its value, so the gap between rows separates whole facts while the
+       column gap only separates two of them side by side. Equal gaps made
+       the label of one row look attached to the value of the row above. */
+    gap: 0.875rem 0.75rem;
+    padding: 0.875rem;
+  }
+
+  /* A cell centred or right-aligned to sit under a column heading is not
+     centred under its own label. Left, unless it is deliberately the number
+     in the corner of the card. */
+  .table-cards td {
+    text-align: left;
+  }
+
+  .table-cards td[data-align="right"] {
+    text-align: right;
+  }
+
+  /* Controls were given widths that suited a column - a date field is w-40,
+     which is wider than half a phone. Capping the field itself is not enough
+     because the wrapper around it carries the width, so cap everything: a
+     max-width of 100% costs nothing to something already narrower. */
+  .table-cards td * {
+    max-width: 100%;
+  }
+
+  .table-cards td {
+    padding: 0;
+    /* Cells were sized to sit in a column and several refuse to wrap. In a
+       card the width is the screen, so they must. */
+    white-space: normal;
+    min-width: 0;
+  }
+
+  .table-cards td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgb(var(--ink-3));
+  }
+
+  /* The dog, the add-ons and the service band run the full width. */
+  .table-cards td[data-span="2"] {
+    grid-column: 1 / -1;
+  }
+
+  /* The card edge carries the still-here tint, so it needs to be visible
+     rather than collapsed against the one below it. */
+  .table-cards tr + tr {
+    margin-top: 0.5rem;
+  }
+}
+
 @media print {
   /* Paper is always light. Reset the tokens rather than fighting each rule,
      so a dark-mode screen still prints a readable black-on-white report. */

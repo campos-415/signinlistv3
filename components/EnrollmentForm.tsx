@@ -27,7 +27,6 @@ import {
   MEET_GREET_HOURS,
   MEET_GREET_WINDOWS,
   VACCINES,
-  VaccineKey,
   isMeetGreetDay,
 } from "@/types";
 
@@ -96,6 +95,9 @@ function EnrollmentFormInner({
   detailsOnFile?: boolean;
 }, ref: React.Ref<EnrollmentFormHandle>) {
   const { settings } = useSettings();
+  // Whether there is a client sign-in to promise on the way out. Off until a
+  // business turns it on, so the thank-you screen must not describe one.
+  const portalOn = settings.portal.enabled;
   // The kiosk sends people back to the sign-in screen; the website sends
   // them back to the website.
   const homeHref = source === "kiosk" ? "/kiosk" : "/";
@@ -162,17 +164,6 @@ function EnrollmentFormInner({
     setDraft((d) => ({
       ...d,
       dogs: d.dogs.map((dog, i) => (i === index ? { ...dog, ...patch } : dog)),
-    }));
-  }
-
-  function setVaccine(index: number, key: VaccineKey, patch: Partial<{ given_on: string; expires_on: string }>) {
-    setDraft((d) => ({
-      ...d,
-      dogs: d.dogs.map((dog, i) =>
-        i === index
-          ? { ...dog, vaccines: { ...dog.vaccines, [key]: { ...dog.vaccines[key], ...patch } } }
-          : dog
-      ),
     }));
   }
 
@@ -251,33 +242,36 @@ function EnrollmentFormInner({
           touch to confirm your meet &amp; greet. You&apos;ll be able to check
           in by phone number once it&apos;s approved.
         </p>
-        {/* This used to promise a second FORM by email. It is now a second
-            step inside an account, and saying so here is what stops the
-            invitation looking like something nobody asked for when it
-            arrives.
+        {/* Only said when there is an account to be had.
 
-            An existing client adding another dog is told none of it: they
-            have an account, they answered those questions the first time,
-            and promising a form that will never arrive is how somebody ends
-            up waiting for one. */}
-        {detailsOnFile ? (
-          <p className="text-sm text-ink-3">
-            Nothing else to fill in — we already have your address, your vet and your emergency
-            contact from last time. This will show up in your account once we have approved it.
-          </p>
-        ) : (
-          <>
+            This promised an emailed invitation and a place to see visits and
+            what is owed. Client accounts are switched off until a business
+            turns them on, so on most deployments that was a promise nobody
+            was going to keep — and a client who has been told to expect an
+            email waits for it, then rings the front desk about it.
+
+            An existing client adding another dog is told none of it either:
+            they already have an account and answered those questions the
+            first time. */}
+        {portalOn &&
+          (detailsOnFile ? (
             <p className="text-sm text-ink-3">
-              Once the meet &amp; greet has gone well we&apos;ll email you a link to set up your
-              account.
+              Nothing else to fill in — we already have your address, your vet and your emergency
+              contact from last time. This will show up in your account once we have approved it.
             </p>
-            <p className="text-xs text-ink-3">
-              That account is also where you&apos;ll find{" "}
-              {draft.dogs.length > 1 ? "their" : "your dog's"} vaccination dates, your visits and
-              what you owe.
-            </p>
-          </>
-        )}
+          ) : (
+            <>
+              <p className="text-sm text-ink-3">
+                Once the meet &amp; greet has gone well we&apos;ll email you a link to set up your
+                account.
+              </p>
+              <p className="text-xs text-ink-3">
+                That account is also where you&apos;ll find{" "}
+                {draft.dogs.length > 1 ? "their" : "your dog's"} vaccination dates, your visits and
+                what you owe.
+              </p>
+            </>
+          ))}
         {!embed && (
           <Link
             href="/"
@@ -425,7 +419,6 @@ function EnrollmentFormInner({
             dog={dog}
             index={i}
             setDog={setDog}
-            setVaccine={setVaccine}
             onDoc={handleDoc}
           />
         </Section>
@@ -511,13 +504,11 @@ function DogSection({
   dog,
   index,
   setDog,
-  setVaccine,
   onDoc,
 }: {
   dog: DogDraft;
   index: number;
   setDog: (i: number, patch: Partial<DogDraft>) => void;
-  setVaccine: (i: number, key: VaccineKey, patch: Partial<{ given_on: string; expires_on: string }>) => void;
   onDoc: (i: number, e: ChangeEvent<HTMLInputElement>) => void;
 }) {
   const age = ageFromBirthdate(dog.birthdate);
@@ -598,50 +589,18 @@ function DogSection({
         )}
       </div>
 
+      {/* No date fields here any more.
+          Owners were typing five expiry dates off a certificate they were
+          uploading anyway, and staff checked every one against that document
+          before approving — so the typing produced a number nobody trusted,
+          and mistyped ones cost the front desk more time than they saved.
+          The document is the record. Staff read the dates off it on the dog
+          profile, where it is on screen beside the fields. */}
       <SubHeading>Vaccinations</SubHeading>
       <p className="text-xs text-ink-3">
-        Enter the expiry date from your dog&apos;s records for each vaccine, and upload a photo or
-        PDF of the paperwork. Rabies, DHPP and Bordetella are required.
+        Upload a photo or PDF of your dog&apos;s vaccination records. We will read the dates off it
+        — you do not need to type them in.
       </p>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[26rem] text-left text-sm">
-          <thead>
-            <tr className="border-b border-line-soft text-[11px] font-medium uppercase tracking-wide text-ink-3">
-              <th className="py-2 pr-3">Vaccine</th>
-              <th className="py-2 pr-3">Date given</th>
-              <th className="py-2">Expires</th>
-            </tr>
-          </thead>
-          <tbody>
-            {VACCINES.map((v) => (
-              <tr key={v.key} className="border-b border-line-soft last:border-0">
-                <td className="py-2 pr-3 font-medium text-ink-2">
-                  {v.label}
-                  {REQUIRED_VACCINES.includes(v.key) && <span className="ml-0.5 text-rose-500">*</span>}
-                </td>
-                <td className="py-2 pr-3">
-                  <DateField
-                    value={dog.vaccines[v.key]?.given_on ?? ""}
-                    onChange={(val) => setVaccine(index, v.key, { given_on: val })}
-                    wrapperClassName="w-40"
-                    className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-accent-500"
-                    ariaLabel={`${v.label} date given`}
-                  />
-                </td>
-                <td className="py-2">
-                  <DateField
-                    value={dog.vaccines[v.key]?.expires_on ?? ""}
-                    onChange={(val) => setVaccine(index, v.key, { expires_on: val })}
-                    wrapperClassName="w-40"
-                    className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-accent-500"
-                    ariaLabel={`${v.label} expiry`}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
       <Field label="Vaccination records" required>
         <div className="flex flex-wrap items-center gap-3">
           <label className="cursor-pointer rounded-xl border border-line bg-surface px-4 py-2.5 text-sm font-medium text-ink-2 transition hover:border-accent-400">
@@ -669,6 +628,28 @@ function DogSection({
           )}
         </div>
       </Field>
+
+      {/* The owner saying it in as many words. The document proves it and
+          staff will read it, but a dog cannot be on site without these three
+          and this is the line the household is answering for. */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-surface px-4 py-3">
+        <input
+          type="checkbox"
+          checked={dog.vaccinesConfirmed}
+          onChange={(e) => setDog(index, { vaccinesConfirmed: e.target.checked })}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-accent-500"
+        />
+        <span className="text-xs leading-relaxed text-ink-2">
+          I confirm {dog.dog_name.trim() || "my dog"} is up to date on{" "}
+          <span className="font-medium text-ink">
+            {REQUIRED_VACCINES.map((key) => VACCINES.find((v) => v.key === key)?.label ?? key).join(
+              ", "
+            )}
+          </span>
+          , and that the records above are current.
+          <span className="ml-0.5 text-rose-500">*</span>
+        </span>
+      </label>
 
       <SubHeading>Your visit</SubHeading>
       <div className="grid gap-3 sm:grid-cols-2">

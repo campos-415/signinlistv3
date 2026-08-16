@@ -10,7 +10,8 @@ import {
   stageTwoOwnerPatch,
   validateEnrollmentDetails,
 } from "@/lib/enrollment";
-import { Enrollment } from "@/types";
+import { Dog, Enrollment } from "@/types";
+import { activeDogs } from "@/lib/retire";
 
 // -----------------------------------------------------------------------
 // The public half of two-stage enrollment: reading a household's details
@@ -174,18 +175,27 @@ export async function POST(req: NextRequest) {
   // dogs exist, so a name with no match means staff renamed or removed it —
   // and a public form that could conjure a dog nobody approved would undo
   // the point of the review queue.
+  // select("*") rather than a column list because this has to keep working on
+  // an install that has not run dog-retire-migration.sql — asking for
+  // retired_at where it does not exist would fail the whole query and take
+  // the public details form down with it. One household is a few rows.
   const { data: existingRows, error: dogsError } = await db
     .from("dogs")
-    .select("id, dog_name")
+    .select("*")
     .eq("phone", phone);
   if (dogsError) {
     console.error("Looking up the household's dogs failed:", dogsError);
     return NextResponse.json({ error: "unavailable" }, { status: 500 });
   }
+  // Retired dogs are excluded, and not only because they need no answers:
+  // this map is keyed by name, so a household with a retired Buki and the
+  // Buki they have now would keep whichever came back last and write the
+  // details onto that one. Skipping the retired row makes it the live dog
+  // every time.
   const existing = new Map(
-    ((existingRows as { id: string; dog_name: string }[]) ?? []).map((d) => [
+    activeDogs((existingRows as Dog[]) ?? []).map((d) => [
       d.dog_name.trim().toLowerCase(),
-      d.id,
+      d.id as string,
     ])
   );
 

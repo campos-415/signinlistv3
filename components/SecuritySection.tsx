@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import MfaSetup from "@/components/MfaSetup";
 import useRole from "@/components/useRole";
 import { MfaFactor, listFactors, removeFactor } from "@/lib/mfa";
-import { logMfaRemoved } from "@/lib/audit";
+import { logMfaRemoved, logEvent } from "@/lib/audit";
+import { MIN_PASSWORD_LENGTH, changeMyPassword } from "@/lib/auth";
 import {
   AUDIT_GROUPS,
   AuditEntry,
@@ -15,6 +16,7 @@ import {
   ASSIGNABLE_ROLES,
   ROLE_BLURBS,
   ROLE_LABELS,
+  addStaffAccount,
   StaffListEntry,
   StaffRole,
   canManageStaff,
@@ -25,6 +27,7 @@ import {
   setRequireMfa,
   setStaffRole,
 } from "@/lib/roles";
+import CardTable from "@/components/CardTable";
 
 // Settings -> Security.
 //
@@ -77,7 +80,17 @@ export default function SecuritySection() {
 
 // ---------------------------------------------------------------------
 
-function MyAccountPanel({
+/**
+ * Your own sign-in: the second factor, and changing your own password.
+ *
+ * Exported because it must not live only inside Settings. Settings is
+ * manager-and-above — so an employee handed a generated password could not
+ * reach the one screen that would let them change it, which made the whole
+ * feature useless to precisely the people it was for. /my-account renders
+ * this for anybody with a staff role; this section keeps it too, because a
+ * manager looking at Security reasonably expects their own account there.
+ */
+export function MyAccountPanel({
   account,
   onChanged,
 }: {
@@ -193,11 +206,263 @@ function MyAccountPanel({
       )}
 
       {error && <p className="mt-2 text-xs font-medium text-rose-500">{error}</p>}
+
+      <ChangePassword />
     </section>
   );
 }
 
+/**
+ * Changing your own password, for the person whose password somebody else
+ * chose. An owner creating an account generates one and reads it out; this
+ * is where that stops being a shared secret.
+ *
+ * Collapsed until asked for, because on most visits to this screen it is not
+ * what brought anybody here.
+ */
+function ChangePassword() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    setError("");
+    if (next !== again) {
+      setError("The two do not match.");
+      return;
+    }
+    setBusy(true);
+    const result = await changeMyPassword(current, next);
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    // Worth a line in the log: a password change is how an account stops
+    // being shared, and it is the sort of thing somebody asks about later.
+    // "auth." so it files under Sign-ins in the activity log — the groups
+    // there match on the prefix, and a bare name lands in no group at all.
+    await logEvent("auth.password_changed", {
+      entity: "auth",
+      summary: "Changed their own password",
+    });
+    setCurrent("");
+    setNext("");
+    setAgain("");
+    setDone(true);
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <div className="mt-4 border-t border-line pt-3">
+        {done && (
+          <p className="mb-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+            ✓ Password changed. It applies the next time you sign in.
+          </p>
+        )}
+        <button
+          onClick={() => {
+            setOpen(true);
+            setDone(false);
+          }}
+          className="text-xs font-medium text-accent-600 hover:underline"
+        >
+          Change your password
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-2 border-t border-line pt-3">
+      <p className="text-xs font-semibold text-ink">Change your password</p>
+      <p className="text-[11px] leading-relaxed text-ink-3">
+        If somebody else set this account up, this is where you make it yours. Your current
+        password is asked for so that a tablet left signed in cannot be used to take the account
+        over. At least {MIN_PASSWORD_LENGTH} characters.
+      </p>
+      <input
+        type="password"
+        value={current}
+        onChange={(e) => setCurrent(e.target.value)}
+        placeholder="Current password"
+        autoComplete="current-password"
+        className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500"
+      />
+      <input
+        type="password"
+        value={next}
+        onChange={(e) => setNext(e.target.value)}
+        placeholder="New password"
+        autoComplete="new-password"
+        className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500"
+      />
+      <input
+        type="password"
+        value={again}
+        onChange={(e) => setAgain(e.target.value)}
+        placeholder="Type it again"
+        autoComplete="new-password"
+        className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500"
+      />
+      {error && <p className="text-xs font-medium text-rose-500">{error}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={submit}
+          disabled={busy || !current || !next || !again}
+          className="rounded-xl bg-accent-500 px-4 py-2 text-xs font-medium text-accent-ink shadow-card hover:bg-accent-600 disabled:opacity-60"
+        >
+          {busy ? "Changing…" : "Change it"}
+        </button>
+        <button
+          onClick={() => {
+            setOpen(false);
+            setCurrent("");
+            setNext("");
+            setAgain("");
+            setError("");
+          }}
+          className="rounded-xl border border-line px-3 py-2 text-xs font-medium text-ink-3 hover:border-line"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
+
+/**
+ * Hiring, without the Supabase dashboard.
+ *
+ * The password is shown once and cannot be retrieved afterwards, so the
+ * screen says so before it is generated rather than after — somebody who
+ * closes this panel without writing it down has to remove the account and
+ * add it again.
+ */
+function AddStaff({ onAdded }: { onAdded: () => Promise<void> | void }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<StaffRole>("employee");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<{ email: string; password: string } | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await addStaffAccount(email.trim(), role);
+      setCreated({ email: result.email, password: result.password });
+      setEmail("");
+      await onAdded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add that account.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-3 rounded-xl border border-line bg-surface px-3.5 py-2 text-xs font-medium text-ink-2 hover:border-accent-300"
+      >
+        + Add someone
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-2xl border border-line bg-surface-2/50 p-4">
+      {created ? (
+        <>
+          <p className="text-xs font-semibold text-ink">{created.email} can now sign in.</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-ink-3">
+            Give them this password. It is shown once and is not stored anywhere — if it is lost,
+            remove the account and add it again.
+          </p>
+          <p className="mt-2 select-all rounded-xl border border-line bg-surface px-3 py-2 font-mono text-sm text-ink">
+            {created.password}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => setCreated(null)}
+              className="rounded-xl border border-line px-3 py-1.5 text-xs font-medium text-ink-2 hover:border-accent-300"
+            >
+              Add another
+            </button>
+            <button
+              onClick={() => {
+                setCreated(null);
+                setOpen(false);
+              }}
+              className="rounded-xl bg-accent-500 px-3 py-1.5 text-xs font-medium text-accent-ink hover:bg-accent-600"
+            >
+              Done
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@staff.local"
+              autoComplete="off"
+              className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500"
+            />
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as StaffRole)}
+              className="rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent-500"
+            >
+              {ASSIGNABLE_ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {ROLE_LABELS[r]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+            {ROLE_BLURBS[role]}
+          </p>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+            An address ending <code>@staff.local</code> is not a real mailbox and shows in the app
+            as just the name. A password is generated and shown once.
+          </p>
+          {error && <p className="mt-2 text-xs font-medium text-rose-500">{error}</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={submit}
+              disabled={busy || !email.trim()}
+              className="rounded-xl bg-accent-500 px-3.5 py-2 text-xs font-medium text-accent-ink hover:bg-accent-600 disabled:opacity-60"
+            >
+              {busy ? "Adding…" : "Add"}
+            </button>
+            <button
+              onClick={() => {
+                setOpen(false);
+                setError("");
+              }}
+              className="rounded-xl border border-line px-3.5 py-2 text-xs font-medium text-ink-3 hover:border-line"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function StaffPanel() {
   const [rows, setRows] = useState<StaffListEntry[] | null>(null);
@@ -280,11 +545,13 @@ function StaffPanel() {
         listed here and cannot be given a staff role by mistake.
       </p>
 
+      <AddStaff onAdded={load} />
+
       {rows === null ? (
         <p className="mt-3 text-sm text-ink-3">Loading…</p>
       ) : (
         <div className="mt-3 overflow-x-auto">
-          <table className="w-full min-w-[38rem] border-collapse text-left text-xs">
+          <CardTable className="w-full min-w-[38rem] border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-line text-ink-3">
                 <th className="py-1.5 pr-3 font-medium">Account</th>
@@ -339,7 +606,7 @@ function StaffPanel() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </CardTable>
         </div>
       )}
 
@@ -429,7 +696,7 @@ function ActivityPanel() {
         <p className="mt-3 text-sm text-ink-3">Nothing recorded there yet.</p>
       ) : (
         <div className="mt-3 max-h-[28rem] overflow-auto rounded-xl border border-line-soft">
-          <table className="w-full min-w-[40rem] border-collapse text-left text-xs">
+          <CardTable className="w-full min-w-[40rem] border-collapse text-left text-xs">
             <thead className="sticky top-0 bg-surface-2">
               <tr className="border-b border-line text-ink-3">
                 <th className="py-1.5 pl-3 pr-3 font-medium">When</th>
@@ -469,7 +736,7 @@ function ActivityPanel() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </CardTable>
         </div>
       )}
 

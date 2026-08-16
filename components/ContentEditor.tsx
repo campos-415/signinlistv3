@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, Dispatch, SetStateAction, useRef, useState } from "react";
-import { uploadSiteImage } from "@/lib/siteStorage";
+import { SiteImageError, uploadSiteImage } from "@/lib/siteStorage";
 import { AppSettings } from "@/lib/settings";
 import { DEFAULT_CONTENT, Card, Heading, Hero, SiteContent } from "@/lib/siteContent";
 
@@ -863,8 +863,13 @@ function PhotoPicker({
     setError("");
     try {
       onChange(await uploadSiteImage(file, "team", 256, 40 * 1024));
-    } catch {
-      setError("Could not read that image.");
+    } catch (e) {
+      console.error("Team photo upload failed:", e);
+      setError(
+        e instanceof SiteImageError && e.kind === "upload"
+          ? "Storage refused it. Run site-storage-migration.sql."
+          : "Could not read that image — try a PNG or JPEG."
+      );
     }
   }
 

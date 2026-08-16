@@ -22,10 +22,12 @@
 // stage to tell "not answered" from "not yet asked".
 
 import { getSupabase } from "@/lib/supabase";
+import { prettyDateKey } from "@/lib/dates";
 import { getSettings } from "@/lib/settings";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { notifyStaff } from "@/lib/notify";
 import { inviteToAccount } from "@/lib/customer";
+import { activeDogs } from "@/lib/retire";
 import {
   Dog,
   DogSex,
@@ -82,7 +84,7 @@ export function detailsLink(token: string): string {
 // Worth handling rather than letting it throw: enrollment is the most
 // important public flow in the app, and it must not start failing on an
 // install where two-stage-enrollment-migration.sql has not been run yet.
-function isMissingColumn(e: unknown): boolean {
+export function isMissingColumn(e: unknown): boolean {
   const err = e as { code?: string; message?: string } | null;
   return (
     err?.code === "PGRST204" ||
@@ -140,8 +142,22 @@ export interface DogDraft {
   meet_greet_on: string;
   meet_greet_window: string;
 
-  // A dog cannot be on site without these, so they cannot wait for stage two.
+  // Kept, and no longer asked for on the public form.
+  //
+  // Owners used to type five expiry dates off a certificate. They mistyped
+  // them, and staff checked every one against the uploaded document anyway -
+  // so it was work that produced a number nobody trusted. The form now asks
+  // for the document and for the owner to confirm the three required shots
+  // are current; staff read the dates off the paperwork, on the dog profile,
+  // where the record is on screen beside the fields.
+  //
+  // The shape stays because staff still fill it in, and because enrollments
+  // submitted before this change have dates in them.
   vaccines: Record<VaccineKey, VaccineDraft>;
+  // The owner confirming the dog is current on rabies, DHPP and Bordetella.
+  // An assertion, not a record - the uploaded document is the record, and
+  // this is what makes the owner say so in as many words.
+  vaccinesConfirmed: boolean;
   // The uploaded vaccination paperwork, already converted to a data URL.
   doc: { name: string; mime: string; data: string } | null;
 }
@@ -217,6 +233,7 @@ export function emptyDog(): DogDraft {
     meet_greet_on: "",
     meet_greet_window: "",
     vaccines: emptyVaccines(),
+    vaccinesConfirmed: false,
     doc: null,
   };
 }
@@ -305,11 +322,15 @@ export function validateEnrollment(draft: EnrollmentDraft): string {
     if (d.meet_greet_on && !d.meet_greet_window)
       return `${who}choose an arrival window for the meet & greet.`;
 
-    for (const key of REQUIRED_VACCINES) {
-      const label = VACCINES.find((v) => v.key === key)?.label ?? key;
-      if (!d.vaccines[key]?.expires_on) return `${who}enter the ${label} expiry date.`;
-    }
+    // The document and the owner saying the shots are current. The dates
+    // themselves are read off that document by staff, on the dog profile.
     if (!d.doc) return `${who}upload a copy of the vaccination records.`;
+    if (!d.vaccinesConfirmed) {
+      const labels = REQUIRED_VACCINES.map(
+        (key) => VACCINES.find((v) => v.key === key)?.label ?? key
+      ).join(", ");
+      return `${who}confirm the dog is up to date on ${labels}.`;
+    }
   }
 
   if (!draft.contractAgreed) return "Read and accept the contract to continue.";
@@ -438,6 +459,38 @@ export function stageTwoDogPatch(d: DogDraft, o: OwnerDraft): Partial<Dog> {
   };
 }
 
+// The stage-two columns, taken from the patch itself so the two lists cannot
+// drift apart as questions are added.
+const STAGE_TWO_KEYS = Object.keys(stageTwoDogPatch(emptyDog(), emptyOwner())) as (keyof Dog)[];
+
+const isBlankAnswer = (v: unknown) =>
+  v == null || v === "" || (Array.isArray(v) && v.length === 0);
+
+/**
+ * Drops the stage-two answers this submission does not actually have, so
+ * approving one cannot blank what is already on the dog.
+ *
+ * The same rule ownerPatch has always followed, and for a sharper reason. A
+ * household adding another dog from the portal files at stage two — their
+ * address and vet are on file, so the enrollment is complete. But "complete"
+ * there is a fact about the OWNER, and the form asks nothing about the dog
+ * beyond stage one: no allergies, no bite history, no restrictions. Approving
+ * it onto a dog of the same name therefore wrote `allergies: []` and
+ * `activity_restrictions: []` over a live profile — erasing a peanut allergy
+ * and a "no hard play" note in the course of adding a second dog.
+ *
+ * Only for updates. On an insert these blanks are simply the starting state,
+ * and only in applyEnrollment: the details form asks these questions for real,
+ * so an owner correcting an answer to "none" there must still be able to.
+ */
+export function withoutBlankAnswers(patch: Partial<Dog>): Partial<Dog> {
+  const out = { ...patch };
+  for (const key of STAGE_TWO_KEYS) {
+    if (isBlankAnswer(out[key])) delete out[key];
+  }
+  return out;
+}
+
 // Everything the given stage has actually asked. At stage one the stage-two
 // columns are left alone rather than written as nulls and empty arrays: on a
 // dog profile, null means "never asked", and that is exactly what they are.
@@ -535,7 +588,28 @@ export function templateVars(draft: EnrollmentDraft): Record<string, string> {
     dogs: joinNames(names) || "your dog",
     business: getSettings().business.name,
     phone: draft.owner.phone.trim(),
+    meetgreet: meetGreetWhen(draft),
   };
+}
+
+/**
+ * When the household asked to come in — "Mon, Aug 24, 8:00–10:30 am".
+ *
+ * Falls back to a phrase rather than an empty string, because a requested
+ * date is optional on the form and a sentence built around a blank reads as
+ * a bug: "You asked for  — reply here if that no longer suits." Both values
+ * are written to sit in the same sentence, so whoever edits the template
+ * only has to make one version of it read well.
+ *
+ * Taken from the first dog that has one. A household books one visit and
+ * brings its dogs to it; two different dates would be two enrollments.
+ */
+function meetGreetWhen(draft: EnrollmentDraft): string {
+  const dog = draft.dogs.find((d) => d.meet_greet_on?.trim());
+  if (!dog) return "a time we still need to arrange";
+  const day = prettyDateKey(dog.meet_greet_on);
+  const window = dog.meet_greet_window?.trim();
+  return window ? `${day}, ${window}` : day;
 }
 
 // The same placeholders, from the queue row rather than the submitted draft.
@@ -547,6 +621,12 @@ function rowTemplateVars(row: Enrollment): Record<string, string> {
     dogs: joinNames(names) || "your dog",
     business: getSettings().business.name,
     phone: row.phone?.trim() ?? "",
+    // Present but empty on purpose. renderTemplate leaves an unknown
+    // placeholder in the message as literal text, so a template using
+    // {{meetgreet}} would email somebody "{{meetgreet}}" from this path —
+    // which is only used after the meet & greet has already happened, when
+    // there is nothing to announce anyway.
+    meetgreet: "",
   };
 }
 
@@ -628,15 +708,26 @@ export async function applyEnrollment(
   // A household enrolling a second dog months later shouldn't end up with a
   // duplicate row for the dog they already have on file, so an existing
   // name on this number is updated in place instead.
+  //
+  // Retired dogs are deliberately not candidates. A household whose dog died
+  // and who names the next one after it is the case this protects: matching
+  // the name would update the dead dog in place, handing the new dog its
+  // visits, its balance, its photo and its bite history. Skipping retired
+  // rows means the new dog is inserted, and the old one keeps its own record.
+  //
+  // select("*") rather than a column list so this still works before
+  // dog-retire-migration.sql has been run — there is no retired_at column to
+  // ask for, and every dog reads as active. One household is a handful of
+  // rows either way.
   const { data: existingRows, error: existingErr } = await supabase
     .from("dogs")
-    .select("id, dog_name")
+    .select("*")
     .eq("phone", phone);
   if (existingErr) throw existingErr;
   const existing = new Map(
-    ((existingRows as { id: string; dog_name: string }[]) ?? []).map((c) => [
+    activeDogs((existingRows as Dog[]) ?? []).map((c) => [
       c.dog_name.trim().toLowerCase(),
-      c.id,
+      c.id as string,
     ])
   );
 
@@ -654,7 +745,11 @@ export async function applyEnrollment(
 
     let dogId: string;
     if (priorId) {
-      const { error } = await supabase.from("dogs").update(patch).eq("id", priorId);
+      // Merged, not replaced — see withoutBlankAnswers.
+      const { error } = await supabase
+        .from("dogs")
+        .update(withoutBlankAnswers(patch))
+        .eq("id", priorId);
       if (error) throw error;
       dogId = priorId;
       result.updated.push(dog.dog_name.trim());
@@ -755,6 +850,41 @@ export async function deleteEnrollment(row: Enrollment): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * The vaccination dates staff read off the uploaded record.
+ *
+ * The public form stopped asking for these — an owner uploads the document
+ * and confirms the three required shots are current, and the dates are typed
+ * here, on the review screen, with the certificate open beside them. They are
+ * written back into the submission rather than held in the screen, so a
+ * half-finished review survives a closed tab, and so the row that is finally
+ * approved is the row that was read.
+ */
+export async function saveReviewedVaccines(
+  row: Enrollment,
+  dogIndex: number,
+  key: VaccineKey,
+  patch: Partial<VaccineDraft>
+): Promise<Enrollment> {
+  const draft = hydrateDraft(row);
+  const dog = draft.dogs[dogIndex];
+  if (!dog) throw new Error("That dog is not in this submission.");
+
+  dog.vaccines = {
+    ...dog.vaccines,
+    [key]: { ...(dog.vaccines?.[key] ?? {}), ...patch },
+  };
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("enrollments")
+    .update({ data: draft })
+    .eq("id", row.id);
+  if (error) throw error;
+
+  return { ...row, data: draft };
+}
+
 export async function rejectEnrollment(row: Enrollment, note: string): Promise<void> {
   const supabase = getSupabase();
   const { error } = await supabase
@@ -815,6 +945,9 @@ export function hydrateDraft(row: {
       ...emptyDog(),
       ...d,
       vaccines: { ...emptyVaccines(), ...(d?.vaccines ?? {}) },
+      // An enrollment saved before the confirmation existed has no answer to
+      // give. False is the honest reading: nobody was asked.
+      vaccinesConfirmed: d?.vaccinesConfirmed === true,
     })),
   };
 }
@@ -1001,10 +1134,20 @@ export async function sendDetailsRequest(phone: string): Promise<DetailsRequestR
     // household with no owner row yet, or one whose invitation cannot be
     // issued, must still be able to finish enrolling; the alternative is a
     // client stuck with no way to send their details and no way to tell.
-    const account = await inviteToAccount(phone);
+    // Only invite them to an account that exists.
+    //
+    // This asked for an invitation unconditionally and fell back to the
+    // details link only when issuing one FAILED. Client accounts are now
+    // something a business switches on, and with them off the invitation
+    // still succeeds — a token is written, a link comes back — but the page
+    // it points at redirects to the home page. So a household that had just
+    // passed its meet and greet got an email, clicked it, and landed on the
+    // website with nothing to do and no way to finish enrolling.
+    //
+    // The details form is not behind the portal, so it works either way.
+    const { portal, email } = getSettings();
+    const account = portal.enabled ? await inviteToAccount(phone) : { link: null };
     const link = account.link ?? detailsLink(token);
-
-    const { email } = getSettings();
     const vars = { ...rowTemplateVars(row), link };
     const result = await sendEmail({
       to,

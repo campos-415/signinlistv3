@@ -4,7 +4,7 @@
 // pricing can't drift apart between them.
 
 import { getSupabase } from "@/lib/supabase";
-import { estimatePrice, isFullDayVisit } from "@/lib/pricing";
+import { bathSizeForWeight, estimatePrice, isFullDayVisit } from "@/lib/pricing";
 import { todayKey } from "@/lib/dates";
 import {
   BathSize,
@@ -15,6 +15,7 @@ import {
   SignAction,
   SignInRecord,
 } from "@/types";
+import { activeDogs } from "@/lib/retire";
 
 // A drop-off with no pick-up after it yet. Not limited to today — a
 // boarding stay's drop-off can be several days before its pick-up.
@@ -64,7 +65,11 @@ export async function loadPhoneContext(phone: string): Promise<PhoneContext> {
   if (boardingRes.error) throw boardingRes.error;
 
   return {
-    dogs: (dogRes.data as Dog[]) ?? [],
+    // Retired dogs are not offered at the kiosk. Nobody should be asked to
+    // check in a dog that died, and an owner tapping through a familiar
+    // screen would not notice the extra name until it was on the bill.
+    // History is untouched — the visits below still reference them.
+    dogs: activeDogs((dogRes.data as Dog[]) ?? []),
     packages: (pkgRes.data as Package[]) ?? [],
     boardings: (boardingRes.data as Boarding[]) ?? [],
     openVisits: buildOpenVisits((historyRes.data as SignInRecord[]) ?? []),
@@ -276,7 +281,11 @@ export async function performSignIn(input: SignInInput): Promise<SignInResult> {
       now,
       openVisit.addons,
       usingPackage,
-      openVisit.bathSize,
+      // The size stored at drop-off, or the one this dog's weight puts it in.
+      // A bath with no size is charged nothing, and every bath added at the
+      // kiosk used to have no size — so this is the safety net for visits
+      // opened before the kiosk started recording one.
+      openVisit.bathSize ?? bathSizeForWeight(input.dog.weight_lb),
       true,
       // Keeps the recorded price matching the estimate the client was
       // shown. /daily counts package sales as their own category and

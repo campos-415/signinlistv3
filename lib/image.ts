@@ -218,3 +218,44 @@ export async function fileToRecordJpeg(
   }
   return fileToBudgetedJpeg(file, maxDim, targetBytes);
 }
+
+/**
+ * Why a picture would not open, said in a way somebody at the front desk can
+ * act on.
+ *
+ * The usual cause is HEIC. iPhones and iPads shoot in it by default, Safari
+ * can display it and Chrome cannot, so a photo that looks perfectly normal in
+ * the Photos app fails to decode the moment it reaches a canvas. The failure
+ * arrives as a bare image onerror with nothing in it, so the file has to be
+ * inspected to say anything useful.
+ *
+ * Naming the format matters more than it looks: "try a different file" sends
+ * staff hunting through a photo library for one that happens to work, without
+ * ever learning which ones will.
+ */
+export function unreadableImageMessage(file: File): string {
+  const name = file.name.toLowerCase();
+  const heic =
+    name.endsWith(".heic") ||
+    name.endsWith(".heif") ||
+    file.type === "image/heic" ||
+    file.type === "image/heif";
+
+  if (heic) {
+    return (
+      "That is an iPhone HEIC photo, which this browser cannot open. " +
+      "In Photos, use Share and pick JPEG — or set the camera to Most Compatible " +
+      "(Settings → Camera → Formats) so new photos are JPEG from the start."
+    );
+  }
+
+  if (file.type === "application/pdf" || name.endsWith(".pdf")) {
+    return "That is a PDF. A dog photo needs to be a picture — JPEG or PNG.";
+  }
+
+  if (file.size > 25 * 1024 * 1024) {
+    return `That file is ${Math.round(file.size / (1024 * 1024))} MB, which is too large to open. Try a smaller picture.`;
+  }
+
+  return "That picture could not be opened — it may be damaged or in a format this browser does not read. JPEG and PNG always work.";
+}

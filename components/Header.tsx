@@ -2,11 +2,9 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import Image from "next/image";
 import { NAV_LINKS } from "@/lib/business";
 import { useBusiness } from "@/components/useBusiness";
 import { useSettings } from "@/components/SettingsProvider";
-import lombardlogo from "../public/lombardlogo.avif"
 
 export default function Header() {
   const BUSINESS = useBusiness();
@@ -25,23 +23,16 @@ export default function Header() {
           className="flex items-center gap-2.5"
           onClick={() => setOpen(false)}>
           <span className="flex items-center justify-center">
-            {logoData ? (
-              // Uploaded logos are data URLs, which next/image cannot optimise.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={logoData}
-                alt={BUSINESS.name}
-                className="h-[52px] w-auto max-w-[180px] object-contain"
-              />
-            ) : (
-              <Image
-                src={lombardlogo}
-                alt={BUSINESS.name}
-                width={100}
-                height={100}
-                className="h-[52px] w-auto object-contain"
-              />
-            )}
+            {/*
+              Uploaded logos are data URLs and the fallback is an SVG, neither
+              of which next/image can optimise, so both are plain img tags.
+            */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={logoData || "/logo.svg"}
+              alt={BUSINESS.name}
+              className="h-[52px] w-auto max-w-[180px] object-contain"
+            />
           </span>
         </Link>
 

@@ -25,6 +25,7 @@ import StaffNav from "@/components/StaffNav";
 import { ChoiceWithOther } from "@/components/FormBits";
 import Panel from "@/components/Panel";
 import CustomerAccountPanel from "@/components/CustomerAccountPanel";
+import { activeDogs, isRetired, retireReasonLabel, retiredDogs } from "@/lib/retire";
 
 export default function OwnerProfilePage() {
   return (
@@ -656,7 +657,23 @@ function OwnerProfile() {
       </Panel>
 
       {/* Dogs */}
-      <Panel id="owner-dogs" title="Dogs" count={dogs.length} defaultOpen summary={dogs.map((d) => d.dog_name).join(", ")}>
+      {/* The household is the one place a retired dog still belongs, so they
+          are shown here rather than hidden — sorted to the end, marked, and
+          counted separately from the dogs who are still coming. */}
+      <Panel
+        id="owner-dogs"
+        title="Dogs"
+        count={activeDogs(dogs).length}
+        defaultOpen
+        summary={
+          [
+            activeDogs(dogs).map((d) => d.dog_name).join(", "),
+            retiredDogs(dogs).length ? `${retiredDogs(dogs).length} retired` : "",
+          ]
+            .filter(Boolean)
+            .join(" · ") || "None on file"
+        }
+      >
         {dogs.length === 0 && !addingDog && (
           <p className="mb-3 text-sm text-ink-3">
             No dogs on file for this number.
@@ -664,7 +681,7 @@ function OwnerProfile() {
         )}
 
         <div className="flex flex-wrap gap-3">
-          {dogs.map((d) =>
+          {[...activeDogs(dogs), ...retiredDogs(dogs)].map((d) =>
             editingDogId === d.id ? (
               <div
                 key={d.id}
@@ -693,7 +710,9 @@ function OwnerProfile() {
             ) : (
               <div
                 key={d.id}
-                className="flex w-44 flex-col items-center gap-2 rounded-2xl border border-line p-3 text-center">
+                className={`flex w-44 flex-col items-center gap-2 rounded-2xl border p-3 text-center ${
+                  isRetired(d) ? "border-line-soft bg-surface-2" : "border-line"
+                }`}>
                 <Link
                   href={d.id ? dogHref(d.id) : "#"}
                   className="flex flex-col items-center gap-2 transition hover:opacity-80">
@@ -702,14 +721,16 @@ function OwnerProfile() {
                     <img
                       src={d.photo_data}
                       alt={`${d.dog_name}'s photo`}
-                      className="h-16 w-16 rounded-full object-cover"
+                      className={`h-16 w-16 rounded-full object-cover ${
+                        isRetired(d) ? "grayscale" : ""
+                      }`}
                     />
                   ) : (
                     <span className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-3 text-2xl">
                       🐕
                     </span>
                   )}
-                  <span className="text-sm font-medium text-ink">
+                  <span className={`text-sm font-medium ${isRetired(d) ? "text-ink-3" : "text-ink"}`}>
                     {d.dog_name}
                   </span>
                   <span className="text-[11px] text-accent-600">
@@ -717,9 +738,16 @@ function OwnerProfile() {
                   </span>
                 </Link>
 
+                {isRetired(d) && (
+                  <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[10px] font-semibold text-ink-3">
+                    {retireReasonLabel(d.retired_reason)}
+                  </span>
+                )}
+
                 {/* Covered either by a signature from signup or by staff
-                    confirming one signed elsewhere. */}
-                {!hasWaiver(d) && (
+                    confirming one signed elsewhere. Not worth saying about a
+                    dog that is no longer coming. */}
+                {!isRetired(d) && !hasWaiver(d) && (
                   <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
                     No waiver on file
                   </span>
@@ -854,12 +882,17 @@ function OwnerProfile() {
       </Panel>
 
       {/* Their own login. Sits under Contact because it depends on the email
-          address up there — the invitation goes to whatever is on file. */}
+          address up there — the invitation goes to whatever is on file.
+
+          dogNames is active only. That list is not decoration: it goes into
+          the portal invitation email as "your account for Buki and Koda".
+          Naming a dog that died in a cheerful invite is the kind of thing a
+          client remembers about a business. */}
       <CustomerAccountPanel
         ownerId={owner?.id ?? null}
         ownerName={form.owner_name || displayName}
         email={form.email}
-        dogNames={dogs.map((d) => d.dog_name).filter(Boolean)}
+        dogNames={activeDogs(dogs).map((d) => d.dog_name).filter(Boolean)}
       />
 
       {/* Veterinarian */}

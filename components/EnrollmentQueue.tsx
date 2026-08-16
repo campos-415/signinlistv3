@@ -13,15 +13,21 @@ import {
   enrollmentStage,
   rejectEnrollment,
   deleteEnrollment,
+  saveReviewedVaccines,
   templateVars,
+  REQUIRED_VACCINES,
 } from "@/lib/enrollment";
+import DateField from "@/components/DateField";
+import DeclineNote from "@/components/DeclineNote";
 import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
 import { renderTemplate, sendEmail } from "@/lib/email";
+import { copyText } from "@/lib/clipboard";
+import { activeDogs } from "@/lib/retire";
 import { useSettings } from "@/components/SettingsProvider";
 import useRole from "@/components/useRole";
 import { isManagerOrAbove } from "@/lib/roles";
 import RecordPreview from "@/components/RecordPreview";
-import { Enrollment, EnrollmentStage, EnrollmentStatus, VACCINES } from "@/types";
+import { Enrollment, EnrollmentStage, EnrollmentStatus, VACCINES, VaccineKey } from "@/types";
 import { reviewChecks } from "@/lib/enrollmentReview";
 import { todayKey } from "@/lib/dates";
 
@@ -47,6 +53,20 @@ const LIST_COLUMNS =
 const LEGACY_LIST_COLUMNS =
   "id, phone, owner_name, last_name, dog_names, status, source, review_note, reviewed_at, created_at";
 
+/** Phone numbers are stored formatted; the digits are what identify a household. */
+const digitsOf = (phone: string | null | undefined) => (phone ?? "").replace(/\D/g, "");
+
+// Just enough of a dog to say whether this number is already a client, and
+// whether the name on the form is about to land on top of one. Not select("*")
+// — this runs across every pending number and dog rows carry photo data.
+interface OnFileDog {
+  phone: string;
+  dog_name: string;
+  retired_at?: string | null;
+}
+const ON_FILE_COLUMNS = "phone, dog_name, retired_at";
+const LEGACY_ON_FILE_COLUMNS = "phone, dog_name";
+
 // The message staff are about to send, held while they edit it.
 interface Compose {
   row: Enrollment;
@@ -67,12 +87,18 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
   const [rows, setRows] = useState<Enrollment[]>([]);
   const [tab, setTab] = useState<QueueTab>("pending");
   const [openId, setOpenId] = useState<string | null>(null);
+  // The row whose decline note is being written, if any.
+  const [decliningId, setDecliningId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [compose, setCompose] = useState<Compose | null>(null);
   const [sending, setSending] = useState(false);
+  // Numbers in the queue that already have dogs on file, and what those dogs
+  // are called. Keyed by digits so "(415) 483-6511" and "4154836511" are the
+  // same household.
+  const [onFile, setOnFile] = useState<Map<string, OnFileDog[]>>(new Map());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,7 +122,9 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
         ({ data, error: err } = await fetchRows(LEGACY_LIST_COLUMNS));
       }
       if (err) throw err;
-      setRows((data as unknown as Enrollment[]) ?? []);
+      const list = (data as unknown as Enrollment[]) ?? [];
+      setRows(list);
+      loadOnFile(list);
     } catch (e) {
       console.error("Loading enrollments failed:", e);
       setError(
@@ -104,6 +132,56 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
       );
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  /**
+   * Which numbers waiting for review are already clients.
+   *
+   * A household enrolling its second dog arrives looking exactly like a
+   * stranger: same form, same card, nothing to say this number already has a
+   * dog on file and a balance running. The reviewer only knows if they happen
+   * to recognise the number — and what they approve is not the same operation
+   * either way, since a name already on file is updated in place rather than
+   * added.
+   *
+   * One query for the whole queue, and only for what is still pending: an
+   * approved row's household exists because approving it created it, so
+   * saying so there is noise. Failure is silent — this is context on a card,
+   * not something to take the review queue down over.
+   */
+  const loadOnFile = useCallback(async (list: Enrollment[]) => {
+    const phones = Array.from(
+      new Set(list.filter((r) => r.status === "pending").map((r) => r.phone).filter(Boolean))
+    );
+    if (!phones.length) {
+      setOnFile(new Map());
+      return;
+    }
+    try {
+      const supabase = getSupabase();
+      const fetchDogs = (columns: string) =>
+        supabase.from("dogs").select(columns).in("phone", phones);
+
+      let { data, error: err } = await fetchDogs(ON_FILE_COLUMNS);
+      if (err) {
+        // No retired_at column yet — dog-retire-migration.sql has not been
+        // run here. Without it every dog counts as active, which is how this
+        // behaved before retiring existed.
+        console.warn("Falling back to the pre-retire columns:", err.message);
+        ({ data, error: err } = await fetchDogs(LEGACY_ON_FILE_COLUMNS));
+      }
+      if (err) throw err;
+      const next = new Map<string, OnFileDog[]>();
+      for (const d of (data as unknown as OnFileDog[]) ?? []) {
+        const key = digitsOf(d.phone);
+        if (!key) continue;
+        next.set(key, [...(next.get(key) ?? []), d]);
+      }
+      setOnFile(next);
+    } catch (e) {
+      console.warn("Could not check which numbers are already clients:", e);
+      setOnFile(new Map());
     }
   }, []);
 
@@ -202,18 +280,14 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
     }
   }
 
-  async function reject(row: Enrollment) {
-    const note = window.prompt(
-      `Turn down ${row.owner_name}'s enrollment?\n\nOptionally note why. This is a staff-only note — you'll get to write the client's message next:`,
-      ""
-    );
-    if (note === null) return;
+  async function reject(row: Enrollment, note: string) {
     setBusyId(row.id ?? null);
     setError("");
     try {
       const full = await withData(row);
       await rejectEnrollment(row, note);
       setOpenId(null);
+      setDecliningId(null);
       openCompose(full, "rejected", full.data as EnrollmentDraft);
       load();
       onChanged?.();
@@ -259,14 +333,14 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
   async function copyDetailsLink(row: Enrollment) {
     if (!row.details_token) return;
     const link = detailsLink(row.details_token);
-    try {
-      await navigator.clipboard.writeText(link);
+    if (await copyText(link)) {
       setNotice(`Details link for ${row.owner_name} ${row.last_name} copied to the clipboard.`);
-    } catch {
-      // The clipboard API needs a secure context and permission. A prompt
-      // box with the link selected works everywhere.
-      window.prompt("Copy this link and send it to the client:", link);
+      return;
     }
+    // Nothing left to try. The link itself is the useful thing, so it goes on
+    // screen to be selected or read out — the card below shows it in full for
+    // anyone whose details are still outstanding.
+    setError(`Couldn't reach the clipboard. The link is ${link}`);
   }
 
   async function sendCompose() {
@@ -346,7 +420,7 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
         </p>
       )}
 
-      {error && <p className="mb-4 text-xs font-medium text-rose-500">{error}</p>}
+      {error && <p className="mb-4 break-words text-xs font-medium text-rose-500">{error}</p>}
       {notice && (
         <p className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
           {notice}
@@ -435,10 +509,33 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
             // approving it creates that many profiles, so the count belongs
             // on the card rather than being counted off the list of names.
             const dogCount = (row.dog_names ?? []).filter((n) => n.trim()).length;
+            // Dogs this number already has, and any of them this form is
+            // about to write over rather than add to.
+            //
+            // A retired dog still makes the household an existing client, but
+            // it is not a collision: approving inserts a new dog rather than
+            // updating it, which is the whole point of retiring. A household
+            // naming the next dog after the one that died sees the badge and
+            // no warning, because nothing is going to be overwritten.
+            const all = row.status === "pending" ? onFile.get(digitsOf(row.phone)) : undefined;
+            // Retired dogs are named too — "Buki (retired)" is the difference
+            // between a reviewer thinking the household already has a Buki
+            // and understanding why they are enrolling another one.
+            const household = (all ?? []).map((d) =>
+              d.retired_at ? `${d.dog_name} (retired)` : d.dog_name
+            );
+            const live = activeDogs(all ?? []).map((d) => d.dog_name);
+            const alsoOnFile = (row.dog_names ?? []).filter((n) =>
+              live.some((h) => h.trim().toLowerCase() === n.trim().toLowerCase())
+            );
             return (
             <div key={row.id} className="rounded-2xl border border-line bg-surface shadow-card">
               <div className="flex flex-wrap items-center gap-3 p-4">
-                <div className="min-w-0 flex-1">
+                {/* basis-full so the buttons wrap onto their own line on a
+                    phone. flex-1 with min-w-0 lets this shrink to nothing
+                    instead, which squeezes the name and phone into a narrow
+                    column rather than moving the buttons down. */}
+                <div className="min-w-0 flex-1 basis-full sm:basis-0">
                   <p className="text-sm font-medium text-ink">
                     {row.owner_name} {row.last_name}
                     <span className="ml-2 text-xs font-normal text-ink-3">{row.phone}</span>
@@ -457,6 +554,36 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                   {row.review_note && (
                     <p className="mt-1 text-xs text-ink-3">Note: {row.review_note}</p>
                   )}
+
+                  {/* Said on the card, not behind Review. Whether this is a
+                      new family or an existing one changes the decision, and
+                      a reviewer who has to open the submission to find out
+                      will not open it. */}
+                  {household && household.length > 0 && (
+                    <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-2">
+                      <span className="rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-700">
+                        Already a client
+                      </span>
+                      <span>
+                        {household.join(", ")} already on file for this number
+                      </span>
+                      <Link
+                        href={ownerHref(row.phone)}
+                        className="font-medium text-accent-600 hover:underline"
+                      >
+                        open household →
+                      </Link>
+                    </p>
+                  )}
+
+                  {alsoOnFile.length > 0 && (
+                    <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                      ⚠️ {alsoOnFile.join(", ")}{" "}
+                      {alsoOnFile.length > 1 ? "are" : "is"} already on file — approving
+                      updates {alsoOnFile.length > 1 ? "those profiles" : "that profile"} rather
+                      than adding a new dog.
+                    </p>
+                  )}
                 </div>
 
                 <button
@@ -469,7 +596,9 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                 {row.status === "pending" ? (
                   <>
                     <button
-                      onClick={() => reject(row)}
+                      onClick={() =>
+                        setDecliningId(decliningId === row.id ? null : (row.id ?? null))
+                      }
                       disabled={busyId === row.id}
                       className="rounded-xl border border-rose-200 px-3.5 py-2 text-xs font-medium text-rose-500 hover:border-rose-300 disabled:opacity-60"
                     >
@@ -498,12 +627,33 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                 <DetailsState row={row} onCopy={copyDetailsLink} />
               </div>
 
+              {decliningId === row.id && (
+                <DeclineNote
+                  title={`Turn down ${row.owner_name} ${row.last_name}'s enrollment?`}
+                  hint="You'll write the client's message next."
+                  busy={busyId === row.id}
+                  onConfirm={(note) => reject(row, note)}
+                  onCancel={() => setDecliningId(null)}
+                />
+              )}
+
               {openId === row.id && (
                 <div className="border-t border-line-soft p-4">
                   {row.data ? (
                     <Review
+                      row={row}
                       draft={row.data as EnrollmentDraft & { signature?: string }}
                       stage={enrollmentStage(row)}
+                      // Patch the one row rather than reloading the queue.
+                      // This used to be `load`, which refetched three hundred
+                      // enrollments and flipped the list into its loading
+                      // state on every single date — so the open review
+                      // collapsed and rebuilt under the cursor, mid-typing.
+                      onVaccinesSaved={(updated) =>
+                        setRows((prev) =>
+                          prev.map((r) => (r.id === updated.id ? updated : r))
+                        )
+                      }
                     />
                   ) : (
                     <p className="text-sm text-ink-3">Loading submission…</p>
@@ -595,11 +745,15 @@ function DetailsState({
 }
 
 function Review({
+  row,
   draft,
   stage,
+  onVaccinesSaved,
 }: {
+  row: Enrollment;
   draft: EnrollmentDraft & { signature?: string };
   stage: EnrollmentStage;
+  onVaccinesSaved: (updated: Enrollment) => void;
 }) {
   // A submission with no owner block should not take the whole Requests page
   // down with it. React unmounts the tree on a render throw, so one malformed
@@ -658,7 +812,16 @@ function Review({
         </Block>
       )}
 
-      {draft.dogs?.map((dog, i) => <DogReview key={i} dog={dog} stage={stage} />)}
+      {draft.dogs?.map((dog, i) => (
+        <DogReview
+          key={i}
+          row={row}
+          dog={dog}
+          index={i}
+          stage={stage}
+          onVaccinesSaved={onVaccinesSaved}
+        />
+      ))}
 
       <Block title="Agreements">
         <Row label="Contract" value={draft.contractAgreed ? "Accepted" : "NOT accepted"} />
@@ -679,7 +842,19 @@ function Review({
   );
 }
 
-function DogReview({ dog, stage }: { dog: DogDraft; stage: EnrollmentStage }) {
+function DogReview({
+  row,
+  dog,
+  index,
+  stage,
+  onVaccinesSaved,
+}: {
+  row: Enrollment;
+  dog: DogDraft;
+  index: number;
+  stage: EnrollmentStage;
+  onVaccinesSaved: (updated: Enrollment) => void;
+}) {
   const age = ageFromBirthdate(dog.birthdate);
   const fixed =
     dog.fixed === true
@@ -747,23 +922,46 @@ function DogReview({ dog, stage }: { dog: DogDraft; stage: EnrollmentStage }) {
         </p>
       )}
 
+      {/* Typed here, not on the public form.
+          The owner uploads the certificate and confirms the three required
+          shots are current; the dates come off that document, by someone who
+          can see it. The record is rendered directly underneath so it can be
+          read and copied without leaving the screen. Approval stays blocked
+          until the required three are in — see enrollmentReview.ts. */}
       <div className="mt-3 border-t border-line-soft pt-3">
         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
           Vaccinations
         </p>
-        <ul className="space-y-0.5 text-xs text-ink-2">
-          {VACCINES.map((v) => {
-            const rec = dog.vaccines?.[v.key];
-            return (
-              <li key={v.key}>
-                {v.label}: {rec?.expires_on ? `expires ${rec.expires_on}` : "—"}
-                {rec?.given_on && <span className="text-ink-3"> (given {rec.given_on})</span>}
-              </li>
-            );
-          })}
-        </ul>
+        <p className="mb-2 text-[11px] leading-relaxed text-ink-3">
+          {dog.vaccinesConfirmed
+            ? "The owner confirmed these are current. Read the dates off the record below."
+            : "The owner did not confirm these. Check the record below before approving."}
+        </p>
+
+        {/* Two date boxes with nothing over them is a guess, and the guess
+            costs a wrong date on a medical record. Same grid as the rows so
+            the headings sit over the fields they name. */}
+        <div className="grid grid-cols-[minmax(0,7rem)_1fr_1fr] items-center gap-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-3">
+          <span>Vaccine</span>
+          <span>Date given</span>
+          <span>Expires</span>
+        </div>
+
+        <div className="space-y-1.5">
+          {VACCINES.map((v) => (
+            <ReviewVaccineRow
+              key={v.key}
+              row={row}
+              dogIndex={index}
+              vaccine={v}
+              value={dog.vaccines?.[v.key]}
+              onSaved={onVaccinesSaved}
+            />
+          ))}
+        </div>
+
         {missingVax.length > 0 && (
-          <p className="mt-1 text-xs text-amber-700">No date given for: {missingVax.join(", ")}</p>
+          <p className="mt-1.5 text-xs text-amber-700">Still to enter: {missingVax.join(", ")}</p>
         )}
         {dog.doc ? (
           <RecordPreview
@@ -777,6 +975,87 @@ function DogReview({ dog, stage }: { dog: DogDraft; stage: EnrollmentStage }) {
         )}
       </div>
     </Block>
+  );
+}
+
+/**
+ * One vaccine on the review screen: what it is, when it expires, when it was
+ * given. Saves on change rather than behind a button — a reviewer typing five
+ * dates off a certificate should not have to remember a sixth action, and a
+ * half-finished review that survives a closed tab is worth more than a tidy
+ * save cycle.
+ */
+function ReviewVaccineRow({
+  row,
+  dogIndex,
+  vaccine,
+  value,
+  onSaved,
+}: {
+  row: Enrollment;
+  dogIndex: number;
+  vaccine: { key: VaccineKey; label: string };
+  value?: { given_on?: string | null; expires_on?: string | null };
+  onSaved: (updated: Enrollment) => void;
+}) {
+  const [error, setError] = useState("");
+  const required = REQUIRED_VACCINES.includes(vaccine.key);
+
+  // Held here as well as in the submission, so what is on screen is what was
+  // typed rather than what has finished saving. The write goes to the
+  // database and back through the queue, and a field that waits for that
+  // round trip before showing a date empties itself under the cursor while
+  // somebody is reading five dates off a certificate.
+  const [local, setLocal] = useState({
+    expires_on: value?.expires_on ?? "",
+    given_on: value?.given_on ?? "",
+  });
+  const missing = !local.expires_on;
+
+  async function save(patch: { given_on?: string; expires_on?: string }) {
+    setLocal((prev) => ({ ...prev, ...patch }));
+    setError("");
+    try {
+      const updated = await saveReviewedVaccines(row, dogIndex, vaccine.key, patch);
+      onSaved(updated);
+    } catch (e) {
+      console.error("Could not save that date:", e);
+      setError("Not saved.");
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-[minmax(0,7rem)_1fr_1fr] items-center gap-2">
+      <span className={`text-xs ${required && missing ? "font-medium text-rose-600" : "text-ink-2"}`}>
+        {vaccine.label}
+        {required && <span className="ml-0.5 text-rose-500">*</span>}
+      </span>
+      {/* Given first, then expiry.
+          These were the other way round, with no headers over them — so two
+          bare date boxes sat in the opposite order to the dog profile and to
+          the form the owner filled in. Read off a certificate top to bottom
+          that puts the date given into the expiry field, and a shot given
+          last April reads as one that expired last April: approval blocked
+          on a dog that is perfectly current. */}
+      <DateField
+        value={local.given_on}
+        onChange={(v) => save({ given_on: v })}
+        className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-accent-500"
+        ariaLabel={`${vaccine.label} date given`}
+      />
+      <DateField
+        value={local.expires_on}
+        onChange={(v) => save({ expires_on: v })}
+        className={`w-full rounded-lg border bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-accent-500 ${
+          required && missing ? "border-rose-300" : "border-line"
+        }`}
+        ariaLabel={`${vaccine.label} expiry`}
+      />
+      {/* No "Saving…" line. It appeared and vanished on every field, which
+          on five vaccines read as the screen flickering rather than as
+          reassurance. Failure is the thing worth interrupting for. */}
+      {error && <span className="col-span-3 text-[10px] text-rose-500">{error}</span>}
+    </div>
   );
 }
 
@@ -854,9 +1133,16 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
-    <div className="flex gap-3 py-0.5 text-xs">
-      <span className="w-40 shrink-0 text-ink-3">{label}</span>
-      <span className="min-w-0 flex-1 text-ink-2">{value}</span>
+    // Stacked on a phone, side by side at the desk.
+    //
+    // The label was a fixed 160px at every width. On a 375px screen that is
+    // more than half the card, and what was left could not hold an email
+    // address - which has no spaces in it, so it did not wrap, it just ran
+    // off the edge. break-words is the other half: it lets an address that
+    // still does not fit break rather than overflow.
+    <div className="flex flex-col gap-0.5 py-1 text-xs sm:flex-row sm:gap-3 sm:py-0.5">
+      <span className="text-ink-3 sm:w-40 sm:shrink-0">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-ink-2">{value}</span>
     </div>
   );
 }

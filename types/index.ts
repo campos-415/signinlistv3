@@ -258,6 +258,14 @@ export interface Dog {
   // flagged as unsigned forever. A real signature in signature_data counts
   // on its own — see hasWaiver() in lib/clients.ts.
   waiver_on_file?: boolean | null;
+  // Set when the dog stops coming — it passed away, moved away, or the
+  // household simply stopped. The row and everything hanging off it stays;
+  // the dog just leaves every screen that books, charges or checks one in.
+  // Reversible, and undefined on an install that has not run
+  // dog-retire-migration.sql yet — see lib/retire.ts.
+  retired_at?: string | null;
+  retired_reason?: string | null;
+  retired_note?: string | null;
   created_at?: string;
 }
 

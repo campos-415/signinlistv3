@@ -19,6 +19,7 @@
 import { getSupabase } from "@/lib/supabase";
 import { Balance, computeBalance } from "@/lib/billing";
 import { Boarding, Dog, Package, Payment, SignInRecord, Vaccination } from "@/types";
+import { activeDogs } from "@/lib/retire";
 
 /** The household this account has claimed. */
 export interface Household {
@@ -234,7 +235,21 @@ export async function loadHouseholdData(): Promise<HouseholdData | null> {
       readAll<CustomerRequest>("my_boarding_requests", { column: "created_at", ascending: false }),
     ]);
 
-  return { household, dogs, vaccinations, packages, stays, visits, payments, documents, requests };
+  return {
+    household,
+    // Retired dogs are not offered back to the household. A client should
+    // not be shown a picker containing the dog they lost, least of all one
+    // that would let them request boarding for it. Their stays, visits and
+    // payments below are untouched — the history stays theirs.
+    dogs: activeDogs(dogs),
+    vaccinations,
+    packages,
+    stays,
+    visits,
+    payments,
+    documents,
+    requests,
+  };
 }
 
 /**

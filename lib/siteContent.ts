@@ -146,7 +146,7 @@ export interface SiteContent {
 export const DEFAULT_CONTENT: SiteContent = {
   tagline: "The home away from home for your furry best friend.",
   footerBlurb:
-    "Daycare, cage-free boarding, bathing, and walking — all in one pack-loving spot on Lombard Street.",
+    "Daycare, cage-free boarding, bathing, and walking — all in one pack-loving spot.",
   cta: {
     title: "Ready to give your dog their new favorite place?",
     description:
@@ -155,9 +155,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   home: {
     seo: {
-      title: "Dog Daycare & Cage-Free Boarding in San Francisco",
+      title: "Dog Daycare & Cage-Free Boarding",
       description:
-        "Lombard Doggy Daycare offers supervised daycare, cage-free overnight boarding, bathing, and dog walking on Lombard Street in San Francisco. Book a meet & greet today.",
+        "Supervised daycare, cage-free overnight boarding, bathing, and dog walking. Book a meet & greet today.",
     },
     intro:
       "Dogs are pack animals — they need to move, sniff, run, and socialize. We give them a fun, safe, supervised place to do exactly that, every single day.",
@@ -230,7 +230,7 @@ export const DEFAULT_CONTENT: SiteContent = {
       eyebrow: "Meet the team",
       title: "Run by people who actually love dogs",
       description:
-        "Luis brings veterinary medicine expertise, Roberto oversees day-to-day operations, and Meshal keeps things running smoothly behind the scenes — together they built Lombard Doggy Daycare around one idea: dogs do best with movement, structure, and a pack.",
+        "A team built around one idea: dogs do best with movement, structure, and a pack.",
     },
     teamLinkLabel: "Get to know the team →",
     reviewsHeading: {
@@ -242,9 +242,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   daycare: {
     seo: {
-      title: "Dog Daycare in San Francisco",
+      title: "Dog Daycare",
       description:
-        "Supervised dog daycare on Lombard Street in San Francisco. Half-day and full-day options, trained staff, and small, temperament-matched playgroups.",
+        "Supervised dog daycare. Half-day and full-day options, trained staff, and small, temperament-matched playgroups.",
     },
     hero: {
       eyebrow: "Daycare",
@@ -295,15 +295,15 @@ export const DEFAULT_CONTENT: SiteContent = {
     cta: {
       title: "Book your dog's first day",
       description:
-        "New to Lombard Doggy Daycare? We'll start with a quick meet & greet and temperament check.",
+        "New here? We'll start with a quick meet & greet and temperament check.",
     },
   },
 
   boarding: {
     seo: {
-      title: "Cage-Free Dog Boarding in San Francisco",
+      title: "Cage-Free Dog Boarding",
       description:
-        "Overnight dog boarding on Lombard Street in San Francisco — cage-free accommodations with a pet-loving team on-site around the clock, plus daytime play included.",
+        "Overnight dog boarding — cage-free accommodations with a pet-loving team on-site around the clock, plus daytime play included.",
     },
     hero: {
       eyebrow: "Boarding",
@@ -318,7 +318,7 @@ export const DEFAULT_CONTENT: SiteContent = {
       eyebrow: "What's included",
       title: "More than a place to sleep",
       description:
-        "Boarding at Lombard Doggy Daycare means your dog spends the day playing with their pack, then settles in for a calm, supervised night.",
+        "Boarding here means your dog spends the day playing with their pack, then settles in for a calm, supervised night.",
     },
     amenities: [
       {
@@ -359,9 +359,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   bath: {
     seo: {
-      title: "Dog Bathing & Grooming in San Francisco",
+      title: "Dog Bathing & Grooming",
       description:
-        "Calming dog baths, brushing, nail trims, and ear cleaning — added seamlessly to your dog's daycare visit in San Francisco.",
+        "Calming dog baths, brushing, nail trims, and ear cleaning — added seamlessly to your dog's daycare visit.",
     },
     hero: {
       eyebrow: "Bath & Grooming",
@@ -395,9 +395,9 @@ export const DEFAULT_CONTENT: SiteContent = {
 
   walking: {
     seo: {
-      title: "Dog Walking in San Francisco",
+      title: "Dog Walking",
       description:
-        "Solo dog walks around the Lombard Street neighborhood in San Francisco, available as single walks or a 10-day package with no expiration.",
+        "Solo dog walks around the neighborhood, available as single walks or a 10-day package with no expiration.",
     },
     hero: {
       eyebrow: "Dog Walking",
@@ -434,7 +434,7 @@ export const DEFAULT_CONTENT: SiteContent = {
     seo: {
       title: "Prices",
       description:
-        "See pricing for dog daycare, cage-free boarding, bathing, and dog walking at Lombard Doggy Daycare in San Francisco.",
+        "See pricing for dog daycare, cage-free boarding, bathing, and dog walking.",
     },
     heading: {
       eyebrow: "Prices",
@@ -446,7 +446,7 @@ export const DEFAULT_CONTENT: SiteContent = {
   gallery: {
     seo: {
       title: "Gallery",
-      description: "A look inside daycare and boarding at Lombard Doggy Daycare in San Francisco.",
+      description: "A look inside daycare and boarding.",
     },
     heading: {
       eyebrow: "Gallery",
@@ -459,37 +459,27 @@ export const DEFAULT_CONTENT: SiteContent = {
     seo: {
       title: "About Us",
       description:
-        "Meet the team behind Lombard Doggy Daycare in San Francisco and learn our approach to daycare, boarding, and dog care.",
+        "Meet the team and learn our approach to daycare, boarding, and dog care.",
     },
     eyebrow: "About Us",
     title: "Dogs are pack animals. We built a place for them to act like it.",
     intro:
-      "Lombard Doggy Daycare exists because dogs need more than a backyard — they need to move, sniff, run, and socialize. We give pet owners peace of mind while their dogs get real, supervised playtime with a pack that fits them.",
+      "We exist because dogs need more than a backyard — they need to move, sniff, run, and socialize. We give pet owners peace of mind while their dogs get real, supervised playtime with a pack that fits them.",
     teamHeading: {
       eyebrow: "Our team",
       title: "The people behind the pack",
       description: "",
     },
-    team: [
-      {
-        name: "Luis",
-        role: "Animal Care",
-        bio: "Brings veterinary medicine expertise to the daycare floor, focusing on animal health standards and personalized care for every dog.",
-        photo: "/Luis.avif",
-      },
-      {
-        name: "Roberto",
-        role: "Operations",
-        bio: "A background in business management shapes how the facility runs day to day — safe, organized, and genuinely engaging for the dogs in it.",
-        photo: "/Roberto.avif",
-      },
-      {
-        name: "Meshal",
-        role: "Growth & Marketing",
-        bio: "A lifelong dog owner with experience scaling and marketing small businesses, helping more dogs find their way to the pack.",
-        photo: "/Meshal.avif",
-      },
-    ],
+    // Empty on purpose, and the about page skips the whole section when it is.
+    //
+    // This used to name three real people and point at three photographs of
+    // their faces, bundled into the repository. Every deployment of this app
+    // shipped them, so a daycare on the other side of the country introduced
+    // its customers to staff who have never worked there.
+    //
+    // Added under Settings → Website → Team, where the photos go to storage
+    // rather than into the source tree.
+    team: [],
     approach: {
       eyebrow: "Our approach",
       title: "Small, well-matched playgroups — always supervised",
@@ -502,7 +492,7 @@ export const DEFAULT_CONTENT: SiteContent = {
     seo: {
       title: "Contact Us",
       description:
-        "Get in touch with Lombard Doggy Daycare in San Francisco — call, text, email, or send a message to book a meet & greet.",
+        "Get in touch — call, text, email, or send a message to book a meet & greet.",
     },
     heading: {
       eyebrow: "Contact",

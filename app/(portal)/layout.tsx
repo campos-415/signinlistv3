@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import PortalChrome from "@/components/PortalChrome";
+import { loadSettings } from "@/lib/settings";
 
 // The client portal, in a route group of its own.
 //
@@ -17,6 +19,17 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function PortalLayout({ children }: { children: React.ReactNode }) {
+export default async function PortalLayout({ children }: { children: React.ReactNode }) {
+  // Off by default, and off has to mean the route does not render.
+  //
+  // Hiding the link would leave /account reachable by anybody who typed it,
+  // which is the mistake the marketing-website switch had to learn the hard
+  // way. One check here covers every portal page, because they all render
+  // inside this layout — sign-in, claim, history, documents and the rest.
+  const settings = await loadSettings();
+  if (!settings.portal.enabled) {
+    redirect("/");
+  }
+
   return <PortalChrome>{children}</PortalChrome>;
 }

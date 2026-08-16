@@ -579,7 +579,7 @@ export default function BoardingRequestForm({
         <PriceDisclaimer draft={draft} />
 
         <div className="mt-3 grid gap-3">
-          <Field label="Feeding instructions">
+          <Field label="Feeding instructions" required>
             <textarea
               value={draft.feedingInstructions}
               onChange={(e) => set("feedingInstructions", e.target.value)}

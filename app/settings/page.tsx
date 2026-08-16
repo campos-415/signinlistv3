@@ -2,7 +2,7 @@
 
 import { ChangeEvent, useEffect, useState } from "react";
 import Link from "next/link";
-import { deleteSiteImage, uploadSiteImage } from "@/lib/siteStorage";
+import { SiteImageError, deleteSiteImage, uploadSiteImage } from "@/lib/siteStorage";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import {
   desktopAlertsOn,
@@ -30,6 +30,7 @@ import { SinglePhotoEditor } from "@/components/SitePhotoEditors";
 import ReportsSection from "@/components/ReportsSection";
 import SecuritySection from "@/components/SecuritySection";
 import ContentEditor from "@/components/ContentEditor";
+import TerminalPairing from "@/components/TerminalPairing";
 
 type Tab = "brand" | "pricing" | "website" | "content" | "messaging" | "reports" | "security";
 
@@ -203,8 +204,13 @@ function Settings() {
       // The old file goes once the new one is safely uploaded.
       deleteSiteImage(draft.business.logoData);
       setDraft((d) => ({ ...d, business: { ...d.business, logoData: url } }));
-    } catch {
-      setError("Could not read that image — try a different file.");
+    } catch (e) {
+      console.error("Logo upload failed:", e);
+      setError(
+        e instanceof SiteImageError && e.kind === "upload"
+          ? "Storage refused to save the logo. The image is fine — the database is missing its storage permissions. Run site-storage-migration.sql, then try again."
+          : "Could not read that image — try a PNG or JPEG."
+      );
     }
   }
 
@@ -392,19 +398,19 @@ function Settings() {
 
       {tab === "pricing" && (
         <>
-      <Section title="Daycare & boarding rates">
+      <Section title="Daycare rates">
         <div className="grid gap-3 sm:grid-cols-3">
           <Money
-            label="Daycare — full day"
+            label="Full day"
             value={draft.pricing.daycareFullDay}
             onChange={(v) => patchPricing({ daycareFullDay: v })}
           />
           <Money
-            label="Daycare — half day"
+            label="Half day"
             value={draft.pricing.daycareHalfDay}
             onChange={(v) => patchPricing({ daycareHalfDay: v })}
           />
-          <Field label="Half-day cutoff (hours)">
+          <Field label="Half day is under (hours)">
             <input
               type="number"
               min={1}
@@ -419,44 +425,108 @@ function Settings() {
             />
           </Field>
           <Money
-            label="Boarding — second dog / night"
-            value={draft.pricing.boardingSecondDogPerNight}
-            onChange={(v) => patchPricing({ boardingSecondDogPerNight: v })}
+            label="Second dog — full day"
+            value={draft.pricing.daycareSecondDogFullDay}
+            onChange={(v) => patchPricing({ daycareSecondDogFullDay: v })}
           />
           <Money
-            label="Boarding — per night"
+            label="Second dog — half day"
+            value={draft.pricing.daycareSecondDogHalfDay}
+            onChange={(v) => patchPricing({ daycareSecondDogHalfDay: v })}
+          />
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          A visit longer than the cutoff bills as a full day, and only a full day is covered by a
+          package. The second-dog rates apply to every dog after the first from the same household
+          on the same day — set them to 0 to charge every dog the full rate.
+        </p>
+      </Section>
+
+      <Section title="Boarding rates">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Money
+            label="Per night"
             value={draft.pricing.boardingPerNight}
             onChange={(v) => patchPricing({ boardingPerNight: v })}
           />
           <Money
-            label="Late pick-up fee"
-            value={draft.pricing.latePickupFee}
-            onChange={(v) => patchPricing({ latePickupFee: v })}
+            label="Second dog — per night"
+            value={draft.pricing.boardingSecondDogPerNight}
+            onChange={(v) => patchPricing({ boardingSecondDogPerNight: v })}
           />
-          <Field label="Late pick-up after (hour, 24h)">
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          Charged per night, not per day: a Friday to Sunday stay is two nights. The second-dog
+          rate applies to every dog after the first from the same household on the same dates.
+        </p>
+      </Section>
+
+      <Section title="Early and late">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Early — before this hour (24h)">
+            <input
+              type="number"
+              min={0}
+              max={23}
+              value={draft.pricing.earlyHour}
+              onChange={(e) => patchPricing({ earlyHour: Number(e.target.value) || 0 })}
+              className={inputClass}
+            />
+          </Field>
+          <Money
+            label="Early fee"
+            value={draft.pricing.earlyFee}
+            onChange={(v) => patchPricing({ earlyFee: v })}
+          />
+          <Field label="Daycare — late after this hour (24h)">
+            <input
+              type="number"
+              min={0}
+              max={23}
+              value={draft.pricing.daycareLatePickupHour}
+              onChange={(e) =>
+                patchPricing({ daycareLatePickupHour: Number(e.target.value) || 0 })
+              }
+              className={inputClass}
+            />
+          </Field>
+          <Money
+            label="Daycare — late fee, per hour"
+            value={draft.pricing.daycareLatePickupPerHour}
+            onChange={(v) => patchPricing({ daycareLatePickupPerHour: v })}
+          />
+          <Field label="Boarding — late after this hour (24h)">
             <input
               type="number"
               min={0}
               max={23}
               value={draft.pricing.latePickupHour}
-              onChange={(e) =>
-                patchPricing({ latePickupHour: Number(e.target.value) || 0 })
-              }
+              onChange={(e) => patchPricing({ latePickupHour: Number(e.target.value) || 0 })}
               className={inputClass}
             />
           </Field>
+          <Money
+            label="Boarding — late fee, once"
+            value={draft.pricing.latePickupFee}
+            onChange={(v) => patchPricing({ latePickupFee: v })}
+          />
         </div>
-        <p className="mt-2 text-[11px] text-ink-3">
-          A visit longer than the cutoff bills as a full day, and only a full
-          day is covered by a package. The late fee is charged once, on the day
-          a boarding dog actually goes home.
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          <strong>Early</strong> is one fee, charged when a dog arrives or leaves before you open.
+          <br />
+          <strong>Late</strong> is two rules, because daycares charge them differently: daycare is
+          per hour and rounded up, since the cost is somebody staying late; boarding is a flat fee,
+          charged once on the day the dog actually goes home.
+          <br />
+          Any fee left at 0 is not charged. None of them are covered by a package — a package buys
+          a day of daycare, not the time either side of it.
         </p>
       </Section>
 
       {/* Bath */}
       <Section
         title="Bath prices"
-        blurb="Bath is priced by size rather than a flat rate.">
+        blurb="Bath is priced by size, and the size comes from the dog's weight. Staff can still change it on a visit — a heavy-coated dog is more work than the scale suggests.">
         <div className="grid gap-3 sm:grid-cols-3">
           {(["S", "M", "L"] as const).map((size) => (
             <Money
@@ -469,6 +539,46 @@ function Settings() {
             />
           ))}
         </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <Field label="Small — up to (lb)">
+            <input
+              type="number"
+              min={1}
+              value={draft.pricing.bathWeightMax.S}
+              onChange={(e) =>
+                patchPricing({
+                  bathWeightMax: {
+                    ...draft.pricing.bathWeightMax,
+                    S: Number(e.target.value) || 1,
+                  },
+                })
+              }
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Medium — up to (lb)">
+            <input
+              type="number"
+              min={1}
+              value={draft.pricing.bathWeightMax.M}
+              onChange={(e) =>
+                patchPricing({
+                  bathWeightMax: {
+                    ...draft.pricing.bathWeightMax,
+                    M: Number(e.target.value) || 1,
+                  },
+                })
+              }
+              className={inputClass}
+            />
+          </Field>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          Up to {draft.pricing.bathWeightMax.S} lb is small, up to{" "}
+          {draft.pricing.bathWeightMax.M} lb is medium, anything heavier is large. A dog with no
+          weight on its profile gets no size, and staff are asked for one.
+        </p>
       </Section>
 
       {/* Walk-in add-ons */}
@@ -525,12 +635,32 @@ function Settings() {
       {/* Services */}
       <Section
         title="Services"
-        blurb="Rename or re-icon the services the kiosk offers. Adding a brand-new service still needs a code change — daycare, boarding, and meet & greet each have their own pricing and booking rules.">
+        blurb="The three shapes of visit. Rename them or change their icon to match what you call them — a business that says “Boarding” and one that says “Overnights” should both read right at the kiosk.">
         <CatalogEditor
           items={draft.services}
           onChange={(items) => setDraft({ ...draft, services: items })}
           allowAdd={false}
         />
+
+        {/* Where a new chargeable thing actually goes.
+            This section used to say only that a new service "needs a code
+            change", which is true of these three and sends somebody away
+            believing the app cannot take a new service at all. Most of what a
+            daycare adds — grooming, a pick-up and drop-off run, a training
+            session — is a flat fee on a visit, and that is an add-on, which
+            takes a name and a price and no code at all. */}
+        <div className="mt-4 rounded-xl bg-surface-2 px-4 py-3 text-[11px] leading-relaxed text-ink-3">
+          <strong className="text-ink-2">Adding something new to sell?</strong> Use{" "}
+          <strong className="text-ink-2">add-ons</strong> above — give it a name and a price and it
+          appears at the kiosk and on the bill straight away. Grooming, a pick-up and drop-off run,
+          a training session: all add-ons.
+          <br />
+          <br />
+          These three are different. They are not labels but rules — daycare is priced by hours on
+          site and can be covered by a package, boarding is priced per night and needs a reservation,
+          a meet &amp; greet is free and needs a verdict and a photo. A fourth one would have to
+          answer both of those questions, so it needs building rather than naming.
+        </div>
       </Section>
 
       {/* Email */}
@@ -553,6 +683,81 @@ function Settings() {
             </span>
           </span>
         </label>
+
+        {/* Which integration, decided by the hardware rather than taste.
+            A Reader paired to a phone or tablet cannot be driven remotely —
+            Square only pushes a cart to Terminal and Register — so a business
+            with a Stand and a Reader has one option whatever it would prefer. */}
+        {draft.square.enabled && (
+          <div className="mb-4 rounded-xl border border-line bg-surface-2 p-3">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+              Your card hardware
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  {
+                    key: "app" as const,
+                    title: "Reader on a phone or tablet",
+                    blurb:
+                      "Tapping Pay now opens the Square app with the amount filled in, and comes back here when it is done.",
+                  },
+                  {
+                    key: "terminal" as const,
+                    title: "Square Terminal or Register",
+                    blurb:
+                      "The amount is sent straight to the device. Nobody leaves this screen. Needs a Square access token on the server.",
+                  },
+                ]
+              ).map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() =>
+                    setDraft({ ...draft, square: { ...draft.square, mode: option.key } })
+                  }
+                  className={`rounded-xl border p-3 text-left transition ${
+                    draft.square.mode === option.key
+                      ? "border-accent-500 bg-accent-50"
+                      : "border-line bg-surface hover:border-accent-300"
+                  }`}
+                >
+                  <span className="block text-sm font-medium text-ink">{option.title}</span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-3">
+                    {option.blurb}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {draft.square.mode === "terminal" && (
+              <div className="mt-3">
+                <TerminalPairing
+                  locationId={draft.square.locationId}
+                  sandbox={draft.square.testMode}
+                />
+                <Field label="Paired terminal — device ID">
+                  <input
+                    value={draft.square.terminalDeviceId}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        square: { ...draft.square, terminalDeviceId: e.target.value.trim() },
+                      })
+                    }
+                    placeholder="device:…"
+                    className={inputClass}
+                  />
+                </Field>
+                <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+                  Once this is filled in, pick-up shows a <strong>Charge card</strong> button that
+                  sends the amount straight to the Terminal. Nobody leaves this screen, and the
+                  payment is recorded here when Square says it went through.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Square Application ID">
@@ -706,6 +911,47 @@ function Settings() {
           <strong>Online forms</strong> below. The kiosk is always at{" "}
           <code className="rounded bg-surface-3 px-1">/kiosk</code>, and the
           staff pages are unaffected.
+        </p>
+      </Section>
+
+      <Section
+        title="Client accounts"
+        blurb="A sign-in where clients see their own dogs, packages, stays and invoices, keep their details up to date, and ask for boarding dates. Requests still come to the queue — nothing books itself.">
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={draft.portal.enabled}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                portal: { ...draft.portal, enabled: e.target.checked },
+              })
+            }
+            className="mt-0.5 h-4 w-4 rounded border-line text-accent-500 focus:ring-accent-100"
+          />
+          <span className="text-sm text-ink-2">
+            Let clients sign in to their own account
+            <span className="block text-[11px] text-ink-3">
+              Off until you are ready. A daycare that has not opened has no clients, and a sign-in
+              page for accounts nobody holds is a phone call to the front desk.
+            </span>
+          </span>
+        </label>
+
+        <p className="mt-4 rounded-xl bg-surface-2 px-4 py-3 text-[11px] leading-relaxed text-ink-3">
+          {draft.portal.enabled ? (
+            <>
+              Clients cannot sign themselves up. A member of staff invites a household from its
+              owner profile, and the link goes to the address on file — which is what makes holding
+              it proof of who they are.
+            </>
+          ) : (
+            <>
+              While this is off the sign-in page does not exist — anybody typing the address is sent
+              back to the home page — and no invitation button appears on an owner profile. Turning
+              it on later changes nothing about the records you already have.
+            </>
+          )}
         </p>
       </Section>
 
@@ -1140,12 +1386,18 @@ function Settings() {
           </Field>
         </div>
 
-        <p className="mt-4 text-[11px] text-ink-3">
+        <p className="mt-4 text-[11px] leading-relaxed text-ink-3">
           Templates can use{" "}
           <code className="rounded bg-surface-3 px-1">{"{{owner}}"}</code>,{" "}
           <code className="rounded bg-surface-3 px-1">{"{{dogs}}"}</code>,{" "}
           <code className="rounded bg-surface-3 px-1">{"{{business}}"}</code>{" "}
           and <code className="rounded bg-surface-3 px-1">{"{{phone}}"}</code>.
+          <br />
+          <code className="rounded bg-surface-3 px-1">{"{{meetgreet}}"}</code> is the day and
+          arrival window the household asked for — “Mon, Aug 24, 8:00–10:30 am”. Picking a date is
+          optional on the form, so when they did not it reads “a time we still need to arrange”
+          instead. Both are written to sit in the same sentence, so there is only one version to
+          get right.
         </p>
 
         {/* The sandbox sender only delivers to the address on the Resend

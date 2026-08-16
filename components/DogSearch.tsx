@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { dogHref } from "@/lib/dogs";
 import { Dog } from "@/types";
+import { isRetired } from "@/lib/retire";
 
 // Type-ahead over every dog on file. Matches the dog's name or the owner
 // surname, so "Martinez" finds the household as readily as "Bella" finds
@@ -121,7 +122,18 @@ export default function DogSearch({ autoFocus = false }: { autoFocus?: boolean }
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">{c.dog_name}</span>
+                  <span className="block truncate text-sm font-medium text-ink">
+                    {c.dog_name}
+                    {/* Search is a lookup, not a booking screen, so retired
+                        dogs are still findable — their history is often the
+                        reason somebody is searching. Marked, so nobody walks
+                        from here into a sign-in expecting to find them. */}
+                    {isRetired(c) && (
+                      <span className="ml-1.5 rounded-full bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold text-ink-3">
+                        Retired
+                      </span>
+                    )}
+                  </span>
                   <span className="block truncate text-xs text-ink-3">
                     {c.last_name} · {c.phone}
                   </span>

@@ -12,6 +12,7 @@ import StaffNav from "@/components/StaffNav";
 import { StaffSelect, TimeSelect } from "@/components/WalkFields";
 import StaffGate from "@/components/StaffGate";
 import { useSettings } from "@/components/SettingsProvider";
+import CardTable from "@/components/CardTable";
 
 // One instruction on the stay card. Fixed-width label so every row aligns.
 function StayDetail({
@@ -68,6 +69,9 @@ function ReportInner() {
   const [selectedBoardingId, setSelectedBoardingId] = useState<string | null>(null);
   const [signins, setSignins] = useState<SignInRecord[]>([]);
   const [mealLogs, setMealLogs] = useState<MealLog[]>([]);
+  // Whoever is ticking the meal boxes, chosen once and remembered — a shift
+  // feeds the same dogs all day, and the old prompt asked again every meal.
+  const [fedBy, setFedBy] = useState("");
   const [walkLogs, setWalkLogs] = useState<WalkLog[]>([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
@@ -305,11 +309,14 @@ function ReportInner() {
         if (err) throw err;
         setMealLogs((prev) => prev.map((m) => (m.id === existing.id ? { ...m, fed: nextFed } : m)));
       } else {
-        const staffName = window.prompt("Your name (for the feeding chart):", "");
-        if (staffName === null) return; // cancelled
+        // Was a window.prompt on every first tick of a meal: it threw outright
+        // in an embedded browser, and the free-typed answer put "RM", "Rob"
+        // and "R. Marsh" in a column the walk log had already standardised.
+        // The name now comes from the picker above the chart, which is the
+        // same staff list the walk log uses.
         const { data, error: err } = await supabase
           .from("meal_logs")
-          .insert({ boarding_id: selectedBoardingId, date: day, meal_type: mealType, fed: true, fed_by: staffName.trim() || null })
+          .insert({ boarding_id: selectedBoardingId, date: day, meal_type: mealType, fed: true, fed_by: fedBy.trim() || null })
           .select()
           .single();
         if (err) throw err;
@@ -389,7 +396,10 @@ function ReportInner() {
 
       <StaffNav current="/stay-report" />
 
-      <div className="mb-6 flex items-center justify-between print:hidden">
+      {/* Stacked on a phone. This row had no wrap on it, so the heading and
+          three buttons were laid out on one line whatever the width - and at
+          375px the buttons sat on top of the words behind them. */}
+      <div className="mb-6 flex flex-col items-start gap-3 print:hidden sm:flex-row sm:items-center sm:justify-between">
         <h1 className="font-display text-xl font-semibold text-ink">
           Boarding stay report
         </h1>
@@ -416,7 +426,7 @@ function ReportInner() {
             <button
               onClick={() => window.print()}
               className="rounded-xl bg-accent-500 px-4 py-2 text-sm font-medium text-accent-ink shadow-card hover:bg-accent-600">
-              🖨️ Print / Save as PDF
+              🖨️ Print<span className="hidden sm:inline"> / Save as PDF</span>
             </button>
           </div>
         )}
@@ -716,7 +726,7 @@ function ReportInner() {
                             {/* Not w-full: a table stretched to the page
                               scattered the three controls of one walk across
                               it. Sized to its content they stay together. */}
-                            <table className="min-w-[26rem] border-collapse text-left text-xs">
+                            <CardTable className="min-w-[26rem] border-collapse text-left text-xs">
                               <thead>
                                 <tr className="border-b border-line text-ink-3">
                                   <th className="py-1.5 pr-3 font-medium">
@@ -823,7 +833,7 @@ function ReportInner() {
                                   </Fragment>
                                 ))}
                               </tbody>
-                            </table>
+                            </CardTable>
                           </div>
                         </>
                       );
@@ -838,10 +848,21 @@ function ReportInner() {
               {/* Meal chart */}
               {selectedBoarding && chartDays.length > 0 && (
                 <section className="rounded-2xl border border-line bg-surface p-5 shadow-card print:rounded-none print:border-0 print:p-0 print:shadow-none">
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
-                    Meal log
-                  </h3>
-                  <table className="w-full border-collapse text-left text-xs">
+                  <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
+                      Meal log
+                    </h3>
+                    <div className="ml-auto flex items-center gap-2 print:hidden">
+                      <span className="text-[11px] text-ink-3">Logged by</span>
+                      <StaffSelect
+                        value={fedBy}
+                        onSave={setFedBy}
+                        ariaLabel="Who is recording these meals"
+                        width="w-28"
+                      />
+                    </div>
+                  </div>
+                  <CardTable className="w-full border-collapse text-left text-xs">
                     <thead>
                       <tr className="border-b border-line">
                         <th className="py-1.5 pr-2 font-medium text-ink-3">
@@ -891,7 +912,7 @@ function ReportInner() {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                  </CardTable>
                   <p className="mt-2 text-[10px] text-ink-3 print:hidden">
                     Tap a box to mark a meal fed.
                   </p>
@@ -909,7 +930,7 @@ function ReportInner() {
                     .
                   </p>
                 ) : (
-                  <table className="w-full border-collapse text-left text-xs">
+                  <CardTable className="w-full border-collapse text-left text-xs">
                     <thead>
                       <tr className="border-b border-line text-ink-3">
                         <th className="py-1.5 pr-2 font-medium">Date</th>
@@ -942,7 +963,7 @@ function ReportInner() {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                  </CardTable>
                 )}
               </section>
             </div>

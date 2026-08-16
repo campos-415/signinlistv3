@@ -14,6 +14,7 @@ import { notifyStaff } from "@/lib/notify";
 import { nightsBetweenKeys } from "@/lib/pricing";
 import { prettyDateKey, todayKey } from "@/lib/dates";
 import { Boarding, BoardingAddonKey, BoardingRequest, Dog } from "@/types";
+import { activeDogs } from "@/lib/retire";
 
 // The facility asks for two days' warning. It is a request, not a rule —
 // staff can still take a last-minute stay — so a short-notice booking is
@@ -122,6 +123,13 @@ export function validateBoardingRequest(draft: BoardingRequestDraft): string {
 
   if (draft.services.includes("medication") && !draft.medicationInstructions.trim())
     return "Tell us what medication your dog needs and when.";
+
+  // A dog staying overnight has to be fed, and "we will ask at drop-off" is
+  // how that ends up being guessed at seven in the evening by whoever is on
+  // shift. Asked here, while the person who knows the answer is the one
+  // filling the form in.
+  if (!draft.feedingInstructions.trim())
+    return "Tell us how your dog is fed — how much, how often, and anything to avoid.";
 
   if (!draft.policyAgreed) return "Please confirm you've read the boarding policy.";
   return "";
@@ -243,7 +251,9 @@ export async function matchDogs(
   const supabase = getSupabase();
   const { data, error } = await supabase.from("dogs").select("*").eq("phone", phone.trim());
   if (error) throw error;
-  const dogs = (data as Dog[]) ?? [];
+  // A request naming "Buki" means the Buki they have now, not the one that
+  // passed away and left its name on an old row.
+  const dogs = activeDogs((data as Dog[]) ?? []);
   return dogNames.map((name) => ({
     name,
     dog:

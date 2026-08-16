@@ -192,9 +192,11 @@ function Message({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
-    <div className="flex gap-3 py-0.5 text-xs">
-      <span className="w-36 shrink-0 text-ink-3">{label}</span>
-      <span className="min-w-0 flex-1 text-ink-2">{value}</span>
+    // Stacked on a phone: a fixed label column plus an email address is
+    // wider than the screen, and an address has no space to wrap at.
+    <div className="flex flex-col gap-0.5 py-1 text-xs sm:flex-row sm:gap-3 sm:py-0.5">
+      <span className="text-ink-3 sm:w-36 sm:shrink-0">{label}</span>
+      <span className="min-w-0 flex-1 break-words text-ink-2">{value}</span>
     </div>
   );
 }
