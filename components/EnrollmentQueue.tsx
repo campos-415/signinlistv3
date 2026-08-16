@@ -529,7 +529,14 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
               live.some((h) => h.trim().toLowerCase() === n.trim().toLowerCase())
             );
             return (
-            <div key={row.id} className="rounded-2xl border border-line bg-surface shadow-card">
+            // data-testid so the end-to-end tests can find one card without
+            // guessing at a Tailwind class, which would tie them to the
+            // design rather than to the behaviour.
+            <div
+              key={row.id}
+              data-testid="enrollment-card"
+              className="rounded-2xl border border-line bg-surface shadow-card"
+            >
               <div className="flex flex-wrap items-center gap-3 p-4">
                 {/* basis-full so the buttons wrap onto their own line on a
                     phone. flex-1 with min-w-0 lets this shrink to nothing

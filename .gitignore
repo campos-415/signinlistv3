@@ -25,3 +25,9 @@ tsconfig.tsbuildinfo
 # fails at runtime, which would be found by a client uploading a vaccination
 # certificate rather than by anybody here.
 public/pdf.worker.min.mjs
+
+# End-to-end test credentials and saved sessions
+.env.e2e
+.auth/
+test-results/
+playwright-report/
