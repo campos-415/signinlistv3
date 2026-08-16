@@ -39,159 +39,25 @@ $$;
 
 create role anon;
 create role authenticated;
+-- The key that bypasses RLS entirely. Used by the server-only routes, and
+-- granted to by customer-accounts-migration.sql.
+create role service_role;
 
--- ---------------------------------------------------------------------
--- The application tables, with the columns the policies and audit
--- triggers touch.
--- ---------------------------------------------------------------------
-
-create table public.dogs (
-  id uuid primary key default gen_random_uuid(),
-  dog_name text not null,
-  phone text,
-  last_name text,
-  breed text,
-  notes text,
-  birthdate text,
-  photo_data text,
-  created_at timestamptz default now()
-);
-
-create table public.owners (
-  id uuid primary key default gen_random_uuid(),
-  phone text unique,
-  owner_name text,
-  email text,
-  address text,
-  emergency_contact text,
-  vet_name text,
-  created_at timestamptz default now()
-);
-
-create table public.signins (
-  id uuid primary key default gen_random_uuid(),
-  dog_name text,
-  dog_id uuid,
-  phone text,
-  action text,
-  service_type text,
-  price numeric,
-  signature_data text,
-  created_at timestamptz default now()
-);
-
-create table public.boardings (
-  id uuid primary key default gen_random_uuid(),
-  dog_id uuid,
-  phone text,
-  start_date date,
-  end_date date
-);
-
-create table public.packages (
-  id uuid primary key default gen_random_uuid(),
-  phone text,
-  client_name text,
-  dog_name text,
-  kind text,
-  total_days int,
-  days_used int default 0,
-  price numeric,
-  created_at timestamptz default now()
-);
-
-create table public.package_uses (
-  id uuid primary key default gen_random_uuid(),
-  package_id uuid,
-  dog_id uuid,
-  signin_id uuid,
-  used_on date default current_date
-);
-
-create table public.payments (
-  id uuid primary key default gen_random_uuid(),
-  phone text,
-  amount numeric,
-  paid_on date default current_date,
-  method text,
-  created_at timestamptz default now()
-);
-
-create table public.vaccinations (
-  id uuid primary key default gen_random_uuid(),
-  dog_id uuid,
-  vaccine text,
-  given_on date,
-  expires_on date,
-  file_data text
-);
-
-create table public.meal_logs (
-  id uuid primary key default gen_random_uuid(),
-  dog_id uuid,
-  date date,
-  meal text
-);
-
-create table public.walk_logs (
-  id uuid primary key default gen_random_uuid(),
-  dog_id uuid,
-  date date,
-  slot text,
-  walk_out text
-);
-
-create table public.dog_docs (
-  id uuid primary key default gen_random_uuid(),
-  dog_id uuid,
-  kind text,
-  file_data text
-);
-
-create table public.enrollments (
-  id uuid primary key default gen_random_uuid(),
-  status text default 'pending',
-  owner_name text,
-  phone text,
-  payload jsonb,
-  created_at timestamptz default now()
-);
-
-create table public.boarding_requests (
-  id uuid primary key default gen_random_uuid(),
-  status text default 'pending',
-  phone text,
-  created_at timestamptz default now()
-);
-
-create table public.settings (
-  id int primary key,
-  data jsonb,
-  updated_at timestamptz default now()
-);
-
-create table public.site_photos (
-  id uuid primary key default gen_random_uuid(),
-  slot text,
-  data text
-);
-
--- A leftover from a vaccination import that exists in the live database and
--- that no migration had ever named. Here so the lockdown is tested against
--- the real table list rather than an idealised one.
-create table public.vaccinations_staging (
-  id uuid primary key default gen_random_uuid(),
-  dog_name text,
-  phone text,
-  vaccine text,
-  given_on date
-);
+-- The application tables are NOT defined here.
+--
+-- They used to be: sixteen hand-written approximations carrying "the columns
+-- the policies and audit triggers touch". They drifted, which is the only
+-- thing a second copy of a schema ever does -- owners grew a notes column in
+-- 00-base-schema.sql, customer-accounts-migration.sql went looking for it
+-- here, and this whole suite stopped running. Nobody noticed, because a test
+-- that fails at step one still exits before it can contradict anybody.
+--
+-- The runner loads 00-base-schema.sql immediately after this file instead, so
+-- the policies are proved against the schema the business actually has.
 
 -- What Supabase grants by default. RLS filters on top of these; without
--- them the API roles get permission denied whatever the policies say.
-grant usage on schema public to anon, authenticated;
-grant select, insert, update, delete on all tables in schema public to anon, authenticated;
-grant usage, select on all sequences in schema public to anon, authenticated;
-
--- A row so the public read path has something to return.
-insert into public.settings (id, data) values (1, '{"business":{"name":"Test"}}'::jsonb);
+-- them every policy below is moot because the table privilege is missing.
+--
+-- These run in the RUNNER after the schema files, not here: "all tables in
+-- schema public" only covers the tables that exist when it is executed, and
+-- at this point none of them do. See grantsFile in policy-matrix.test.mjs.

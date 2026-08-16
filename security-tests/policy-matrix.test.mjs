@@ -22,8 +22,13 @@
 //
 // Run it with:
 //
-//   npm install --no-save @electric-sql/pglite
-//   node security-tests/policy-matrix.test.mjs
+//   npm run test:policies      (or npm test, which runs this and the rest)
+//
+// pglite is a devDependency rather than an install-when-you-remember. It used
+// to be documented as `npm install --no-save`, which meant the next npm
+// install of anything at all deleted it and this suite stopped running — the
+// same way it had already stopped running for a different reason. A gate that
+// disappears quietly is worse than no gate, because it still reads as one.
 //
 // It exits non-zero if any check fails, so it can go in front of a deploy.
 // Add a case here whenever the matrix changes: the cheapest place to find
@@ -114,6 +119,42 @@ async function expectDenied(label, sql, params) {
 console.log("\n=== 1. Supabase stand-in and application tables ===");
 await runFile(`${HERE}/supabase-stand-in.sql`, "supabase-stand-in.sql");
 
+// Steps 0 to 10 of docs/NEW-DATABASE.md: the real schema and the feature
+// migrations, not a copy of them. See the note at the foot of the stand-in.
+//
+// Running the whole runbook rather than only the security block is the point.
+// The security migrations reference tables these create — boarding_requests,
+// enrollments, the two-stage columns — so a lockdown proved against a partial
+// schema proves very little. This way the deployment documented for a new
+// client is exercised from nothing on every run.
+//
+// site-storage-migration.sql is the one omission: it writes policies on
+// storage.objects, which is Supabase infrastructure rather than application
+// schema, and standing that up here would be testing Supabase rather than
+// this app.
+const schemaOrder = [
+  ["00-base-schema.sql", "0. base schema"],
+  ["enrollment-migration.sql", "1. enrollments"],
+  ["boarding-requests-migration.sql", "2. boarding requests"],
+  ["walk-log-per-dog-migration.sql", "3. walk logs per dog"],
+  ["walk-package-boarding-migration.sql", "4. walk packages"],
+  ["meet-greet-result-migration.sql", "5. meet & greet result"],
+  ["signin-notes-migration.sql", "6. sign-in notes"],
+  ["signin-meals-migration.sql", "7. meals"],
+  ["site-photos-migration.sql", "8. site photos"],
+  ["two-stage-enrollment-migration.sql", "10. two-stage enrollment"],
+];
+for (const [file, label] of schemaOrder) {
+  if (!(await runFile(`${REPO}/${file}`, label))) {
+    console.log("\nStopping: a migration failed, so the rest would be meaningless.");
+    process.exit(1);
+  }
+}
+
+// Only now that the tables exist: "all tables in schema public" grants on
+// what is there when it runs, not on what arrives later.
+await runFile(`${HERE}/supabase-grants.sql`, "supabase default grants");
+
 const users = {};
 for (const [name, email] of [
   ["owner", "cesar@staff.local"],
@@ -129,11 +170,23 @@ console.log(`  ok   five accounts created`);
 
 // =====================================================================
 console.log("\n=== 2. The migrations, in the documented order ===");
+// Steps 11 to 17 of docs/NEW-DATABASE.md. The customer-account migrations are
+// not optional scenery here: rls-lockdown.sql calls customer_owner_id() in the
+// client policies, so without step 14 it refuses to run at all — which is
+// exactly how this file started failing, silently, while still being the thing
+// that was supposed to be run in front of a deploy. Keep this list in step with
+// the runbook.
 const order = [
   ["security-roles-migration.sql", "1. roles"],
   ["security-audit-migration.sql", "2. audit log"],
   ["security-exports-migration.sql", "3. export gate"],
-  ["rls-lockdown.sql", "4. per-role RLS"],
+  ["customer-accounts-migration.sql", "4. customer accounts"],
+  ["customer-details-handover-migration.sql", "5. details handover"],
+  ["customer-second-dog-migration.sql", "6. second dog"],
+  // Recreates the my_dogs view, so it must run before the lockdown has its
+  // say about what the portal can read.
+  ["dog-retire-migration.sql", "6b. retiring a dog"],
+  ["rls-lockdown.sql", "7. per-role RLS"],
 ];
 for (const [file, label] of order) {
   const okRun = await runFile(`${REPO}/${file}`, label);
@@ -144,11 +197,24 @@ for (const [file, label] of order) {
   }
 }
 
-// The seed list in the migration only knows the two accounts that exist in
-// the real database. The other three get roles the way an owner would.
+// The accounts the seed list does not cover get roles the way an owner would.
+//
+// Upserted rather than inserted because the seed list is not fixed: it is
+// edited per client, and scripts/setup.mjs writes it from a staff_seed table.
+// This suite asserts what each ROLE may do, so it must not also depend on
+// which emails some install happens to seed — that coupling is what turned a
+// changed seed list into a crash here rather than a failed check.
 await superuser();
-await db.query("insert into public.staff_roles (user_id, role) values ($1,'manager')", [users.manager]);
-await db.query("insert into public.staff_roles (user_id, role) values ($1,'employee')", [users.employee]);
+for (const [user, role] of [
+  [users.manager, "manager"],
+  [users.employee, "employee"],
+]) {
+  await db.query(
+    `insert into public.staff_roles (user_id, role) values ($1,$2)
+       on conflict (user_id) do update set role = excluded.role`,
+    [user, role]
+  );
+}
 
 console.log("\n=== 3. Roles as the database sees them ===");
 const roleRows = await db.query(
@@ -173,15 +239,32 @@ ok(
 await superuser();
 const dogId = (
   await db.query(
-    "insert into public.dogs (dog_name, phone, notes) values ('Bella','6305551234','likes shade') returning id"
+    "insert into public.dogs (dog_name, last_name, phone, notes) values ('Bella','Fixture','6305551234','likes shade') returning id"
   )
 ).rows[0].id;
 await db.query("insert into public.owners (phone, owner_name, email, address) values ('6305551234','Alice A','a@example.com','1 Main St')");
 await db.query("insert into public.payments (phone, amount) values ('6305551234', 42.50)");
-await db.query("insert into public.packages (phone, client_name, total_days, days_used) values ('6305551234','Alice A',10,2)");
-await db.query("insert into public.meal_logs (dog_id, date, meal) values ($1, current_date, 'lunch')", [dogId]);
+await db.query("insert into public.packages (phone, client_name, total_days, days_used, kind) values ('6305551234','Alice A',10,2,'daycare')");
+// A stay for the meal log to hang off. meal_logs keys on boarding_id, not
+// dog_id: a meal is fed during a boarding, and the old hand-written stand-in
+// had this wrong, so the check below was passing against a table shape the
+// business does not have.
+const boardingId = (
+  await db.query(
+    `insert into public.boardings (dog_name, last_name, phone, start_date, end_date)
+       values ('Bella','Fixture','6305551234', current_date, current_date + 1) returning id`
+  )
+).rows[0].id;
+await db.query(
+  "insert into public.meal_logs (boarding_id, date, meal_type) values ($1, current_date, 'lunch')",
+  [boardingId]
+);
 await db.query("insert into public.vaccinations (dog_id, vaccine) values ($1,'rabies')", [dogId]);
 await db.query("insert into public.enrollments (owner_name, phone) values ('Bob B','6305559999')");
+// The singleton settings row. Created by scripts/setup.mjs on a real install;
+// the schema ships the table empty, and "the website can read prices" is not a
+// meaningful check against no rows.
+await db.query("insert into public.settings (id, data) values (1, '{}'::jsonb) on conflict (id) do nothing");
 
 // =====================================================================
 console.log("\n=== 4. The public website, holding only the anon key ===");
@@ -191,10 +274,10 @@ ok((await attempt("select * from public.dogs")).rows === 0, "gets nothing from d
 ok((await attempt("select * from public.owners")).rows === 0, "gets nothing from owners");
 ok((await attempt("select * from public.payments")).rows === 0, "gets nothing from payments");
 ok((await attempt("select * from public.audit_log")).rows === 0, "gets nothing from the audit log");
-await expectAllowed("submits an enrollment form", "insert into public.enrollments (owner_name) values ('Web Visitor')");
+await expectAllowed("submits an enrollment form", "insert into public.enrollments (owner_name, phone) values ('Web Visitor','6305558801')");
 await expectDenied(
   "and cannot ask for the row back, because RETURNING is a read",
-  "insert into public.enrollments (owner_name) values ('Web Visitor 2') returning id"
+  "insert into public.enrollments (owner_name, phone) values ('Web Visitor 2','6305558802') returning id"
 );
 await expectDenied("cannot read back what others submitted", "select * from public.enrollments");
 await expectDenied("cannot call the export function", "select * from public.export_dataset('dogs')");
@@ -208,7 +291,7 @@ await expectAllowed("updates a dog note", "update public.dogs set notes = 'likes
 await expectAllowed("signs a dog in", "insert into public.signins (dog_name, phone, action) values ('Bella','6305551234','drop_off') returning id");
 await expectAllowed("sees a balance", "select * from public.payments");
 await expectAllowed("takes a payment at pick-up", "insert into public.payments (phone, amount) values ('6305551234', 10) returning id");
-await expectAllowed("corrects today: removes a meal log", "delete from public.meal_logs where dog_id = $1", [dogId]);
+await expectAllowed("corrects today: removes a meal log", "delete from public.meal_logs where boarding_id = $1", [boardingId]);
 await expectDenied("CANNOT export dogs", "select * from public.export_dataset('dogs')");
 await expectDenied("CANNOT export owners", "select * from public.export_dataset('owners')");
 await expectDenied("CANNOT export payments", "select * from public.export_dataset('payments')");
@@ -217,7 +300,14 @@ await expectDenied("cannot delete a dog", "delete from public.dogs where id = $1
 await expectDenied("cannot delete an owner", "delete from public.owners where phone = '6305551234'");
 await expectDenied("cannot alter a payment", "update public.payments set amount = 0 where phone = '6305551234'");
 await expectDenied("cannot delete a payment", "delete from public.payments where phone = '6305551234'");
-await expectDenied("cannot sell a package", "insert into public.packages (phone, client_name, total_days) values ('6305551234','Alice',10) returning id");
+// Selling a package is an employee action, deliberately. The matrix cell was
+// widened with a note in rls-lockdown.sql: an employee can already take a
+// payment, which is the same act, and a front desk that cannot sell the thing
+// on the price list either stops the sale or shares the manager password. The
+// audit log records who sold it; DELETING one still needs a manager, which is
+// the check on the next line.
+await expectAllowed("sells a package — the till is not blocked", "insert into public.packages (phone, client_name, total_days, kind) values ('6305551234','Alice',10,'daycare') returning id");
+await expectDenied("but cannot delete one", "delete from public.packages where client_name = 'Alice'");
 await expectDenied("cannot change prices or branding", "update public.settings set data = '{}'::jsonb where id = 1");
 await expectDenied("cannot read the audit log", "select * from public.audit_log");
 await expectDenied("cannot promote itself", "insert into public.staff_roles (user_id, role) values ($1,'owner_admin')", [users.stranger]);
@@ -249,9 +339,9 @@ await expectAllowed("signs a dog in", "insert into public.signins (dog_name, pho
 await expectAllowed("spends a package day", "update public.packages set days_used = days_used + 1 where phone = '6305551234'");
 await expectAllowed("records a package use", "insert into public.package_uses (dog_id) values ($1) returning id", [dogId]);
 await expectAllowed("takes a payment", "insert into public.payments (phone, amount) values ('6305551234', 25) returning id");
-await expectAllowed("takes a signup form from a new client", "insert into public.enrollments (owner_name) values ('Kiosk Visitor')");
-await expectDenied("cannot add a dog", "insert into public.dogs (dog_name, phone) values ('New','6305550000') returning id");
-await expectDenied("cannot sell a package", "insert into public.packages (phone, client_name, total_days) values ('x','y',5) returning id");
+await expectAllowed("takes a signup form from a new client", "insert into public.enrollments (owner_name, phone) values ('Kiosk Visitor','6305558803')");
+await expectDenied("cannot add a dog", "insert into public.dogs (dog_name, last_name, phone) values ('New','Fixture','6305550000') returning id");
+await expectDenied("cannot sell a package", "insert into public.packages (phone, client_name, total_days, kind) values ('x','y',5,'daycare') returning id");
 await expectDenied("cannot export", "select * from public.export_dataset('dogs')");
 await expectDenied("cannot read the audit log", "select * from public.audit_log");
 await expectDenied("cannot delete anything", "delete from public.dogs where id = $1", [dogId]);
@@ -269,7 +359,7 @@ console.log("\n=== 8. A manager, and what MFA changes ===");
 await as(users.manager, "aal1");
 await expectAllowed("before enrolling, manager work is allowed", "select * from public.export_dataset('dogs')");
 await superuser();
-await db.query("insert into public.dogs (dog_name, phone) values ('Spare1','6305550001')");
+await db.query("insert into public.dogs (dog_name, last_name, phone) values ('Spare1','Fixture','6305550001')");
 await as(users.manager, "aal1");
 await expectAllowed("deletes a dog record", "delete from public.dogs where dog_name = 'Spare1'");
 
@@ -288,7 +378,7 @@ await expectAllowed("and can still read its own role, so the app can prompt for 
 await as(users.manager, "aal2");
 await expectAllowed("with the code accepted, exports work", "select * from public.export_dataset('dogs')");
 await superuser();
-await db.query("insert into public.dogs (dog_name, phone) values ('Spare2','6305550002')");
+await db.query("insert into public.dogs (dog_name, last_name, phone) values ('Spare2','Fixture','6305550002')");
 await as(users.manager, "aal2");
 await expectAllowed("with the code accepted, deletion works", "delete from public.dogs where dog_name = 'Spare2'");
 await expectAllowed("reads the audit log", "select * from public.audit_log");
@@ -431,8 +521,8 @@ await expectAllowed(
 console.log("\n=== 10d. An export bigger than one page ===");
 await superuser();
 await db.query(
-  `insert into public.dogs (dog_name, phone)
-   select 'Paged' || g, '630555' || lpad(g::text, 4, '0') from generate_series(1, 2500) g`
+  `insert into public.dogs (dog_name, last_name, phone)
+   select 'Paged' || g, 'Fixture', '630555' || lpad(g::text, 4, '0') from generate_series(1, 2500) g`
 );
 await as(users.owner, "aal1");
 const pages = [];
@@ -451,7 +541,7 @@ ok(pages.length > 1, "and it really did take more than one page", `${pages.lengt
 // tiebreak two dogs with the same name can swap between pages, so one row
 // arrives twice and another never arrives.
 await superuser();
-await db.query("insert into public.dogs (dog_name, phone) select 'Same Name', '6305557777' from generate_series(1, 40)");
+await db.query("insert into public.dogs (dog_name, last_name, phone) select 'Same Name', 'Fixture', '6305557777' from generate_series(1, 40)");
 await as(users.owner, "aal1");
 const seen = new Set();
 let duplicates = 0;
@@ -508,7 +598,7 @@ await superuser();
 await runFile(`${REPO}/security-rollback.sql`, "security-rollback.sql stage 1");
 await as(users.employee);
 await superuser();
-await db.query("insert into public.dogs (dog_name, phone) values ('Spare3','6305550003')");
+await db.query("insert into public.dogs (dog_name, last_name, phone) values ('Spare3','Fixture','6305550003')");
 await as(users.employee);
 await expectAllowed("after rollback an employee has full access again", "delete from public.dogs where dog_name = 'Spare3'");
 await superuser();
