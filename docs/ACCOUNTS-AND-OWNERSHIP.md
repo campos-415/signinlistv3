@@ -83,6 +83,30 @@ Full detail in `NEW-DATABASE.md`. This is the checklist form.
 - [ ] Domain pointed at the Vercel deployment
 - [ ] Push to `main`, confirm it deploys
 
+### If they already have a website on Vercel
+
+The app goes on a subdomain -- `app.theirsite.com` -- with their existing site
+untouched on the apex. Two things decide whether this is painless:
+
+- [ ] Create the app project **inside the same Vercel account as their existing
+      site**. A domain is verified per account, so a project in a second
+      account is told the domain "is linked to another Vercel account" and has
+      to prove ownership with a `_vercel` TXT record. Avoidable entirely.
+- [ ] Add the DNS record **and** add the domain in the Vercel project. Doing
+      only the first gives a certificate warning that reads like an attack:
+      the name resolves to Vercel, but no project claims it, so Vercel serves
+      whatever certificate it has and the browser refuses it.
+- [ ] Turn off the built-in marketing site: Settings -> Website, untick it, and
+      put their existing site in "Your website address". Anyone landing on the
+      apex of the app subdomain is then sent to their real site instead of
+      meeting a second, competing homepage.
+
+Where DNS lives matters too. If the domain sits behind a host's own DNS panel
+rather than Vercel nameservers, Vercel cannot renew **wildcard** certificates
+-- those need a DNS challenge it can no longer write. Per-subdomain
+certificates use a different challenge and renew fine, which is another reason
+to add each subdomain to its project explicitly.
+
 ## Phase 5 — prove it before you call it done
 
 Not "it loads" — actually walk it through.
