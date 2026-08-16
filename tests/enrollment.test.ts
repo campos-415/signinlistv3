@@ -3,10 +3,13 @@ import {
   ageFromBirthdate,
   dogPatch,
   emptyDog,
+  emptyEnrollment,
   emptyOwner,
   toFixedStatus,
+  validateEnrollment,
   withoutBlankAnswers,
 } from "@/lib/enrollment";
+import type { EnrollmentDraft } from "@/lib/enrollment";
 
 // What approving an enrollment writes to a dog.
 //
@@ -78,6 +81,21 @@ describe("dogPatch — what each stage is allowed to write", () => {
     expect(patch).toHaveProperty("allergies");
     expect(patch).toHaveProperty("bitten");
   });
+
+  it("leaves the colour to stage two", () => {
+    // Moved off the enrollment form so it is one less field in front of
+    // somebody booking a meet & greet. It has to be ABSENT at stage one
+    // rather than written blank: stage one runs again whenever a household
+    // enrols another dog, and a blank would wipe a colour staff had typed in.
+    // And it has to be PRESENT at stage two, because that list is also the
+    // whitelist the public details route writes through -- drop it from there
+    // and the details form silently saves everything except the colour.
+    const one = dogPatch({ ...dog, color: "Grey", dog_name: "Koda" }, owner, 1);
+    expect(one).not.toHaveProperty("color");
+
+    const two = dogPatch({ ...dog, color: "Grey", dog_name: "Koda" }, owner, 2);
+    expect(two.color).toBe("Grey");
+  });
 });
 
 describe("toFixedStatus", () => {
@@ -127,5 +145,78 @@ describe("ageFromBirthdate", () => {
     expect(ageFromBirthdate(null)).toBe("");
     expect(ageFromBirthdate("not a date")).toBe("");
     expect(ageFromBirthdate(monthsAgo(-6))).toBe(""); // born in six months
+  });
+});
+
+// What the public form insists on before it will send.
+//
+// Each of these is a customer stopped mid-form and told to go back, so the
+// list is worth pinning: a field that becomes required by accident is a
+// booking lost silently, and one that stops being required by accident is a
+// dog profile created without something staff needed.
+describe("validateEnrollment", () => {
+  function ready(): EnrollmentDraft {
+    const draft = emptyEnrollment();
+    draft.owner = {
+      ...draft.owner,
+      owner_name: "Cesar",
+      last_name: "Campos",
+      phone: "(415) 555-0123",
+      email: "cesar@example.com",
+    };
+    draft.dogs = [
+      {
+        ...emptyDog(),
+        dog_name: "Koda",
+        breed: "Husky mix",
+        birthdate: "2023-04-10",
+        weight_lb: "45",
+        sex: "male",
+        fixed: true,
+        vaccinesConfirmed: true,
+        doc: { name: "vax.png", mime: "image/png", data: "data:image/png;base64,AA" },
+      },
+    ];
+    draft.contractAgreed = true;
+    draft.policyAgreed = true;
+    return draft;
+  }
+
+  it("accepts a complete submission", () => {
+    expect(validateEnrollment(ready())).toBe("");
+  });
+
+  it("does not require the colour", () => {
+    // Dropped deliberately: it identifies nothing that the name, the household
+    // and the photo do not, and it was one more field between a client and a
+    // booking on the boarding form, where enrolling is already a detour.
+    const draft = ready();
+    draft.dogs[0].color = "";
+    expect(validateEnrollment(draft)).toBe("");
+  });
+
+  it("still requires the things a profile cannot be made without", () => {
+    for (const [field, value] of [
+      ["dog_name", ""],
+      ["breed", ""],
+      ["birthdate", ""],
+      ["weight_lb", ""],
+      ["sex", ""],
+    ] as const) {
+      const draft = ready();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (draft.dogs[0] as any)[field] = value;
+      expect(validateEnrollment(draft), `${field} should still be required`).not.toBe("");
+    }
+  });
+
+  it("treats an unanswered spay/neuter question as missing, but a recorded no as an answer", () => {
+    const unanswered = ready();
+    unanswered.dogs[0].fixed = null;
+    expect(validateEnrollment(unanswered)).not.toBe("");
+
+    const intact = ready();
+    intact.dogs[0].fixed = false;
+    expect(validateEnrollment(intact)).toBe("");
   });
 });

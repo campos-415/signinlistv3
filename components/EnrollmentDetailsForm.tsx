@@ -302,6 +302,19 @@ function DogDetails({
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-2">
+        {/* Asked here rather than at enrollment.
+            It identifies nothing the name, the household and the photo do not,
+            and at enrollment it was one more field in front of somebody trying
+            to book a meet & greet. By the time this form arrives we have met
+            the dog, so it costs the client nothing and the profile still ends
+            up complete. */}
+        <Field label="Colour">
+          <input
+            value={dog.color}
+            onChange={(e) => setDog(index, { color: e.target.value })}
+            className={inputClass}
+          />
+        </Field>
         <Field label="Flea program">
           <ChoiceWithOther
             options={FLEA_PROGRAMS}

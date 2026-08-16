@@ -311,7 +311,11 @@ export function validateEnrollment(draft: EnrollmentDraft): string {
     if (!d.breed.trim()) return `${who}enter the breed.`;
     if (!d.birthdate) return `${who}enter the birthday.`;
     if (!d.weight_lb.trim()) return `${who}enter the weight.`;
-    if (!d.color.trim()) return `${who}enter the colour.`;
+    // Colour is not required. It was, and it is the one field here that
+    // changes nothing: a dog is identified by its name, its household and its
+    // photo, and staff can fill the colour in on the profile in two seconds.
+    // On the boarding form — where enrolling is already the long way round to
+    // booking a stay — it is not asked at all.
     if (!d.sex) return `${who}choose a gender.`;
     if (d.fixed === null) return `${who}answer whether the dog is spayed or neutered.`;
 
@@ -410,7 +414,6 @@ function stageOneDogPatch(d: DogDraft, o: OwnerDraft): Partial<Dog> {
     breed: clean(d.breed),
     birthdate: d.birthdate || null,
     weight_lb: Number.isFinite(weight) ? weight : null,
-    color: clean(d.color),
     sex: d.sex || null,
     fixed_status: toFixedStatus(d.sex, d.fixed),
     // Only meaningful for a dog that isn't fixed yet; clearing it otherwise
@@ -432,6 +435,10 @@ function stageOneDogPatch(d: DogDraft, o: OwnerDraft): Partial<Dog> {
 // is the other reason it is a list rather than a spread — see the route.
 export function stageTwoDogPatch(d: DogDraft, o: OwnerDraft): Partial<Dog> {
   return {
+    // Moved down from stage one, so the enrollment form is shorter. This list
+    // doubles as the whitelist the public details route may write through, so
+    // being here is what lets the details form save it at all.
+    color: clean(d.color),
     flea_program: clean(d.flea_program),
     dog_source: clean(d.dog_source),
     authorized_pickup: clean(o.authorized_pickup),

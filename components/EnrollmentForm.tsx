@@ -50,6 +50,15 @@ export interface EnrollmentPrefill {
   email?: string;
   /** One dog card is seeded per name. */
   dogNames?: string[];
+  /**
+   * The dogs themselves, when the host form has already described them.
+   *
+   * Takes precedence over `dogNames` — a host passing these has asked for the
+   * breed, birthday and the rest already, and pairs it with `lockDogBasics` so
+   * this form does not ask again. Kept live rather than seeded once, so
+   * editing a dog in the host form updates the submission this one sends.
+   */
+  dogs?: DogDraft[];
 }
 
 export interface EnrollmentFormHandle {
@@ -62,6 +71,7 @@ function EnrollmentFormInner({
   embed = false,
   prefill,
   lockContact = false,
+  lockDogBasics = false,
   hideSubmit = false,
   onDogNamesChange,
   onSubmitted,
@@ -80,6 +90,11 @@ function EnrollmentFormInner({
   // Hides the four contact fields the host form already collected, and keeps
   // them following whatever the host has. Only meaningful with `prefill`.
   lockContact?: boolean;
+  // Hides the dog's name, breed, colour, birthday, weight, gender and fixed
+  // status, and keeps them following `prefill.dogs`. For a host form that has
+  // already asked who the dog is — what is left here is the vaccination
+  // record, the meet & greet and the agreements.
+  lockDogBasics?: boolean;
   // Hides this form's own submit. The host drives it through the ref
   // instead, so one button sends both forms.
   hideSubmit?: boolean;
@@ -115,10 +130,12 @@ function EnrollmentFormInner({
         email: prefill.email ?? base.owner.email,
       },
       // One card per dog already named, so the questionnaire is the only
-      // thing left to fill in.
-      dogs: names.length
-        ? names.map((n) => ({ ...emptyDog(), dog_name: n }))
-        : base.dogs,
+      // thing left to fill in. Fully described dogs win over bare names.
+      dogs: prefill.dogs?.length
+        ? prefill.dogs
+        : names.length
+          ? names.map((n) => ({ ...emptyDog(), dog_name: n }))
+          : base.dogs,
     };
   });
   const lockedName = prefill?.owner_name ?? "";
@@ -138,6 +155,32 @@ function EnrollmentFormInner({
       },
     }));
   }, [lockContact, lockedName, lockedLast, lockedPhone, lockedEmail]);
+
+  // The same trick for the dogs, when the host form owns them.
+  //
+  // Only the fields the host asked for are taken. The vaccination record, the
+  // meet & greet and the agreements are answered *here*, and copying the whole
+  // dog across would wipe them on every keystroke in the host form.
+  const lockedDogsKey = JSON.stringify(prefill?.dogs ?? null);
+  useEffect(() => {
+    if (!lockDogBasics) return;
+    const incoming: DogDraft[] = prefill?.dogs ?? [];
+    setDraft((d) => ({
+      ...d,
+      dogs: incoming.map((dog, i) => ({
+        ...(d.dogs[i] ?? emptyDog()),
+        dog_name: dog.dog_name,
+        breed: dog.breed,
+        color: dog.color,
+        birthdate: dog.birthdate,
+        weight_lb: dog.weight_lb,
+        sex: dog.sex,
+        fixed: dog.fixed,
+        fixed_scheduled_on: dog.fixed_scheduled_on,
+      })),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lockDogBasics, lockedDogsKey]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -300,16 +343,21 @@ function EnrollmentFormInner({
 
       {/* Said before the first question rather than after the last one: the
           reason this form is short is worth knowing while deciding whether to
-          start it. */}
-      <p className="mb-5 rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
-        Just enough to book your meet &amp; greet — about five minutes. Once
-        you&apos;ve been in and we&apos;ve met your dog, we&apos;ll email you a
-        second short form for the rest: your address, your vet, and how they
-        get on with other dogs.
-      </p>
+          start it.
+          Not when embedded: the host form has already explained why this is
+          here, and "just enough to book your meet & greet" is the wrong
+          promise on a page where somebody is booking a stay. */}
+      {!embed && (
+        <p className="mb-5 rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
+          Just enough to book your meet &amp; greet — about five minutes. Once
+          you&apos;ve been in and we&apos;ve met your dog, we&apos;ll email you a
+          second short form for the rest: your address, your vet, and how they
+          get on with other dogs.
+        </p>
+      )}
 
       {/* Contract */}
-      <Section title="Contract" step={1}>
+      <Section title="Contract" step={1} bare={embed}>
         <div className="max-h-52 overflow-y-auto rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
           <ContractText business={settings.business.name} />
         </div>
@@ -327,33 +375,16 @@ function EnrollmentFormInner({
         </label>
       </Section>
 
-      {/* Owner */}
+      {/* Owner
+          Gone entirely when the host form asked for these. It used to echo the
+          name and phone back under a heading of their own, a few inches below
+          the fields they were typed into — a whole section whose content was
+          "yes, we still have what you just wrote". The values are still sent;
+          there is simply nothing worth showing. */}
+      {!lockContact && (
       <Section title="Owner information" step={2}>
         <div className="grid gap-3 sm:grid-cols-2">
-          {/* When this form is embedded in another that already asked for
-              them, these four are shown back rather than asked again. Typing
-              a name and a phone number twice on one page is the fastest way
-              to make someone abandon it — and to end up with two spellings of
-              the same client. */}
-          {lockContact ? (
-            <div className="sm:col-span-2 rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
-                Using the details you entered above
-              </p>
-              <p className="mt-1 text-sm text-ink-2">
-                {[draft.owner.owner_name, draft.owner.last_name].filter(Boolean).join(" ") ||
-                  "Your name"}
-                <span className="text-ink-3">
-                  {draft.owner.phone ? ` · ${draft.owner.phone}` : ""}
-                  {draft.owner.email ? ` · ${draft.owner.email}` : ""}
-                </span>
-              </p>
-              <p className="mt-1 text-[11px] text-ink-3">
-                Change them at the top of the page and they update here.
-              </p>
-            </div>
-          ) : (
-            <>
+          <>
           <Field label="First name" required>
             <input
               value={draft.owner.owner_name}
@@ -391,16 +422,25 @@ function EnrollmentFormInner({
             />
           </Field>
             </>
-          )}
         </div>
       </Section>
+      )}
 
       {/* Dogs */}
       {draft.dogs.map((dog, i) => (
         <Section
           key={i}
           step={3 + i}
-          title={multi ? `Dog ${i + 1}${dog.dog_name ? ` — ${dog.dog_name}` : ""}` : "Your dog"}
+          bare={embed}
+          title={
+            multi
+              ? `Dog ${i + 1}${dog.dog_name ? ` — ${dog.dog_name}` : ""}`
+              : // With the basics asked elsewhere, what is left under this
+                // heading is paperwork, so the heading says so.
+                lockDogBasics
+                ? `${dog.dog_name.trim() || "Your dog"} — vaccinations`
+                : "Your dog"
+          }
           action={
             multi ? (
               <button
@@ -420,20 +460,30 @@ function EnrollmentFormInner({
             index={i}
             setDog={setDog}
             onDoc={handleDoc}
+            hideBasics={lockDogBasics}
           />
         </Section>
       ))}
 
-      <button
-        type="button"
-        onClick={() => setDraft((d) => ({ ...d, dogs: [...d.dogs, emptyDog()] }))}
-        className="mb-5 w-full rounded-2xl border border-dashed border-line bg-surface px-4 py-3 text-sm font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
-      >
-        + Add another dog
-      </button>
+      {/* Hidden when the host form owns the list. Two "add another dog"
+          buttons on one page, only one of which adds a dog to the booking,
+          is a way to end up with a stay booked for fewer dogs than enrolled. */}
+      {!lockDogBasics && (
+        <button
+          type="button"
+          onClick={() => setDraft((d) => ({ ...d, dogs: [...d.dogs, emptyDog()] }))}
+          className="mb-5 w-full rounded-2xl border border-dashed border-line bg-surface px-4 py-3 text-sm font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
+        >
+          + Add another dog
+        </button>
+      )}
 
       {/* Meet & greet + signature */}
-      <Section title="Meet &amp; greet and signature" step={3 + draft.dogs.length}>
+      <Section
+        title="Meet &amp; greet and signature"
+        step={3 + draft.dogs.length}
+        bare={embed}
+      >
         <div className="rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
           Every new dog comes in for a meet &amp; greet before their first full day, so we can see
           how they settle in with the group. Bring your dog on a leash and plan to leave them with
@@ -500,49 +550,69 @@ function EnrollmentFormInner({
   );
 }
 
-function DogSection({
+/**
+ * Who the dog is: the fields any profile needs before it can exist.
+ *
+ * Exported because the boarding request form asks for them too. A household
+ * booking a stay for a dog we have never met needs enrolling, and the natural
+ * place to describe the dog is beside the dates it is coming — not in a second
+ * form further down the page that opens with an empty name field.
+ *
+ * One component rather than two copies, so a field added here cannot go
+ * missing there.
+ */
+export function DogBasics({
   dog,
-  index,
-  setDog,
-  onDoc,
+  onChange,
+  hideName = false,
 }: {
   dog: DogDraft;
-  index: number;
-  setDog: (i: number, patch: Partial<DogDraft>) => void;
-  onDoc: (i: number, e: ChangeEvent<HTMLInputElement>) => void;
+  onChange: (patch: Partial<DogDraft>) => void;
+  /** For a host that asked for the name further up its own page. */
+  hideName?: boolean;
 }) {
   const age = ageFromBirthdate(dog.birthdate);
+
+  // The column count follows how many fields are on screen.
+  //
+  // Five (with the name) sit as a row of three and a row of two; four (the
+  // boarding form asks the name itself) sit as two rows of two. The wrong
+  // choice either way leaves a single field alone on the last row beside two
+  // empty columns, which reads as a rendering fault rather than a layout —
+  // and that is what happens with a column count fixed at three.
+  //
+  // A trailing gap at the END of a last row is fine. A lone field is not.
+  const columns = hideName ? "sm:grid-cols-2" : "sm:grid-cols-3";
+
   return (
-    <div className="space-y-5">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="Dog's name" required>
-          <input
-            value={dog.dog_name}
-            onChange={(e) => setDog(index, { dog_name: e.target.value })}
-            className={inputClass}
-          />
-        </Field>
+    <>
+      <div className={`grid gap-3 ${columns}`}>
+        {!hideName && (
+          <Field label="Dog's name" required>
+            <input
+              value={dog.dog_name}
+              onChange={(e) => onChange({ dog_name: e.target.value })}
+              className={inputClass}
+            />
+          </Field>
+        )}
         <Field label="Breed" required>
           <input
             value={dog.breed}
-            onChange={(e) => setDog(index, { breed: e.target.value })}
+            onChange={(e) => onChange({ breed: e.target.value })}
             placeholder="Mixed breed"
             className={inputClass}
           />
         </Field>
-        <Field label="Colour" required>
-          <input
-            value={dog.color}
-            onChange={(e) => setDog(index, { color: e.target.value })}
-            className={inputClass}
-          />
-        </Field>
+        {/* No colour here. It is asked on the details form after the meet &
+            greet, where a field that identifies nothing costs nobody a
+            booking — see stageTwoDogPatch. */}
         {/* Age isn't stored — it's derived from the birthday, so it can't go
             stale the way a typed-in number does. */}
         <Field label="Birthday" required hint={age ? `About ${age} old` : undefined}>
           <DateField
             value={dog.birthdate}
-            onChange={(v) => setDog(index, { birthdate: v })}
+            onChange={(v) => onChange({ birthdate: v })}
             className={inputClass}
             ariaLabel="Birthday"
           />
@@ -553,14 +623,14 @@ function DogSection({
             min="0"
             step="0.1"
             value={dog.weight_lb}
-            onChange={(e) => setDog(index, { weight_lb: e.target.value })}
+            onChange={(e) => onChange({ weight_lb: e.target.value })}
             className={inputClass}
           />
         </Field>
         <Field label="Gender" required>
           <select
             value={dog.sex}
-            onChange={(e) => setDog(index, { sex: e.target.value as DogSex | "" })}
+            onChange={(e) => onChange({ sex: e.target.value as DogSex | "" })}
             className={inputClass}
           >
             <option value="">Choose…</option>
@@ -573,21 +643,51 @@ function DogSection({
         </Field>
       </div>
 
+      {/* On its own row, and deliberately outside the grid above.
+          It is a pair of buttons rather than a text input, so it does not
+          belong in a column beside one — and keeping it out is what lets the
+          grid divide evenly whatever is hidden. */}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Spayed / neutered?" required>
-          <YesNo value={dog.fixed} onChange={(v) => setDog(index, { fixed: v })} />
+          <YesNo value={dog.fixed} onChange={(v) => onChange({ fixed: v })} />
         </Field>
         {dog.fixed === false && (
           <Field label="If no, when is it scheduled?">
             <DateField
               value={dog.fixed_scheduled_on}
-              onChange={(v) => setDog(index, { fixed_scheduled_on: v })}
+              onChange={(v) => onChange({ fixed_scheduled_on: v })}
               className={inputClass}
               ariaLabel="Spay or neuter appointment"
             />
           </Field>
         )}
       </div>
+    </>
+  );
+}
+
+function DogSection({
+  dog,
+  index,
+  setDog,
+  onDoc,
+  hideBasics = false,
+}: {
+  dog: DogDraft;
+  index: number;
+  setDog: (i: number, patch: Partial<DogDraft>) => void;
+  onDoc: (i: number, e: ChangeEvent<HTMLInputElement>) => void;
+  hideBasics?: boolean;
+}) {
+  return (
+    <div className="space-y-5">
+      {/* Skipped when the host form has already asked for them — the boarding
+          request collects the dog's details beside its dates, so meeting them
+          again here would be the same questions twice on one page. The values
+          still travel with the submission; only the inputs are absent. */}
+      {!hideBasics && (
+        <DogBasics dog={dog} onChange={(patch) => setDog(index, patch)} />
+      )}
 
       {/* No date fields here any more.
           Owners were typing five expiry dates off a certificate they were
@@ -702,20 +802,46 @@ function Section({
   title,
   step,
   action,
+  bare = false,
   children,
 }: {
   title: string;
   step: number;
   action?: React.ReactNode;
+  /**
+   * Drops the number and the card, for a form living inside another one.
+   *
+   * The boarding request numbers its own steps 1 to 4, and this form numbered
+   * its own 1 to 4 as well — so a household enrolling while they booked met
+   * two step 3s on one page, one of them nested inside the other. A guest has
+   * no business keeping its own numbering.
+   */
+  bare?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5 rounded-3xl bg-surface p-5 shadow-card sm:p-6">
+    <section
+      className={
+        bare
+          ? "mb-5"
+          : "mb-5 rounded-3xl bg-surface p-5 shadow-card sm:p-6"
+      }
+    >
       <div className="mb-4 flex items-center gap-2.5">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-500 text-[11px] font-semibold text-accent-ink">
-          {step}
-        </span>
-        <h2 className="font-display text-base font-semibold text-ink">{title}</h2>
+        {!bare && (
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-500 text-[11px] font-semibold text-accent-ink">
+            {step}
+          </span>
+        )}
+        <h2
+          className={
+            bare
+              ? "text-[11px] font-semibold uppercase tracking-wide text-ink-3"
+              : "font-display text-base font-semibold text-ink"
+          }
+        >
+          {title}
+        </h2>
         {action && <span className="ml-auto">{action}</span>}
       </div>
       {children}

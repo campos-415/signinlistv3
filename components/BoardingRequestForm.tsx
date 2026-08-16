@@ -7,7 +7,8 @@ import DateField from "@/components/DateField";
 import { Field, YesNo, inputClass } from "@/components/FormBits";
 import { formatPhoneInput } from "@/lib/phone";
 import { useSettings } from "@/components/SettingsProvider";
-import EnrollmentForm, { EnrollmentFormHandle } from "@/components/EnrollmentForm";
+import EnrollmentForm, { DogBasics, EnrollmentFormHandle } from "@/components/EnrollmentForm";
+import { DogDraft, emptyDog } from "@/lib/enrollment";
 import { prettyDateKey } from "@/lib/dates";
 import {
   BATH_PRICES,
@@ -89,13 +90,48 @@ export default function BoardingRequestForm({
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
 
+  // Who each dog is, for a household that is not enrolled yet.
+  //
+  // Held here rather than in the boarding draft because a boarding request
+  // does not carry a dog profile — it carries names and dates. These go to the
+  // enrollment that travels with it, and are indexed alongside draft.dogNames
+  // so the two stay in step as dogs are added and removed.
+  const [dogProfiles, setDogProfiles] = useState<DogDraft[]>(() => [emptyDog()]);
+
   function set<K extends keyof BoardingRequestDraft>(key: K, value: BoardingRequestDraft[K]) {
     setDraft((d) => ({ ...d, [key]: value }));
   }
 
   function setDogName(i: number, value: string) {
     setDraft((d) => ({ ...d, dogNames: d.dogNames.map((n, x) => (x === i ? value : n)) }));
+    // The name lives in two places — the booking needs it, and so does the
+    // enrollment. Typed once, in the field above the dates.
+    setDogProfiles((prev) =>
+      prev.map((p, x) => (x === i ? { ...p, dog_name: value } : p))
+    );
   }
+
+  function setDogProfile(i: number, patch: Partial<DogDraft>) {
+    setDogProfiles((prev) => prev.map((p, x) => (x === i ? { ...p, ...patch } : p)));
+  }
+
+  function addDog() {
+    setDraft((d) => ({ ...d, dogNames: [...d.dogNames, ""] }));
+    setDogProfiles((prev) => [...prev, emptyDog()]);
+  }
+
+  function removeDog(i: number) {
+    setDraft((d) => ({ ...d, dogNames: d.dogNames.filter((_, x) => x !== i) }));
+    setDogProfiles((prev) => prev.filter((_, x) => x !== i));
+  }
+
+  // The dogs handed to the enrollment: one per name actually typed, carrying
+  // whatever has been said about it. Names are the source of truth, so a dog
+  // removed from the booking cannot be left behind in the enrollment.
+  const enrollmentDogs: DogDraft[] = draft.dogNames.map((name, i) => ({
+    ...(dogProfiles[i] ?? emptyDog()),
+    dog_name: name,
+  }));
 
   function toggleService(key: BoardingAddonKey, on: boolean) {
     setDraft((d) => ({
@@ -144,19 +180,21 @@ export default function BoardingRequestForm({
   const nights = nightsFor(draft);
   const dogs = cleanDogNames(draft);
   const notEnrolled = draft.alreadyEnrolled === false;
-  const [showEnrollment, setShowEnrollment] = useState(false);
   const [enrollmentSent, setEnrollmentSent] = useState(false);
   const enrollmentRef = useRef<EnrollmentFormHandle>(null);
-  // True while the embedded enrollment is on screen and unsent — that is when
-  // it owns the dog names and the single submit covers both forms.
-  const enrollingHere = notEnrolled && showEnrollment && !enrollmentSent;
   // The embedded enrollment reuses these four rather than asking again, so
-  // they have to exist before it can open.
+  // they have to exist before it can render.
   const contactReady =
     !!draft.owner_name.trim() &&
     !!draft.last_name.trim() &&
     draft.phone.replace(/\D/g, "").length >= 7 &&
     /^\S+@\S+\.\S+$/.test(draft.email.trim());
+  // True while the embedded enrollment is on screen and unsent — that is when
+  // the single submit covers both forms. No longer gated on a reveal button:
+  // the remaining questions are shown as soon as there are contact details to
+  // hang them on, so this must follow the same condition the markup does or
+  // the submit will skip an enrollment the customer has filled in.
+  const enrollingHere = notEnrolled && contactReady && !enrollmentSent;
 
   // Scrolled after the confirmation has rendered, and instantly.
   //
@@ -320,86 +358,11 @@ export default function BoardingRequestForm({
         </>
         )}
 
-        <div className="mt-3">
-          {/* Not asked when the dogs are already on the account: a household
-              with records here is enrolled, and asking anyway invites a "no"
-              that opens an enrollment form for a dog we have had for years. */}
-          {!knownDogs?.length && (
-          <Field label={`Is your dog already enrolled with ${settings.business.name}?`} required>
-            <YesNo
-              value={draft.alreadyEnrolled}
-              onChange={(v) => set("alreadyEnrolled", v)}
-            />
-          </Field>
-          )}
-          {/* Not a dead end any more.
-              Sending someone away to another form lost everything they had
-              already typed and lost the booking with it. The enrollment form
-              opens here instead, carrying their details across, and the dates
-              below stay open — both can be sent in one sitting and staff
-              approve the enrollment and the stay together. */}
-          {draft.alreadyEnrolled === false && (
-            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-              <p className="text-sm font-medium text-amber-900">
-                {enrollmentSent
-                  ? "✓ Enrollment sent — now finish your dates below."
-                  : "Let's get them enrolled at the same time."}
-              </p>
-              <p className="mt-1 text-xs text-amber-800">
-                {enrollmentSent
-                  ? "We'll review the profile and your requested dates together."
-                  : "Every boarding dog needs an enrollment form and a meet & greet on file. " +
-                    "Fill it in here — we've carried over what you have already typed — and " +
-                    "request your dates below. You can send both now; we'll confirm the stay " +
-                    "once the enrollment is approved."}
-              </p>
-              {!enrollmentSent &&
-                (contactReady ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowEnrollment((v) => !v)}
-                    className="mt-3 inline-block rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-amber-700"
-                  >
-                    {showEnrollment ? "Hide the enrollment form" : "Open the enrollment form"}
-                  </button>
-                ) : (
-                  // The enrollment reuses the details above rather than
-                  // asking twice, so it cannot open until they are there —
-                  // otherwise it would fail validation on fields the person
-                  // can no longer see.
-                  <p className="mt-3 text-xs font-medium text-amber-900">
-                    Fill in your name, phone and email above, then the enrollment form opens here.
-                  </p>
-                ))}
-            </div>
-          )}
-
-          {draft.alreadyEnrolled === false && showEnrollment && !enrollmentSent && (
-            <div className="mt-3 overflow-hidden rounded-2xl border border-line bg-surface">
-              <EnrollmentForm
-                ref={enrollmentRef}
-                source="web"
-                embed
-                lockContact
-                hideSubmit
-                onDogNamesChange={(names) =>
-                  setDraft((d) => ({ ...d, dogNames: names.length ? names : [""] }))
-                }
-                prefill={{
-                  owner_name: draft.owner_name,
-                  last_name: draft.last_name,
-                  phone: draft.phone,
-                  email: draft.email,
-                  dogNames: draft.dogNames,
-                }}
-                onSubmitted={() => {
-                  setEnrollmentSent(true);
-                  setShowEnrollment(false);
-                }}
-              />
-            </div>
-          )}
-        </div>
+        {/* The enrollment question used to sit here, before anything had been
+            said about the dog. Answering "no" opened an enrollment form whose
+            first field was the dog's name — a name the booking asks for again
+            further down. It now sits under the dates, where the dog has
+            already been named and can be described once. */}
       </Section>
 
       {/* The rest of the form stays open whether or not the dog is enrolled.
@@ -436,21 +399,11 @@ export default function BoardingRequestForm({
               ))}
             </div>
           </Field>
-        ) : enrollingHere ? (
-          // The enrollment above already named them, and naming them twice is
-          // how the two submissions end up disagreeing about who is coming.
-          <div className="rounded-xl border border-line-soft bg-surface-2 px-3.5 py-3">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-ink-3">
-              Dogs from your enrollment
-            </p>
-            <p className="mt-1 text-sm text-ink-2">
-              {cleanDogNames(draft).join(" · ") || "Add your dog in the enrollment form above"}
-            </p>
-            <p className="mt-1 text-[11px] text-ink-3">
-              Add another dog up there and it appears here too.
-            </p>
-          </div>
         ) : (
+          // Typed here whether or not they are enrolled. The embedded
+          // enrollment no longer asks for the name, so this is the only place
+          // it is given and the two submissions cannot disagree about who is
+          // coming.
           <>
         <div className="space-y-2">
           {draft.dogNames.map((name, i) => (
@@ -467,9 +420,7 @@ export default function BoardingRequestForm({
               {draft.dogNames.length > 1 && (
                 <button
                   type="button"
-                  onClick={() =>
-                    setDraft((d) => ({ ...d, dogNames: d.dogNames.filter((_, x) => x !== i) }))
-                  }
+                  onClick={() => removeDog(i)}
                   className="mb-0.5 rounded-xl border border-line px-3 py-2.5 text-xs text-ink-3 hover:border-rose-300 hover:text-rose-500"
                 >
                   ✕
@@ -480,7 +431,7 @@ export default function BoardingRequestForm({
         </div>
         <button
           type="button"
-          onClick={() => setDraft((d) => ({ ...d, dogNames: [...d.dogNames, ""] }))}
+          onClick={addDog}
           className="mt-2 w-full rounded-xl border border-dashed border-line px-3 py-2 text-xs font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
         >
           + Add another dog
@@ -520,11 +471,101 @@ export default function BoardingRequestForm({
             best, but we may not be able to fit it in.
           </p>
         )}
+
+        {/* Asked here, under the dates, rather than up in the contact
+            section: by this point the dog has a name, so a "no" can open an
+            enrollment that already knows who it is about. */}
+        <div className="mt-5 border-t border-line-soft pt-4">
+          {/* Not asked when the dogs are already on the account: a household
+              with records here is enrolled, and asking anyway invites a "no"
+              that opens an enrollment form for a dog we have had for years. */}
+          {!knownDogs?.length && (
+            <Field label={`Is your dog already enrolled with ${settings.business.name}?`} required>
+              <YesNo value={draft.alreadyEnrolled} onChange={(v) => set("alreadyEnrolled", v)} />
+            </Field>
+          )}
+
+          {/* Who the dog is, asked here rather than inside the enrollment
+              below, so everything about the dog sits under the name and dates
+              it was given. What is left for the enrollment is only what this
+              form has no business asking: the vaccination record, the meet &
+              greet, and the agreements. */}
+          {notEnrolled &&
+            enrollmentDogs.map((dog, i) => (
+              <div key={i} className="mt-3 space-y-5 rounded-2xl border border-line bg-surface-2 p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+                  About {dog.dog_name.trim() || `dog ${i + 1}`}
+                </p>
+                <DogBasics dog={dog} onChange={(patch) => setDogProfile(i, patch)} hideName />
+              </div>
+            ))}
+
+          {/* One line, then the questions.
+              This used to be a coloured panel explaining that an enrollment
+              was needed, above a button that opened a second form inside the
+              first. Both are gone: the remaining questions are short enough to
+              simply ask, and a button labelled "open the enrollment form" made
+              a five-field job look like starting over. */}
+          {notEnrolled && !enrollmentSent && (
+            <p className="mt-4 border-t border-line-soft pt-4 text-xs leading-relaxed text-ink-2">
+              New dogs need a vaccination record and a meet &amp; greet before their first
+              stay. Add those below and send everything together — we&apos;ll confirm the
+              dates once it is approved.
+            </p>
+          )}
+
+          {notEnrolled && enrollmentSent && (
+            <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
+              ✓ Enrollment sent. We&apos;ll review the profile and your dates together.
+            </p>
+          )}
+
+          {/* The enrollment cannot open until the contact details exist: it
+              reuses them rather than asking twice, so without them it would
+              fail validation on fields that are no longer on screen. */}
+          {notEnrolled && !contactReady && (
+            <p className="mt-3 text-xs font-medium text-amber-800">
+              Fill in your name, phone and email above and the rest appears here.
+            </p>
+          )}
+
+          {notEnrolled && contactReady && !enrollmentSent && (
+            <div className="mt-2">
+              <EnrollmentForm
+                ref={enrollmentRef}
+                source="web"
+                embed
+                lockContact
+                lockDogBasics
+                hideSubmit
+                prefill={{
+                  owner_name: draft.owner_name,
+                  last_name: draft.last_name,
+                  phone: draft.phone,
+                  email: draft.email,
+                  // The dogs, described above. No onDogNamesChange any more:
+                  // names now flow one way, from this form into the
+                  // enrollment, so there is no round trip to disagree over.
+                  dogs: enrollmentDogs,
+                }}
+                onSubmitted={() => {
+                  setEnrollmentSent(true);
+                }}
+              />
+            </div>
+          )}
+        </div>
       </Section>
 
-      {/* Extras */}
-      <Section title="Anything else?" step={4}>
-        <Field label="Additional services" hint="Leave all unticked if none are needed.">
+      {/* Extras
+          Titled for the stay, not "Anything else?". Following an enrollment
+          form, a heading that vague reads as more enrollment — and these are
+          add-ons charged on this booking, not standing preferences. */}
+      <Section title="Extras for this stay" step={4}>
+        <Field
+          label="Add these to the stay"
+          hint="Charged on this booking. Leave all unticked if none are needed."
+        >
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
             {BOARDING_SERVICES.map((s) => (
               <label key={s.key} className="flex items-center gap-2 text-sm text-ink-2">
@@ -579,7 +620,11 @@ export default function BoardingRequestForm({
         <PriceDisclaimer draft={draft} />
 
         <div className="mt-3 grid gap-3">
-          <Field label="Feeding instructions" required>
+          <Field
+            label="Feeding instructions for the stay"
+            required
+            hint="What we feed them while they are with us."
+          >
             <textarea
               value={draft.feedingInstructions}
               onChange={(e) => set("feedingInstructions", e.target.value)}
