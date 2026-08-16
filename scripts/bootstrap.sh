@@ -151,8 +151,12 @@ step "GitHub"
 
 if confirm "Create a private GitHub repository for this and push?" "y"; then
   echo
-  note "Needs a token with repo scope, from"
-  note "https://github.com/settings/tokens"
+  note "Needs a CLASSIC token with the 'repo' scope:"
+  note "https://github.com/settings/tokens  ->  Generate new token (classic)"
+  echo
+  note "A fine-grained token will NOT work here unless it is scoped to All"
+  note "repositories with Administration: read and write. Creating a repo that"
+  note "does not exist yet cannot be granted per-repository, which is the trap."
   echo
   GH_USER="$(ask 'GitHub username:' '')"
   [ -n "$GH_USER" ] || die "A username is needed."
@@ -165,11 +169,28 @@ if confirm "Create a private GitHub repository for this and push?" "y"; then
     -H "Accept: application/vnd.github+json" \
     -d "{\"name\":\"$CLIENT\",\"private\":true,\"description\":\"Daycare app for $CLIENT\"}")"
 
+  # Whether there is a repository at the other end to push into. Pushing when
+  # there is not produces a second, more confusing error on top of the first.
+  REPO_EXISTS=yes
   case "$HTTP_CODE" in
     201) ok "created github.com/$GH_USER/$CLIENT (private)" ;;
     422) warn "A repository called $CLIENT already exists. Pushing to it." ;;
-    401) rm -f /tmp/gh-create.$$; die "GitHub refused that token. Check it has repo scope and has not expired." ;;
-    *)   warn "GitHub replied $HTTP_CODE:"; cat /tmp/gh-create.$$ ;;
+    401) rm -f /tmp/gh-create.$$; die "GitHub refused that token. It may be expired, or pasted short." ;;
+    403)
+      REPO_EXISTS=no
+      warn "That token cannot create repositories."
+      echo
+      note "Almost always a FINE-GRAINED token. Creating a repository is not a"
+      note "permission that can be granted per-repository, because the repository"
+      note "does not exist yet -- so a fine-grained token scoped to selected"
+      note "repositories is refused here no matter what else it can do."
+      echo
+      note "Two ways on:"
+      note "  1. A classic token with the 'repo' scope, and run this again"
+      note "  2. Create it by hand at https://github.com/new -- private, and do"
+      note "     NOT add a README, .gitignore or licence -- then push (below)"
+      ;;
+    *)   REPO_EXISTS=no; warn "GitHub replied $HTTP_CODE:"; cat /tmp/gh-create.$$ ;;
   esac
   rm -f /tmp/gh-create.$$
 
@@ -183,12 +204,19 @@ if confirm "Create a private GitHub repository for this and push?" "y"; then
     git remote add origin "https://github.com/$GH_USER/$CLIENT.git"
   fi
 
-  if git push --quiet "https://$GH_USER:$GH_TOKEN@github.com/$GH_USER/$CLIENT.git" main 2>/dev/null; then
+  if [ "$REPO_EXISTS" = no ]; then
+    # Nothing to push into. Saying so beats a push failure that reads like a
+    # second, unrelated problem.
+    echo
+    note "Not pushing: there is no repository at the other end yet."
+    note "The code is committed here with one commit, and the remote is set."
+    note "Once the repository exists:  cd $CLIENT && git push -u origin main"
+  elif git push --quiet "https://$GH_USER:$GH_TOKEN@github.com/$GH_USER/$CLIENT.git" main 2>/dev/null; then
     git branch --set-upstream-to=origin/main main >/dev/null 2>&1 || true
     ok "pushed"
   else
     warn "Push failed. The code is committed locally and the remote is set;"
-    warn "push it yourself with: git push -u origin main"
+    warn "push it yourself with: cd $CLIENT && git push -u origin main"
   fi
   unset GH_TOKEN
 else
