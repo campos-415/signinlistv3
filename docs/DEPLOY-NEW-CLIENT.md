@@ -29,13 +29,21 @@ it at theirs.
 
 ## 1. The repository
 
+`scripts/bootstrap.sh` does this section and the next one for you, from an
+empty folder. The commands below are what it runs, for when you would rather
+do it by hand.
+
 ```bash
 git clone <this repo> daycare-<client>
 cd daycare-<client>
 rm -rf .git && git init && git add -A && git commit -m "Initial commit"
 ```
 
-Push it to a new private repository under the client's or your own account.
+Push it to a new private repository. **Whose account it goes in is decided
+once and is painful to change later — see `ACCOUNTS-AND-OWNERSHIP.md`.** The
+short version: a free GitHub organisation for the client, you as owner, them
+as owner too.
+
 Starting a fresh history matters: the old one contains another business's
 commits and, in this repo, their PDFs.
 
