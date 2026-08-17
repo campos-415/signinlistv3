@@ -68,6 +68,11 @@ export interface SignInRecord {
   // automatic past-four-hours rule. Null means nobody has decided, which is
   // not the same as false. See signin-notes-migration.sql.
   package_opt_out?: boolean | null;
+  // The same, for a walk package covering the walk add-on. Separate because
+  // the two are chosen separately: a visit can spend a day and pay for its
+  // walk, or spend a walk on a half day that costs a day nothing.
+  // See walk-opt-out-migration.sql.
+  walk_opt_out?: boolean | null;
   by_staff?: boolean | null; // recorded by staff on the client's behalf, not at the lobby kiosk
   // How a meet & greet went. Recorded against the assessment itself rather
   // than the dog, so a dog brought back for a second try keeps both verdicts.

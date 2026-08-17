@@ -27,6 +27,8 @@ export interface OpenVisit {
   // Staff said this visit must not spend a package day, overriding the
   // past-four-hours rule. Undefined means nobody decided.
   packageOptOut?: boolean;
+  // The same for the walk add-on and a walk package. See walkPackageApplies.
+  walkOptOut?: boolean;
 }
 
 export interface PhoneContext {
@@ -39,6 +41,41 @@ export interface PhoneContext {
   history: Partial<SignInRecord>[];
 }
 
+// The visit history checkout reads, and the same list without the two opt-out
+// columns, for a database that has not run signin-notes-migration.sql or
+// walk-opt-out-migration.sql yet — asking for a column that does not exist
+// fails the whole query, and losing the history would stop every sign-out.
+//
+// Both opt-outs have to be HERE, not just written. They were stored on the
+// drop-off row and then never selected, so buildOpenVisits saw undefined and
+// packageApplies spent the day regardless: staff could say No day used, watch
+// it stick on screen, and still be charged nothing for a day the client lost.
+const HISTORY_BASE =
+  // meet_greet_result so the kiosk can tell a dog that has passed its
+  // assessment from one still waiting for it.
+  "id, dog_name, dog_id, action, service_type, addons, bath_size, price, created_at, meet_greet_result";
+const HISTORY_COLUMNS = `${HISTORY_BASE}, package_opt_out, walk_opt_out`;
+const HISTORY_LEGACY_COLUMNS = HISTORY_BASE;
+
+async function fetchHistory(
+  supabase: ReturnType<typeof getSupabase>,
+  phone: string,
+  columns: string
+) {
+  const run = (cols: string) =>
+    supabase
+      .from("signins")
+      .select(cols)
+      .eq("phone", phone)
+      .order("created_at", { ascending: true })
+      .limit(300);
+
+  const first = await run(columns);
+  if (!first.error) return first;
+  console.warn("Falling back to the pre-opt-out columns:", first.error.message);
+  return run(HISTORY_LEGACY_COLUMNS);
+}
+
 // Everything both surfaces need about a phone number in one round trip.
 export async function loadPhoneContext(phone: string): Promise<PhoneContext> {
   const supabase = getSupabase();
@@ -47,16 +84,7 @@ export async function loadPhoneContext(phone: string): Promise<PhoneContext> {
     supabase.from("packages").select("*").eq("phone", trimmed),
     supabase.from("dogs").select("*").eq("phone", trimmed).order("created_at", { ascending: true }),
     // Not date-limited, for the multi-day boarding reason above.
-    supabase
-      .from("signins")
-      .select(
-        // meet_greet_result so the kiosk can tell a dog that has passed its
-        // assessment from one still waiting for it.
-        "id, dog_name, dog_id, action, service_type, addons, bath_size, price, created_at, meet_greet_result"
-      )
-      .eq("phone", trimmed)
-      .order("created_at", { ascending: true })
-      .limit(300),
+    fetchHistory(supabase, trimmed, HISTORY_COLUMNS),
     supabase.from("boardings").select("*").eq("phone", trimmed),
   ]);
   if (pkgRes.error) throw pkgRes.error;
@@ -72,8 +100,10 @@ export async function loadPhoneContext(phone: string): Promise<PhoneContext> {
     dogs: activeDogs((dogRes.data as Dog[]) ?? []),
     packages: (pkgRes.data as Package[]) ?? [],
     boardings: (boardingRes.data as Boarding[]) ?? [],
-    openVisits: buildOpenVisits((historyRes.data as SignInRecord[]) ?? []),
-    history: (historyRes.data as Partial<SignInRecord>[]) ?? [],
+    // Through unknown: the column list is a runtime string now, so the client
+    // cannot infer a row shape from it.
+    openVisits: buildOpenVisits((historyRes.data as unknown as SignInRecord[]) ?? []),
+    history: (historyRes.data as unknown as Partial<SignInRecord>[]) ?? [],
   };
 }
 
@@ -100,6 +130,7 @@ export function buildOpenVisits(
         addons: r.addons ?? [],
         bathSize: r.bath_size ?? null,
         packageOptOut: r.package_opt_out ?? undefined,
+        walkOptOut: r.walk_opt_out ?? undefined,
       });
     } else {
       lastPickUp.set(r.dog_id, new Date(r.created_at));
@@ -150,7 +181,20 @@ export function walkPackageApplies(
   walkPkg: Package | null | undefined
 ): boolean {
   if (!walkPkg || !open) return false;
+  // Boarding walks are billed per walk on the reservation, so a block must not
+  // absorb them or the client pays for those walks twice.
+  //
+  // This rule used to live only in performSignIn, which meant the kiosk PRICE
+  // PREVIEW did not have it: a household with a walk package saw a boarding
+  // stay quoted with the walk at zero, then got charged for it. Verified on a
+  // three-night stay quoted at $200 and billed $230. One predicate now, so the
+  // screen and the receipt cannot disagree.
+  if (open.serviceType === "boarding") return false;
   if (!(open.addons ?? []).includes("walk")) return false;
+  // Staff said No walk used on the sign-in list. Their answer outranks the
+  // rule, exactly as packageOptOut does for a daycare day — without this the
+  // option can be chosen and checkout spends the walk regardless.
+  if (open.walkOptOut) return false;
   return walkPkg.total_days - walkPkg.days_used > 0;
 }
 

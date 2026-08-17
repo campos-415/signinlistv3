@@ -181,6 +181,7 @@ interface MergedRow {
   meet_greet_result?: MeetGreetResult | null;
   staff_note?: string | null;
   package_opt_out?: boolean | null;
+  walk_opt_out?: boolean | null;
   meals?: MealKey[];
   meals_given?: MealKey[];
   // Set when the pick-up landed on a different day from the drop-off, so a
@@ -277,6 +278,7 @@ function mergeRecords(records: SignInRecord[]): MergedRow[] {
         open.meals = r.meals ?? [];
         open.meals_given = r.meals_given ?? [];
         open.package_opt_out = r.package_opt_out ?? null;
+      open.walk_opt_out = r.walk_opt_out ?? null;
       } else {
         // A pick-up with no open drop-off is a manual correction; it still
         // gets a row so its price is visible.
@@ -635,6 +637,33 @@ function RecordsInner() {
     }
   }
 
+  /**
+   * Whether pick-up will spend a walk from a package with nobody choosing it.
+   *
+   * A walk package covers the walk add-on the same way a daycare package
+   * covers the base rate — on DAYCARE only. A boarding stay's walks bill per
+   * walk on the reservation, so a block must not absorb them.
+   *
+   * The important half is that this does not consult the dropdown. Sign-out
+   * falls back to findPackageFor when staff have not picked one (see
+   * chosenPackage in StaffCheckIn), so "nothing selected" does not mean
+   * "nothing will be spent" — which is exactly what the dropdown used to
+   * claim while the estimate beside it said "covered by package".
+   */
+  function walkWillAutoApply(r: MergedRow): boolean {
+    // Staff have said no. Their answer outranks the rule — and without this
+    // check the projection repaints the block over their choice, which is the
+    // bug signin-notes-migration.sql fixed for daycare days.
+    if (r.walk_opt_out === true) return false;
+    const walkPkg = findPackageFor(packages, r.phone, r.dog_name, "walk");
+    return (
+      r.service_type === "daycare" &&
+      !!walkPkg &&
+      (r.addons ?? []).includes("walk") &&
+      daysLeft(walkPkg) > 0
+    );
+  }
+
   function computeEstimate(r: MergedRow, pkg: Package | null): PriceEstimate | null {
     if (!r.drop_off_time || !r.service_type) return null;
     const dropOff = new Date(r.drop_off_time);
@@ -663,15 +692,7 @@ function RecordsInner() {
       const owner = packageBillingPickUp(p, pricedPickUpsThatDay);
       return owner ? owner.id === r.pick_up_id : !r.pick_up_id;
     });
-    // A walk package covers the walk add-on the same way a daycare package
-    // covers the base rate — on DAYCARE only. A boarding stay's walks bill per
-    // walk on the reservation, so a block must not absorb them here either.
-    const walkPkg = findPackageFor(packages, r.phone, r.dog_name, "walk");
-    const walkCovered =
-      r.service_type === "daycare" &&
-      !!walkPkg &&
-      (r.addons ?? []).includes("walk") &&
-      daysLeft(walkPkg) > 0;
+    const walkCovered = walkWillAutoApply(r);
     return estimatePrice(
       r.service_type,
       dropOff,
@@ -1416,12 +1437,14 @@ function RecordsInner() {
       // returned early, and the projection painted the block straight back —
       // the choice looked ignored because it was. Record the decision on the
       // visit itself so it survives a reload and reaches checkout.
-      if (kind === "daycare" && row.drop_off_id) {
+      if (row.drop_off_id) {
         const optOut = packageId === "";
-        if ((row.package_opt_out ?? null) !== optOut) {
+        const column = kind === "walk" ? "walk_opt_out" : "package_opt_out";
+        const current = kind === "walk" ? row.walk_opt_out : row.package_opt_out;
+        if ((current ?? null) !== optOut) {
           const { error: err } = await getSupabase()
             .from("signins")
-            .update({ package_opt_out: optOut })
+            .update({ [column]: optOut })
             .eq("id", row.drop_off_id);
           // Deliberately not fatal. Until signin-notes-migration.sql has
           // run there is no such column, and failing here would take the
@@ -2361,7 +2384,17 @@ function RecordsInner() {
                             <span className="rounded-md bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
                               ✕ Not passed
                             </span>
-                          ) : stillIn ? (
+                          ) : (
+                            /* Offered whether or not the dog is still here.
+                               The add-on buttons below freeze at pick-up
+                               because a retrospective add-on would change a
+                               bill that has already been settled — a verdict
+                               changes no money, and the dog going home is
+                               precisely when a busy front desk gets round to
+                               recording how it went. Frozen, the row said
+                               "Not assessed" with nothing to click, and
+                               needsMeetGreet kept offering the same dog
+                               another meet & greet forever. */
                             <>
                               <button
                                 onClick={() => setMeetGreetResult(r, "pass")}
@@ -2382,8 +2415,6 @@ function RecordsInner() {
                                 A pass needs a photo
                               </span>
                             </>
-                          ) : (
-                            <span className="text-[11px] text-ink-3">Not assessed</span>
                           )}
                         </div>
                       ) : (
@@ -2550,6 +2581,15 @@ function RecordsInner() {
                               : null
                             : null;
                         const dayValue = dayCurrent || projectedDay?.id || "";
+                        // The same for walks, which this dropdown was missing
+                        // — so the row showed "No walk used" beside an
+                        // estimate reading "Walk — covered by package", and
+                        // pick-up went on to spend the walk anyway. A walk
+                        // needs no minimum length: the add-on is the trigger.
+                        const projectedWalk = walkWillAutoApply(r)
+                          ? findPackageFor(packages, r.phone, r.dog_name, "walk")
+                          : null;
+                        const walkValue = walkCurrent || projectedWalk?.id || "";
                         return (
                           <div className="flex flex-col gap-1">
                             {dayOptions.length > 0 && (
@@ -2574,7 +2614,7 @@ function RecordsInner() {
                             )}
                             {walkOptions.length > 0 && (
                               <select
-                                value={walkCurrent}
+                                value={walkValue}
                                 onChange={(e) => setPackageInline(r, e.target.value, "walk")}
                                 title="Walk package this visit spends a walk from"
                                 className={selectClass}

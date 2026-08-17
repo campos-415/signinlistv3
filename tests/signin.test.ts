@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenVisits } from "@/lib/signin";
+import { buildOpenVisits, packageApplies, walkPackageApplies } from "@/lib/signin";
+import { Package } from "@/types";
 import { SignInRecord } from "@/types";
 
 // Who is actually in the building.
@@ -110,5 +111,76 @@ describe("buildOpenVisits", () => {
     expect(open.get("d1")?.serviceType).toBe("boarding");
     expect(open.get("d1")?.addons).toEqual(["bath"]);
     expect(open.get("d1")?.bathSize).toBe("M");
+  });
+});
+
+describe("saying no to a package", () => {
+  // Staff can refuse a package on a visit. Both refusals are stored on the
+  // drop-off row, and both have been ignored at some point in a way that cost
+  // a client days they had paid for:
+  //
+  //   - package_opt_out was written and then left out of the column list
+  //     loadPhoneContext selects, so checkout read undefined and spent the day
+  //     while the screen showed the refusal sticking.
+  //   - walk_opt_out did not exist at all, so "No walk used" could be chosen,
+  //     would not survive a reload, and the walk was spent regardless.
+  //
+  // These pin the rule itself; the column lists are pinned by the fallback in
+  // loadPhoneContext.
+  const pkg = (over: Partial<Package> = {}): Package =>
+    ({ id: "p1", phone: "(555) 000-0001", total_days: 10, days_used: 0, ...over }) as Package;
+
+  const visitWith = (extra: Partial<SignInRecord>) =>
+    buildOpenVisits(
+      [row("d1", "drop_off", "2026-08-17T08:00:00.000Z", { addons: ["walk"], ...extra })],
+      NOW
+    ).get("d1");
+
+  it("spends a walk when nobody has said otherwise", () => {
+    expect(walkPackageApplies(visitWith({}), pkg())).toBe(true);
+  });
+
+  it("does not spend a walk when staff said no", () => {
+    expect(walkPackageApplies(visitWith({ walk_opt_out: true }), pkg())).toBe(false);
+  });
+
+  it("never covers a boarding walk, on the preview or the receipt", () => {
+    // Boarding walks bill per walk on the reservation, so a block absorbing
+    // them would charge the client twice for the same walks.
+    //
+    // The rule lived only in performSignIn, so the kiosk preview did not have
+    // it: a stay was quoted with the walk at zero and then billed for it —
+    // $200 on screen, $230 taken. Both now ask this one function.
+    const boarding = buildOpenVisits(
+      [row("d1", "drop_off", "2026-08-17T08:00:00.000Z", {
+        addons: ["walk"],
+        service_type: "boarding",
+      })],
+      NOW
+    ).get("d1");
+    expect(walkPackageApplies(boarding, pkg())).toBe(false);
+  });
+
+  it("still needs the walk add-on to be on the visit at all", () => {
+    const noWalk = buildOpenVisits(
+      [row("d1", "drop_off", "2026-08-17T08:00:00.000Z", { addons: [] })],
+      NOW
+    ).get("d1");
+    expect(walkPackageApplies(noWalk, pkg())).toBe(false);
+  });
+
+  it("does not spend a day when staff said no, even on a full day", () => {
+    // Eight hours in — the automatic rule would take a day.
+    const full = visitWith({ package_opt_out: true });
+    expect(packageApplies("daycare", full, pkg(), NOW)).toBe(false);
+    // Unless somebody picks that block by hand, which outranks everything.
+    expect(packageApplies("daycare", full, pkg(), NOW, true)).toBe(true);
+  });
+
+  it("the two refusals are independent", () => {
+    const noDayOnly = visitWith({ package_opt_out: true });
+    expect(packageApplies("daycare", noDayOnly, pkg(), NOW)).toBe(false);
+    // Refusing the day says nothing about the walk.
+    expect(walkPackageApplies(noDayOnly, pkg())).toBe(true);
   });
 });
