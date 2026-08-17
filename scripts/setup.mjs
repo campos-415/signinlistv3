@@ -4,7 +4,7 @@
 //
 //   npm run setup
 //
-// It runs the eighteen SQL files in the order docs/NEW-DATABASE.md describes,
+// It runs the SQL files in the order docs/NEW-DATABASE.md describes,
 // creates the staff sign-ins, makes the storage bucket, writes the branding
 // and leaves you with a working .env.local. The order is held here in code
 // rather than in a person following a table, which is where every failure in
@@ -58,6 +58,10 @@ const SCHEMA_FILES = [
   // so checkout spends a walk staff have refused. Nothing depends on it, so
   // it sits here with the other plain column additions.
   "walk-opt-out-migration.sql",
+  // Adds payments.tip. Without it a tip taken on the Square terminal is
+  // dropped on the way in — the payment still lands, so nothing looks wrong,
+  // and the day report shows no tips to pay out.
+  "tips-migration.sql",
 ];
 
 const SECURITY_FILES = [

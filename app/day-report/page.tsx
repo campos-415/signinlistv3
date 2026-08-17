@@ -126,6 +126,8 @@ function Daily() {
     projectedRevenue,
     projectedCount,
     scheduledToArrive,
+    tipsTotal,
+    tipsCount,
   } = totals;
   // const {
   //   revenue: categories,
@@ -223,6 +225,20 @@ function Daily() {
         <Stat label="Picked up" value={String(pickUps.length)} />
         <Stat label="Scheduled to arrive" value={String(scheduledToArrive)} />
       </div>
+
+      {/* Tips, on their own and never folded into revenue.
+          This money belongs to whoever worked the day, not to the business.
+          Counting it as income would overstate earnings to the accountant and
+          understate what is owed to staff. The report is manager-and-owner
+          only already — see ManagersOnly above — which is where the payout
+          conversation happens anyway. */}
+      {tipsTotal > 0 && (
+        <div className="mb-5 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900">
+          <span className="font-medium">💜 ${tipsTotal.toFixed(2)} in tips</span> across{" "}
+          {tipsCount} payment{tipsCount === 1 ? "" : "s"} — for staff, and not counted in the
+          revenue above.
+        </div>
+      )}
 
       {projectedCount > 0 && (
         <div className="mb-5 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-800 print:hidden">

@@ -388,6 +388,13 @@ export interface Payment {
   method?: PaymentMethod | null;
   note?: string | null;
   paid_on: string; // "YYYY-MM-DD"
+  // Taken alongside the payment and belonging to staff, not the business.
+  //
+  // Deliberately NOT part of `amount`: balances settle oldest-charge-first, so
+  // a tip folded into the amount would read as overpayment and hand the
+  // household credit it never had. Nothing in lib/billing.ts reads this — see
+  // tips-migration.sql.
+  tip?: number | null;
   created_at?: string;
 }
 

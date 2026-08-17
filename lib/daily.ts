@@ -3,7 +3,7 @@
 // numbers — all amounts come from lib/pricing.ts, never a second table of
 // prices.
 
-import { Boarding, Package, PackageUse, ServiceType, SignInRecord } from "@/types";
+import { Boarding, Package, PackageUse, Payment, ServiceType, SignInRecord } from "@/types";
 import { getSupabase } from "@/lib/supabase";
 import { isBaseCoveredByPackage } from "@/lib/pricing";
 // ...
@@ -35,6 +35,12 @@ export interface DailyTotals {
   // revenueTotal; it's a forecast, not money earned.
   projectedRevenue: number;
   projectedCount: number;
+  // Tips taken that day, for the staff payout. Deliberately NOT part of
+  // revenueTotal or chargedTotal: this is money the business is holding on
+  // behalf of the people who did the work, and counting it as income would
+  // overstate what the business earned to whoever does its books.
+  tipsTotal: number;
+  tipsCount: number;
 }
 
 
@@ -43,6 +49,7 @@ export function computeDailyTotals({
   boardings,
   packageUses,
   packagesSold,
+  payments,
   selectedDate,
 }: DailyInput): DailyTotals {
   const dateKey = selectedDate ?? new Date().toISOString().slice(0, 10);
@@ -320,6 +327,9 @@ export function computeDailyTotals({
     projectedRevenue,
     projectedCount,
     scheduledToArrive,
+    // Summed here, kept out of every figure above. See DailyTotals.
+    tipsTotal: (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
+    tipsCount: (payments ?? []).filter((p) => (p.tip ?? 0) > 0).length,
   };
 }
 export interface Category {
@@ -338,6 +348,10 @@ export interface DailyInput {
   boardings: Boarding[]; // already narrowed to stays covering the day
   packageUses: PackageUse[];
   packagesSold: Package[]; // packages bought that day — the revenue event
+  // Payments taken that day, read ONLY for the tips on them. A payment is not
+  // revenue — it settles a charge that may belong to any day — so nothing in
+  // the revenue totals touches this.
+  payments?: Payment[];
   // Every package on file, not just today's sales. Needed to work out how
   // many of a stay's walks a block still has left to cover.
   selectedDate?: string;
@@ -492,24 +506,32 @@ export async function loadDailyData(dateKey: string): Promise<DailyInput> {
   const fromIso = new Date(`${dateKey}T00:00:00`).toISOString();
   const toIso = new Date(`${dateKey}T23:59:59.999`).toISOString();
 
-  const [signinRes, boardingRes, useRes, soldRes] = await Promise.all([
+  const [signinRes, boardingRes, useRes, soldRes, payRes] = await Promise.all([
     supabase.from("signins").select("*").gte("created_at", fromIso).lte("created_at", toIso),
     supabase.from("boardings").select("*").lte("start_date", dateKey).gte("end_date", dateKey),
     supabase.from("package_uses").select("*").eq("used_on", dateKey),
     // Packages bought that day. This is where package money is recognized;
     // the days it buys are then spent at $0.
     supabase.from("packages").select("*").gte("created_at", fromIso).lte("created_at", toIso),
+    // Payments taken that day, for the tips on them. Not for revenue: what
+    // the business earned is the CHARGES above, and a payment can settle a
+    // charge from any day. These are read for one number only.
+    supabase.from("payments").select("*").eq("paid_on", dateKey),
   ]);
   if (signinRes.error) throw signinRes.error;
   if (boardingRes.error) throw boardingRes.error;
   if (useRes.error) throw useRes.error;
   if (soldRes.error) throw soldRes.error;
+  // Not fatal. Tips are one line on the report; losing them must not cost the
+  // manager the day's takings.
+  if (payRes.error) console.error("Loading the day's payments failed:", payRes.error);
 
   return {
     signins: (signinRes.data as SignInRecord[]) ?? [],
     boardings: (boardingRes.data as Boarding[]) ?? [],
     packageUses: (useRes.data as PackageUse[]) ?? [],
     packagesSold: (soldRes.data as Package[]) ?? [],
+    payments: (payRes.data as Payment[]) ?? [],
     // Carried through so the totals are computed against the day that was
     // actually loaded, not whatever "today" is in UTC when they run.
     selectedDate: dateKey,

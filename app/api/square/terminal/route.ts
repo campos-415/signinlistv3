@@ -181,6 +181,12 @@ export async function POST(req: NextRequest) {
         idempotency_key: idempotencyKey,
         checkout: {
           amount_money: { amount, currency: "USD" },
+          // The tip is asked for HERE, on the terminal, by Square — not by
+          // this app. A tip screen belongs to the card reader the client is
+          // already looking at, and the amounts it offers are Square settings
+          // the business controls without a redeploy. The app only records
+          // what came back; see the status branch below.
+          tip_settings: { allow_tipping: true },
           device_options: { device_id: body.deviceId },
           note: (body.note ?? "").slice(0, 500) || undefined,
           reference_id: (body.reference ?? "").slice(0, 40) || undefined,
@@ -211,12 +217,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: squareError(res.data) }, { status: res.status });
     }
     const checkout = res.data.checkout as
-      | { status?: string; payment_ids?: string[]; cancel_reason?: string }
+      | {
+          status?: string;
+          payment_ids?: string[];
+          cancel_reason?: string;
+          amount_money?: { amount?: number };
+          tip_money?: { amount?: number };
+        }
       | undefined;
+
+    // What the client actually tipped, in cents, or null when Square did not
+    // report one. Read off the checkout when it carries a tip; otherwise the
+    // payment itself is asked, because the field has moved between API
+    // versions and the checkout does not always carry it.
+    //
+    // Never inferred by subtracting the charge from the total: a partial
+    // approval or a surcharge would turn up here as a tip nobody left.
+    let tipCents: number | null =
+      typeof checkout?.tip_money?.amount === "number" ? checkout.tip_money.amount : null;
+    const paymentId = checkout?.payment_ids?.[0] ?? null;
+    if (tipCents === null && paymentId && checkout?.status === "COMPLETED") {
+      const pay = await square(`/v2/payments/${encodeURIComponent(paymentId)}`, {
+        method: "GET",
+        sandbox,
+      });
+      const amt = (pay.data?.payment as { tip_money?: { amount?: number } } | undefined)?.tip_money
+        ?.amount;
+      if (pay.ok && typeof amt === "number") tipCents = amt;
+      // A failure here is not fatal. The payment went through; only the tip
+      // figure is unknown, and staff can type it from the Square receipt.
+      else if (!pay.ok) console.warn("Could not read the tip off the Square payment:", pay.data);
+    }
+
     return NextResponse.json({
       status: checkout?.status ?? null,
-      paymentId: checkout?.payment_ids?.[0] ?? null,
+      paymentId,
       cancelReason: checkout?.cancel_reason ?? null,
+      tipCents,
     });
   }
 

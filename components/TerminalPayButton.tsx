@@ -72,16 +72,28 @@ export default function TerminalPayButton({
   }
 
   /** The money moved, so the record must exist even if everything else fails. */
-  async function record(paymentId: string | null) {
-    const { error } = await getSupabase().from("payments").insert({
+  async function record(paymentId: string | null, tipCents: number | null) {
+    // The tip the client left on the terminal, kept apart from the amount.
+    // It settles nothing they owe — see tips-migration.sql — so the balance
+    // is unaffected and the day report can total it for the staff payout.
+    const tip = typeof tipCents === "number" && tipCents > 0 ? tipCents / 100 : null;
+    const row = {
       phone,
       amount,
-      method: "card",
+      method: "card" as const,
       note: `${square.testMode ? "TEST (no money taken) " : ""}Square Terminal ${
         paymentId ?? "no id"
       }${dogNames.length ? ` · ${dogNames.join(", ")}` : ""}`,
       paid_on: new Date().toISOString().slice(0, 10),
-    });
+    };
+    let { error } = await getSupabase().from("payments").insert({ ...row, tip });
+    if (error && /tip/.test(error.message ?? "")) {
+      // No tip column yet. The card has already been charged, so the payment
+      // must land regardless — a missing tip figure is recoverable by hand,
+      // an unrecorded payment is not.
+      console.warn("payments.tip is missing — run tips-migration.sql:", error.message);
+      ({ error } = await getSupabase().from("payments").insert(row));
+    }
     if (error) {
       // Loud, and with the number in it. A payment that happened and was not
       // recorded is worse than one that failed, because nothing about the
@@ -149,7 +161,10 @@ export default function TerminalPayButton({
       const res = await call({ action: "status", checkoutId: checkoutId.current });
       const status = String(res.status ?? "");
       if (status === "COMPLETED") {
-        await record((res.paymentId as string) ?? null);
+        await record(
+          (res.paymentId as string) ?? null,
+          typeof res.tipCents === "number" ? res.tipCents : null
+        );
         return;
       }
       if (status === "CANCELED" || status === "CANCEL_REQUESTED") {

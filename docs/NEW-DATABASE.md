@@ -57,13 +57,16 @@ follow the message rather than working around it.
 | 8 | `site-photos-migration.sql` | Website images |
 | 9 | `site-storage-migration.sql` | Storage bucket permissions for those images |
 | 10 | `two-stage-enrollment-migration.sql` | Splits enrollment into two stages |
-| 11 | `security-roles-migration.sql` | **Stop and read "Before step 11" below before running this one** |
-| 12 | `security-audit-migration.sql` | The audit log and its triggers |
-| 13 | `security-exports-migration.sql` | Who may export the customer database |
-| 14 | `customer-accounts-migration.sql` | `owner_id` on every table, and customer accounts. Needs `staff_roles` from step 11 |
-| 15 | `customer-details-handover-migration.sql` | Stage two behind the customer account |
-| 16 | `customer-second-dog-migration.sql` | Adding a dog to an existing household |
-| 17 | `rls-lockdown.sql` | **Last.** The policy matrix, which needs every table and column above to exist |
+| 11 | `walk-opt-out-migration.sql` | `signins.walk_opt_out`, so "No walk used" can be recorded |
+| 12 | `tips-migration.sql` | `payments.tip`. A tip is recorded but settles nothing — it never touches a balance |
+| 13 | `security-roles-migration.sql` | **Stop and read "Before step 13" below before running this one** |
+| 14 | `security-audit-migration.sql` | The audit log and its triggers |
+| 15 | `security-exports-migration.sql` | Who may export the customer database |
+| 16 | `customer-accounts-migration.sql` | `owner_id` on every table, and customer accounts. Needs `staff_roles` from step 13 |
+| 17 | `customer-details-handover-migration.sql` | Stage two behind the customer account |
+| 18 | `customer-second-dog-migration.sql` | Adding a dog to an existing household |
+| 19 | `dog-retire-migration.sql` | Retiring a dog. **After 16** — it recreates the `my_dogs` view, which calls `customer_owner_id()` |
+| 20 | `rls-lockdown.sql` | **Last.** The policy matrix, which needs every table and column above to exist |
 
 Steps 1 to 10 create tables and columns. Steps 11 to 17 decide who may read
 them, and every one of those needs the tables to be there already — which is
@@ -107,7 +110,7 @@ has any rows in it** — so it stops rather than destroys if it is ever pasted
 into the wrong project by mistake. That guard is the point of the file; forcing
 it through by deleting the guard is how a production database gets lost.
 
-## Before step 11
+## Before step 13
 
 `security-roles-migration.sql` opens with a seed list setting who gets which
 role. **Every account that exists must be in it** — an account not listed gets

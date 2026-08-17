@@ -107,3 +107,37 @@ describe("unpaidCharges — oldest first", () => {
     expect(unpaid[0].key).toBe(signinChargeKey("new"));
   });
 });
+
+
+describe("computeBalance — a tip is not a payment", () => {
+  // The whole reason `tip` is its own column. Balances settle the oldest
+  // charge first, so a tip folded into `amount` reads as overpayment: the
+  // household is handed credit it never had, and the next visit quietly draws
+  // on it. The arithmetic stays consistent while the input is wrong, which is
+  // exactly the kind of error nothing surfaces.
+  const tipped = (amount: number, tip: number, paid_on: string): Payment =>
+    ({ phone: "(415) 555-0000", amount, tip, paid_on }) as Payment;
+
+  it("leaves the account settled, not in credit, when a tip rides along", () => {
+    const balance = computeBalance(
+      [pickUp("a", "2026-08-16", 50)],
+      [],
+      [tipped(50, 10, "2026-08-16")]
+    );
+    expect(balance.paid).toBe(50);
+    // Negative outstanding IS credit here — see the Balance docs. The $10
+    // must not push it below zero and become credit against the next visit.
+    expect(balance.outstanding).toBe(0);
+    expect(balance.charged).toBe(50);
+  });
+
+  it("does not let a tip settle a charge on its own", () => {
+    const balance = computeBalance(
+      [pickUp("a", "2026-08-16", 50)],
+      [],
+      [tipped(0, 50, "2026-08-16")]
+    );
+    expect(balance.paid).toBe(0);
+    expect(balance.outstanding).toBe(50);
+  });
+});

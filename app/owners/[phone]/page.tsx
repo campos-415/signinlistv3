@@ -19,6 +19,7 @@ import {
   SignInRecord,
 } from "@/types";
 import { Balance, computeBalance, loadPayments, unpaidCharges } from "@/lib/billing";
+import { isMissingColumn } from "@/lib/enrollment";
 import BalanceBadge from "@/components/BalanceBadge";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
@@ -70,7 +71,7 @@ function OwnerProfile() {
   const [packages, setPackages] = useState<Package[]>([]);
   const [signins, setSignins] = useState<SignInRecord[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
-  const [payForm, setPayForm] = useState({ amount: "", method: "card" as PaymentMethod, note: "" });
+  const [payForm, setPayForm] = useState({ amount: "", tip: "", method: "card" as PaymentMethod, note: "" });
   const [savingPay, setSavingPay] = useState(false);
   const [deletingPayId, setDeletingPayId] = useState<string | null>(null);
   const [ledgerOpen, setLedgerOpen] = useState(false);
@@ -342,15 +343,32 @@ function OwnerProfile() {
     setError("");
     try {
       const supabase = getSupabase();
-      const { error: err } = await supabase.from("payments").insert({
+      // A tip is recorded, never added to `amount`. It settles nothing the
+      // household owes — see tips-migration.sql.
+      const tipped = parseFloat(payForm.tip);
+      const tip = Number.isFinite(tipped) && tipped > 0 ? tipped : null;
+      const row = {
         phone,
         amount,
         method: payForm.method,
         note: payForm.note.trim() || null,
         paid_on: todayKey(),
-      });
+      };
+      let { error: err } = await supabase.from("payments").insert({ ...row, tip });
+      if (err && isMissingColumn(err)) {
+        // tips-migration.sql has not been run here. Losing the tip is bad;
+        // losing the PAYMENT because of it would be worse, so the payment
+        // goes in either way and the tip is reported as dropped.
+        console.warn("payments.tip is missing — run tips-migration.sql", err.message);
+        ({ error: err } = await supabase.from("payments").insert(row));
+        if (!err && tip) {
+          setError(
+            `Payment recorded, but the $${tip.toFixed(2)} tip was not — this database needs tips-migration.sql.`
+          );
+        }
+      }
       if (err) throw err;
-      setPayForm({ amount: "", method: payForm.method, note: "" });
+      setPayForm({ amount: "", tip: "", method: payForm.method, note: "" });
       load();
     } catch (e) {
       console.error("Recording payment failed:", e);
@@ -531,7 +549,7 @@ function OwnerProfile() {
         )}
 
         {/* Record a payment */}
-        <div className="mt-4 grid gap-3 border-t border-line-soft pt-4 sm:grid-cols-4">
+        <div className="mt-4 grid gap-3 border-t border-line-soft pt-4 sm:grid-cols-5">
           <Field label="Amount">
             <input
               type="number"
@@ -540,6 +558,22 @@ function OwnerProfile() {
               value={payForm.amount}
               onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
               placeholder={balance.outstanding > 0 ? balance.outstanding.toFixed(2) : "0.00"}
+              className={inputClass}
+            />
+          </Field>
+          {/* Recorded, never added to the amount.
+              A tip belongs to staff, not the business, and the balance must
+              not see it: folded into the amount it reads as overpayment and
+              hands the household credit it never had. Left blank on a card
+              tip taken on the Square terminal, which reports its own. */}
+          <Field label="Tip (optional)">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={payForm.tip}
+              onChange={(e) => setPayForm({ ...payForm, tip: e.target.value })}
+              placeholder="0.00"
               className={inputClass}
             />
           </Field>
