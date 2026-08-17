@@ -54,6 +54,10 @@ const SCHEMA_FILES = [
   "site-photos-migration.sql",
   "site-storage-migration.sql",
   "two-stage-enrollment-migration.sql",
+  // Adds signins.walk_opt_out. Without it "No walk used" cannot be recorded,
+  // so checkout spends a walk staff have refused. Nothing depends on it, so
+  // it sits here with the other plain column additions.
+  "walk-opt-out-migration.sql",
 ];
 
 const SECURITY_FILES = [
@@ -63,6 +67,17 @@ const SECURITY_FILES = [
   "customer-accounts-migration.sql",
   "customer-details-handover-migration.sql",
   "customer-second-dog-migration.sql",
+  // HERE, not up with the other column additions.
+  //
+  // It adds dogs.retired_at, which would happily run first — but it also
+  // recreates the my_dogs view so the portal stops offering a retired dog,
+  // and that view calls customer_owner_id(). Run before
+  // customer-accounts-migration.sql it fails with exactly the error a fresh
+  // deployment used to die on: customer_owner_id does not exist.
+  //
+  // Still before rls-lockdown, which is documented as last and needs every
+  // table and column above it to exist.
+  "dog-retire-migration.sql",
   "rls-lockdown.sql",
 ];
 
