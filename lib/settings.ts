@@ -269,6 +269,35 @@ export interface AppSettings {
   email: EmailSettings;
   square: SquareSettings;
   staff: StaffSettings;
+  forms: FormsSettings;
+}
+
+/** One clause of the contract a client agrees to when they enrol. */
+export interface ContractClause {
+  heading: string;
+  body: string;
+}
+
+/**
+ * The words on the two public forms.
+ *
+ * Here rather than in the components because these are the BUSINESS's words,
+ * not the app's. The contract is a legal agreement between a daycare and its
+ * clients covering veterinary authorisation, liability for injury and
+ * abandonment — an insurer or a lawyer may well want it changed, and that
+ * must not mean a code change and a redeploy by the developer.
+ *
+ * {{business}} is substituted wherever it appears, so renaming the business
+ * updates its own contract instead of leaving the old name in the terms.
+ */
+export interface FormsSettings {
+  contractClauses: ContractClause[];
+  /** Shown above the signature on the enrollment form. */
+  meetGreetPolicy: string;
+  /** The short note at the top of the enrollment form. */
+  enrollIntro: string;
+  /** The "before you book" note at the top of the boarding request form. */
+  bookIntro: string;
 }
 
 // The values the app shipped with. Used until settings load, and as the
@@ -380,6 +409,42 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // server. Terminal is opted into by a business that has the hardware.
     mode: "app",
     terminalDeviceId: "",
+  },
+  forms: {
+    // The wording the app ships with. Every clause is the business's to
+    // change; these are a starting point, not terms the app imposes.
+    contractClauses: [
+      {
+        heading: "Health and vaccinations",
+        body: "My dog is in good health, has not been ill with a communicable condition in the last 30 days, and is currently vaccinated against rabies, distemper/parvo (DHPP) and bordetella. I will keep those records current with {{business}} and understand my dog may be turned away if they lapse.",
+      },
+      {
+        heading: "Temperament",
+        body: "My dog has not shown aggression toward people or other dogs beyond anything I have disclosed on this form. {{business}} may refuse or end a stay if my dog is unsafe around others, and will contact me to collect them.",
+      },
+      {
+        heading: "Risk of injury",
+        body: "I understand that dogs play off-leash in groups, and that scratches, nicks and scrapes can happen even with careful supervision. I accept that ordinary risk.",
+      },
+      {
+        heading: "Veterinary care",
+        body: "If my dog needs medical attention and I cannot be reached, I authorize {{business}} to obtain veterinary care at my expense, preferring my own vet where practical.",
+      },
+      {
+        heading: "Payment and pick-up",
+        body: "I will pay all charges when my dog is collected, and I will collect my dog by closing time. Late collection may incur a fee, and dogs left without contact for an extended period may be treated as abandoned.",
+      },
+      {
+        heading: "Photos",
+        body: "I agree that {{business}} may photograph my dog for its records and social media, without payment.",
+      },
+    ],
+    meetGreetPolicy:
+      "Every new dog comes in for a meet & greet before their first full day, so we can see how they settle in with the group. Bring your dog on a leash and plan to leave them with us for about two hours — owners do not stay, so come back for them at the end. If it goes well you are welcome to ask us to keep them for the rest of the day. Requested dates are confirmed by phone or email — nothing is booked until we reply.",
+    enrollIntro:
+      "Just enough to book your meet & greet — about five minutes. Once you've been in and we've met your dog, we'll email you a second short form for the rest: your address, your vet, and how they get on with other dogs.",
+    bookIntro:
+      "Every boarding dog must have completed enrollment and a meet & greet first, with vaccination records up to date.",
   },
   staff: { names: [], walkDayStartHour: 6, walkDayEndHour: 21, walkStepMinutes: 30 },
   email: {
@@ -555,6 +620,15 @@ function merge(stored: Partial<AppSettings> | null): AppSettings {
     email: { ...DEFAULT_SETTINGS.email, ...(stored.email ?? {}) },
     square: { ...DEFAULT_SETTINGS.square, ...(stored.square ?? {}) },
     staff: { ...DEFAULT_SETTINGS.staff, ...(stored.staff ?? {}) },
+    forms: {
+      ...DEFAULT_SETTINGS.forms,
+      ...(stored.forms ?? {}),
+      // `?? ` not `?.length ?`. Deleting every clause is a legitimate choice —
+      // a business may have its own paper contract — and treating an empty
+      // list as "unset" would silently resurrect terms they removed on
+      // purpose, which for a legal agreement is the worst kind of bug.
+      contractClauses: stored.forms?.contractClauses ?? DEFAULT_SETTINGS.forms.contractClauses,
+    },
     site: { ...DEFAULT_SETTINGS.site, ...(stored.site ?? {}) },
     // A settings row written before the portal existed has no portal key,
     // and the default it falls back to is off — which is the safe direction:

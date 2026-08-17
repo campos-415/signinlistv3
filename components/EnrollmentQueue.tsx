@@ -832,6 +832,25 @@ function Review({
 
       <Block title="Agreements">
         <Row label="Contract" value={draft.contractAgreed ? "Accepted" : "NOT accepted"} />
+        {/* The terms THIS household signed, not the ones in Settings today.
+            A business can reword its contract, and without the copy stored on
+            the submission this screen would show everyone the current version
+            — including people who agreed to something different months ago. */}
+        {draft.contractText?.length ? (
+          <details className="pt-1">
+            <summary className="cursor-pointer text-xs text-accent-600 hover:underline">
+              Read the {draft.contractText.length} clauses they agreed to
+            </summary>
+            <div className="mt-2 max-h-52 space-y-2 overflow-y-auto rounded-xl border border-line bg-surface-2 p-3 text-xs leading-relaxed text-ink-2">
+              {draft.contractText.map((c) => (
+                <div key={c.heading}>
+                  <p className="font-semibold text-ink-2">{c.heading}</p>
+                  <p>{c.body}</p>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
         <Row label="Meet & greet policy" value={draft.policyAgreed ? "Accepted" : "NOT accepted"} />
         {draft.signature && (
           <div className="pt-2">

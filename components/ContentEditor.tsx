@@ -18,8 +18,12 @@ import { DEFAULT_CONTENT, Card, Heading, Hero, SiteContent } from "@/lib/siteCon
 
 type PageKey = Exclude<keyof SiteContent, "tagline" | "footerBlurb" | "cta">;
 
-const PAGES: { key: PageKey | "shared"; label: string }[] = [
+const PAGES: { key: PageKey | "shared" | "forms"; label: string }[] = [
   { key: "shared", label: "Shared" },
+  // Not a marketing page. The two public FORMS say things the business is
+  // legally on the hook for — the contract most of all — and those words
+  // belong to the business, not to whoever deployed the app.
+  { key: "forms", label: "📋 Forms & contract" },
   { key: "home", label: "Home" },
   { key: "daycare", label: "Daycare" },
   { key: "boarding", label: "Boarding" },
@@ -50,7 +54,7 @@ export default function ContentEditor({
   draft: AppSettings;
   setDraft: Dispatch<SetStateAction<AppSettings>>;
 }) {
-  const [page, setPage] = useState<PageKey | "shared">("shared");
+  const [page, setPage] = useState<PageKey | "shared" | "forms">("shared");
   const c = draft.content;
 
   function patchContent(patch: Partial<SiteContent>) {
@@ -85,7 +89,7 @@ export default function ContentEditor({
             </button>
           ))}
         </div>
-        {page !== "shared" && (
+        {page !== "shared" && page !== "forms" && (
           <a
             href={PATHS[page]}
             target="_blank"
@@ -95,6 +99,8 @@ export default function ContentEditor({
           </a>
         )}
       </div>
+
+      {page === "forms" && <FormsBlocks draft={draft} setDraft={setDraft} />}
 
       {page === "shared" && (
         <>
@@ -489,7 +495,7 @@ export default function ContentEditor({
         </>
       )}
 
-      <ResetRow page={page} draft={draft} setDraft={setDraft} />
+      {page !== "forms" && <ResetRow page={page} draft={draft} setDraft={setDraft} />}
     </>
   );
 }
@@ -500,6 +506,139 @@ export default function ContentEditor({
 
 const inputClass =
   "w-full rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm outline-none focus:border-accent-500 focus:ring-2 focus:ring-accent-100";
+
+/**
+ * The words on the public forms, including the contract.
+ *
+ * Kept apart from the marketing copy above because the stakes differ. A
+ * clumsy sentence on the home page is a clumsy sentence; the contract is what
+ * a client agrees to about veterinary authorisation, liability for injury and
+ * abandonment. It has to be the business's own wording, changeable without a
+ * developer, and it must not silently rewrite what past clients signed — so
+ * every submission stores the version it was signed under. See
+ * EnrollmentDraft.contractText.
+ */
+function FormsBlocks({
+  draft,
+  setDraft,
+}: {
+  draft: AppSettings;
+  setDraft: (s: AppSettings) => void;
+}) {
+  const forms = draft.forms;
+  const setForms = (patch: Partial<AppSettings["forms"]>) =>
+    setDraft({ ...draft, forms: { ...forms, ...patch } });
+
+  const setClause = (i: number, patch: Partial<{ heading: string; body: string }>) =>
+    setForms({
+      contractClauses: forms.contractClauses.map((c, x) => (x === i ? { ...c, ...patch } : c)),
+    });
+
+  return (
+    <>
+      <Block
+        title="Contract"
+        blurb="What a client agrees to when they enrol. Their signature covers whatever this says, so it is worth your insurer or lawyer reading it."
+        defaultOpen
+      >
+        <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[11px] leading-relaxed text-amber-900">
+          Write <code className="font-mono">{"{{business}}"}</code> anywhere and your business name
+          is filled in — so renaming the business updates its own terms rather than leaving the old
+          name in them. Changing this does <strong>not</strong> alter what people have already
+          signed: every enrollment stores the version it was agreed under, and the review screen
+          shows that copy.
+        </p>
+
+        <div className="space-y-4">
+          {forms.contractClauses.map((clause, i) => (
+            <div key={i} className="rounded-2xl border border-line p-3">
+              <div className="flex items-start gap-2">
+                <div className="flex-1">
+                  <Text
+                    label={`Clause ${i + 1} heading`}
+                    value={clause.heading}
+                    onChange={(v) => setClause(i, { heading: v })}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForms({
+                      contractClauses: forms.contractClauses.filter((_, x) => x !== i),
+                    })
+                  }
+                  className="mt-5 rounded-lg border border-line px-2.5 py-1.5 text-[11px] text-ink-3 transition hover:border-rose-300 hover:text-rose-500"
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="mt-2">
+                <Para
+                  label="Wording"
+                  value={clause.body}
+                  onChange={(v) => setClause(i, { body: v })}
+                  rows={4}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() =>
+            setForms({
+              contractClauses: [...forms.contractClauses, { heading: "New clause", body: "" }],
+            })
+          }
+          className="mt-3 w-full rounded-xl border border-dashed border-line px-3 py-2 text-xs font-medium text-ink-3 transition hover:border-accent-400 hover:text-accent-600"
+        >
+          + Add a clause
+        </button>
+
+        {forms.contractClauses.length === 0 && (
+          <p className="mt-3 rounded-xl bg-rose-50 px-3.5 py-2.5 text-[11px] text-rose-700">
+            With no clauses the enrollment form shows no contract at all. That is allowed — a
+            business using its own paper contract may want exactly this — but nobody signing online
+            is agreeing to anything.
+          </p>
+        )}
+      </Block>
+
+      <Block
+        title="Meet &amp; greet policy"
+        blurb="Shown above the signature on the enrollment form, and what the tick box refers to."
+      >
+        <Para
+          label="Policy"
+          value={forms.meetGreetPolicy}
+          onChange={(v) => setForms({ meetGreetPolicy: v })}
+          rows={5}
+        />
+      </Block>
+
+      <Block
+        title="Form introductions"
+        blurb="The short notes at the top of each public form, before the first question."
+      >
+        <Para
+          label="Enrollment form"
+          value={forms.enrollIntro}
+          onChange={(v) => setForms({ enrollIntro: v })}
+          rows={3}
+        />
+        <div className="mt-3">
+          <Para
+            label="Boarding request form"
+            value={forms.bookIntro}
+            onChange={(v) => setForms({ bookIntro: v })}
+            rows={3}
+          />
+        </div>
+      </Block>
+    </>
+  );
+}
 
 function Block({
   title,

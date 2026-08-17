@@ -257,11 +257,12 @@ export default function BoardingRequestForm({
           <li className="flex gap-2">
             <span>📝</span>
             <span>
-              Every boarding dog must have completed{" "}
-              <Link href="/enroll" className="text-accent-600 underline">
-                enrollment
-              </Link>{" "}
-              and a meet &amp; greet first, with vaccination records up to date.
+              {/* Was a link to /enroll. That was the dead end this form
+                  removed: a household that is not enrolled now answers "no"
+                  below and fills it in here, so sending them to a separate
+                  page loses everything they have typed and the booking with
+                  it. The wording is the business's, from Settings. */}
+              {settings.forms.bookIntro}
             </span>
           </li>
           <li className="flex gap-2">

@@ -116,6 +116,8 @@ function EnrollmentFormInner({
   // The kiosk sends people back to the sign-in screen; the website sends
   // them back to the website.
   const homeHref = source === "kiosk" ? "/kiosk" : "/";
+  // The contract as this business words it, with {{business}} filled in.
+  const clauses = contractClauses(settings);
   const [draft, setDraft] = useState<EnrollmentDraft>(() => {
     const base = emptyEnrollment();
     if (!prefill) return base;
@@ -247,7 +249,15 @@ function EnrollmentFormInner({
     setError("");
     setSubmitting(true);
     try {
-      await submitForApproval(draft, sigRef.current?.toDataURL() ?? "", source, detailsOnFile);
+      // The contract as it read at the moment of signing, stored with the
+      // submission. Editing it in Settings later must not change what this
+      // household appears to have agreed to.
+      await submitForApproval(
+        { ...draft, contractText: clauses },
+        sigRef.current?.toDataURL() ?? "",
+        source,
+        detailsOnFile
+      );
       // Confirmation email. Awaited so a slow send doesn't race the
       // unmount, but never fatal — the form is already filed, and saying
       // otherwise because an email bounced would be wrong.
@@ -349,17 +359,14 @@ function EnrollmentFormInner({
           promise on a page where somebody is booking a stay. */}
       {!embed && (
         <p className="mb-5 rounded-2xl border border-line-soft bg-surface-2 px-4 py-3 text-xs leading-relaxed text-ink-2">
-          Just enough to book your meet &amp; greet — about five minutes. Once
-          you&apos;ve been in and we&apos;ve met your dog, we&apos;ll email you a
-          second short form for the rest: your address, your vet, and how they
-          get on with other dogs.
+          {settings.forms.enrollIntro}
         </p>
       )}
 
       {/* Contract */}
       <Section title="Contract" step={1} bare={embed}>
         <div className="max-h-52 overflow-y-auto rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
-          <ContractText business={settings.business.name} />
+          <ContractText clauses={clauses} />
         </div>
         <label className="mt-3 flex items-start gap-2">
           <input
@@ -485,11 +492,7 @@ function EnrollmentFormInner({
         bare={embed}
       >
         <div className="rounded-xl border border-line bg-surface-2 p-4 text-xs leading-relaxed text-ink-2">
-          Every new dog comes in for a meet &amp; greet before their first full day, so we can see
-          how they settle in with the group. Bring your dog on a leash and plan to leave them with
-          us for about two hours — owners do not stay, so come back for them at the end. If it
-          goes well you are welcome to ask us to keep them for the rest of the day. Requested
-          dates are confirmed by phone or email — nothing is booked until we reply.
+          {settings.forms.meetGreetPolicy}
         </div>
         <label className="mt-3 flex items-start gap-2">
           <input
@@ -860,36 +863,38 @@ function SubHeading({ children }: { children: React.ReactNode }) {
 // Kept in the component tree rather than a settings field: it's the same
 // standard set of terms for any facility running this app, and the business
 // name is the only part that changes per deployment.
-function ContractText({ business }: { business: string }) {
-  const clauses: [string, string][] = [
-    [
-      "Health and vaccinations",
-      `My dog is in good health, has not been ill with a communicable condition in the last 30 days, and is currently vaccinated against rabies, distemper/parvo (DHPP) and bordetella. I will keep those records current with ${business} and understand my dog may be turned away if they lapse.`,
-    ],
-    [
-      "Temperament",
-      `My dog has not shown aggression toward people or other dogs beyond anything I have disclosed on this form. ${business} may refuse or end a stay if my dog is unsafe around others, and will contact me to collect them.`,
-    ],
-    [
-      "Risk of injury",
-      "I understand that dogs play off-leash in groups, and that scratches, nicks and scrapes can happen even with careful supervision. I accept that ordinary risk.",
-    ],
-    [
-      "Veterinary care",
-      `If my dog needs medical attention and I cannot be reached, I authorize ${business} to obtain veterinary care at my expense, preferring my own vet where practical.`,
-    ],
-    [
-      "Payment and pick-up",
-      "I will pay all charges when my dog is collected, and I will collect my dog by closing time. Late collection may incur a fee, and dogs left without contact for an extended period may be treated as abandoned.",
-    ],
-    [
-      "Photos",
-      `I agree that ${business} may photograph my dog for its records and social media, without payment.`,
-    ],
-  ];
+/**
+ * The contract, as the business words it.
+ *
+ * The clauses used to live here as a hardcoded array with the business name
+ * dropped in. They are a legal agreement between a daycare and its clients —
+ * veterinary authorisation, liability for injury, abandonment — so an insurer
+ * or a lawyer wanting a change should not mean a code change and a redeploy.
+ * They are in Settings now; this only renders them.
+ */
+export function contractClauses(settings: {
+  forms: { contractClauses: { heading: string; body: string }[] };
+  business: { name: string };
+}): { heading: string; body: string }[] {
+  return settings.forms.contractClauses.map((c) => ({
+    heading: c.heading,
+    // Substituted rather than stored, so renaming the business updates its
+    // own terms instead of leaving the old name in them.
+    body: c.body.replace(/\{\{business\}\}/g, settings.business.name),
+  }));
+}
+
+function ContractText({ clauses }: { clauses: { heading: string; body: string }[] }) {
+  if (!clauses.length) {
+    return (
+      <p className="text-ink-3">
+        No contract has been set up. Add one under Settings &rarr; Content.
+      </p>
+    );
+  }
   return (
     <div className="space-y-3">
-      {clauses.map(([heading, body]) => (
+      {clauses.map(({ heading, body }) => (
         <div key={heading}>
           <p className="font-semibold text-ink-2">{heading}</p>
           <p>{body}</p>

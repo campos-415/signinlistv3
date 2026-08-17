@@ -189,6 +189,19 @@ export interface EnrollmentDraft {
   dogs: DogDraft[];
   contractAgreed: boolean;
   policyAgreed: boolean;
+  /**
+   * The contract exactly as it read when this household signed it.
+   *
+   * The wording lives in Settings and a business can change it. Without a copy
+   * here, editing the contract would silently rewrite what every past client
+   * appears to have agreed to — the signature is stored, the terms it covers
+   * were not. Anyone asked to prove what was agreed on a given date could only
+   * show today's version.
+   *
+   * Absent on submissions filed before this existed, which is why every reader
+   * treats it as optional.
+   */
+  contractText?: { heading: string; body: string }[];
 }
 
 function emptyVaccines(): Record<VaccineKey, VaccineDraft> {
