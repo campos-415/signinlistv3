@@ -40,7 +40,9 @@ function Packages() {
   const { account, unavailable: rolesUnavailable } = useRole();
   const mayManage = rolesUnavailable || isManagerOrAbove(account?.role ?? null);
 
-  // New-package form: look the number up, then pick which dogs it's for.
+  // New-package form: find the client, then pick which dogs it's for.
+  // `query` is what was typed, `phone` is the household it resolved to.
+  const [query, setQuery] = useState("");
   const [phone, setPhone] = useState("");
   const { settings } = useSettings();
   // What's being sold. Tiers, the unit word, and the saved row all key off it.
@@ -107,13 +109,19 @@ function Packages() {
     }
   }
 
-  // Same debounced phone lookup the boarding page uses, so staff never
-  // retype a client's name to sell them a package.
+  // Find the client by number OR by name, the same way the calendar does.
+  //
+  // `query` is what was typed; `phone` is the household the package is
+  // actually sold to. They are separate because a name search does not know
+  // the number until a dog is picked, and the row written to `packages` needs
+  // the real one — everything that later looks a package up does so by phone.
   useEffect(() => {
     if (lookupTimer.current) clearTimeout(lookupTimer.current);
     setSelectedIds([]);
-    const digits = phone.replace(/\D/g, "");
-    if (digits.length < 7) {
+    const raw = query.trim();
+    const digits = raw.replace(/\D/g, "");
+    const byName = /[a-z]/i.test(raw);
+    if (byName ? raw.length < 2 : digits.length < 7) {
       setDogMatches([]);
       setDogsChecked(false);
       return;
@@ -122,16 +130,27 @@ function Packages() {
       setDogsLoading(true);
       try {
         const supabase = getSupabase();
-        const { data, error: err } = await supabase
-          .from("dogs")
-          .select("*")
-          .eq("phone", phone.trim())
-          .order("created_at", { ascending: true });
+        // The characters PostgREST reads as filter syntax, neutralised so a
+        // client called O'Brien (Smith, Jr.) searches as plain text.
+        const safe = raw.replace(/[,()%*\\]/g, " ").trim();
+        const lookup = supabase.from("dogs").select("*");
+        const { data, error: err } = byName
+          ? await lookup
+              .or(`dog_name.ilike.%${safe}%,last_name.ilike.%${safe}%`)
+              .order("dog_name", { ascending: true })
+              .limit(25)
+          : await lookup.eq("phone", raw).order("created_at", { ascending: true });
         if (err) throw err;
         // A package is bought for a dog that is still coming.
         const found = activeDogs((data as Dog[]) ?? []);
         setDogMatches(found);
-        if (found.length === 1 && found[0].id) setSelectedIds([found[0].id]);
+        // A number typed in full is the household whether or not a dog gets
+        // picked out of it. A name is not — that phone arrives with the dog.
+        if (!byName) setPhone(raw);
+        if (found.length === 1 && found[0].id) {
+          setSelectedIds([found[0].id]);
+          if (byName && found[0].phone) setPhone(found[0].phone);
+        }
       } catch (e) {
         console.error("Dog lookup failed:", e);
       } finally {
@@ -139,18 +158,39 @@ function Packages() {
         setDogsChecked(true);
       }
     }, 400);
-  }, [phone]);
+  }, [query]);
 
   const selectedDogs = dogMatches.filter((c) => c.id && selectedIds.includes(c.id));
+  // Which kind of lookup is on screen. A name can match dogs from several
+  // households, so the results have to say more than a phone lookup's do.
+  const searchingByName = /[a-z]/i.test(query.trim());
 
   function toggleDog(id?: string) {
     if (!id) return;
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    // A name search can return two households at once — three dogs called
+    // Buki belonging to three different families. A package belongs to one
+    // number, so picking a dog from a different one starts that family's sale
+    // rather than adding a stranger's dog to this one.
+    const dog = dogMatches.find((d) => d.id === id);
+    const dogPhone = (dog?.phone ?? "").trim();
+    const switching =
+      !!dogPhone && !!phone && dogPhone.replace(/\D/g, "") !== phone.replace(/\D/g, "");
+    if (dogPhone) setPhone(dogPhone);
+    setSelectedIds((prev) => {
+      if (switching) return [id];
+      return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+    });
   }
 
   async function addPackages() {
-    if (!phone.trim() || days < 1) {
-      setError("Enter a phone number and how many days the package covers.");
+    if (!phone.trim()) {
+      // Reachable from a name search where nobody was picked yet: the number
+      // arrives with the dog, so there is nothing to sell the package to.
+      setError("Find the client first — search by name or number, then pick the dog.");
+      return;
+    }
+    if (days < 1) {
+      setError("Enter how many days the package covers.");
       return;
     }
     if (!shared && selectedDogs.length === 0) {
@@ -203,6 +243,9 @@ function Packages() {
       const { error: err } = await supabase.from("packages").insert(rows);
       if (err) throw err;
       setPhone("");
+      // Clearing the box too, or the next sale starts with the last client's
+      // name still in it and a lookup that has already run.
+      setQuery("");
       // Back to the default tier rather than a hardcoded 10 days, so the
       // next sale starts from the configured price list.
       setCustom(false);
@@ -380,12 +423,19 @@ function Packages() {
         <p className="mb-4 text-sm font-medium text-ink-2">Sell a package</p>
 
         <div className="max-w-xs">
-          <label className="mb-1 block text-[11px] text-ink-3">Phone number</label>
+          <label className="mb-1 block text-[11px] text-ink-3" htmlFor="package-client">
+            Client
+          </label>
           <input
-            value={phone}
-            onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-            placeholder="(123) 456-7890"
-            inputMode="numeric"
+            id="package-client"
+            value={query}
+            onChange={(e) => {
+              const typed = e.target.value;
+              // Formatted as a phone only while it could still be one —
+              // doing it unconditionally strips the letters out of a name.
+              setQuery(/[a-z]/i.test(typed) ? typed : formatPhoneInput(typed));
+            }}
+            placeholder="Name or phone number"
             className={inputClass}
           />
         </div>
@@ -519,7 +569,9 @@ function Packages() {
 
         {!dogsLoading && dogsChecked && dogMatches.length === 0 && (
           <p className="mt-2 text-xs text-amber-700">
-            No dog on file for that number — the client needs an approved enrollment first.
+            {searchingByName
+              ? `Nothing on file matching “${query.trim()}” — try the last name, or the phone number.`
+              : "No dog on file for that number — the client needs an approved enrollment first."}
           </p>
         )}
 
@@ -545,8 +597,22 @@ function Packages() {
                         : "border-accent-100 bg-surface text-accent-700 hover:border-accent-400"
                     }`}
                   >
-                    {isSelected && !shared ? "✓ " : "🐕 "}
-                    {c.dog_name} · {c.last_name}
+                    <span className="text-left">
+                      {isSelected && !shared ? "✓ " : "🐕 "}
+                      {c.dog_name} · {c.last_name}
+                      {/* The number is what tells two dogs of the same name
+                          apart, so a name search shows it. A phone search
+                          already knows it — every result shares one. */}
+                      {searchingByName && c.phone && (
+                        <span
+                          className={`block text-[10px] font-normal ${
+                            isSelected && !shared ? "text-accent-ink/70" : "text-ink-3"
+                          }`}
+                        >
+                          {c.phone}
+                        </span>
+                      )}
+                    </span>
                   </button>
                 );
               })}
