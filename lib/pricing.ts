@@ -431,7 +431,18 @@ export function estimatePrice(
     );
   }
   if (addons.includes("nail_trim")) breakdown.push({ label: "Nail trim", amount: ADDON_PRICES.nail_trim });
-  if (bathSize) breakdown.push({ label: `Bath (${bathSize})`, amount: BATH_PRICES[bathSize] });
+  // Both conditions, and the add-on first.
+  //
+  // This read `if (bathSize)` alone, which was fine while a size only ever
+  // arrived from a bath somebody had ticked. Then sign-out started falling
+  // back to the size the dog's WEIGHT puts it in — a safety net for baths
+  // booked before the kiosk recorded a size — and every dog with a weight on
+  // file suddenly had a size, so every pick-up charged for a bath nobody
+  // asked for. A 30 lb dog collected from its free meet & greet was billed
+  // $80. Walk and nail trim above were always guarded this way.
+  if (addons.includes("bath") && bathSize) {
+    breakdown.push({ label: `Bath (${bathSize})`, amount: BATH_PRICES[bathSize] });
+  }
 
   if (!breakdown.length) return null;
 

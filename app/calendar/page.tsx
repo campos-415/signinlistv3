@@ -5,7 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { formatPhoneInput } from "@/lib/phone";
 import { dateKey, parseDateKey, prettyDateKey, todayKey } from "@/lib/dates";
-import { estimateBoardingTotal } from "@/lib/pricing";
+import { bathSizeForWeight, estimateBoardingTotal } from "@/lib/pricing";
 import { nightsBetweenKeys } from "@/lib/pricing";
 import {
   BathSize,
@@ -53,6 +53,9 @@ interface SelectedDog {
   last_name: string;
   dog_id: string | null;
   profile_photo: string | null; // the dog's profile photo from clients, for recognition
+  // Carried so a bath can size itself the way the kiosk does. Null for a dog
+  // with no weight on file, which is the one case staff still have to size.
+  weight_lb?: number | null;
 }
 
 const MANUAL_KEY = "__manual__";
@@ -267,7 +270,9 @@ function BoardingsInner() {
               const match = found.find(
                 (c) => c.dog_name.trim().toLowerCase() === d.dog_name.trim().toLowerCase()
               );
-              return match ? { ...d, profile_photo: match.photo_data ?? null } : d;
+              return match
+                ? { ...d, profile_photo: match.photo_data ?? null, weight_lb: match.weight_lb ?? null }
+                : d;
             })
           );
         } else if (found.length === 1) {
@@ -398,6 +403,7 @@ function BoardingsInner() {
         last_name: c.last_name,
         dog_id: c.id ?? null,
         profile_photo: c.photo_data ?? null,
+        weight_lb: c.weight_lb ?? null,
       };
       return switching ? [picked] : [...prev, picked];
     });
@@ -411,9 +417,23 @@ function BoardingsInner() {
 
   function toggleDogAddon(key: string, addon: BoardingAddonKey) {
     const current = configFor(key).addons;
-    updateConfig(key, {
-      addons: current.includes(addon) ? current.filter((a) => a !== addon) : [...current, addon],
-    });
+    const adding = !current.includes(addon);
+    const patch: Partial<DogConfig> = {
+      addons: adding ? [...current, addon] : current.filter((a) => a !== addon),
+    };
+    // A bath sizes itself from the dog, the way the kiosk already does.
+    //
+    // Left blank it priced at NOTHING: boardingAddonAmounts needs a size
+    // before it counts a bath, so a stay with the bath ticked and the size
+    // still reading "Select size…" quoted and charged zero for it. Staff had
+    // to notice a dropdown they had never been asked to touch. Overridable —
+    // this only fills the blank.
+    if (adding && addon === "bath" && !configFor(key).bath_size) {
+      const dog = selectedDogs.find((d) => d.key === key);
+      const sized = bathSizeForWeight(dog?.weight_lb);
+      if (sized) patch.bath_size = sized;
+    }
+    updateConfig(key, patch);
   }
 
   // Editing works on one existing reservation at a time — it maps to a

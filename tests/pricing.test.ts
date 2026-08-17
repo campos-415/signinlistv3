@@ -61,6 +61,42 @@ describe("estimatePrice — daycare", () => {
   });
 });
 
+describe("estimatePrice — the bath is charged only when one was asked for", () => {
+  // A SIZE is not a REQUEST.
+  //
+  // Sign-out passes `openVisit.bathSize ?? bathSizeForWeight(dog.weight_lb)`,
+  // a safety net for baths booked before the kiosk recorded a size. That makes
+  // the size non-null for every dog with a weight on file — so a rule of
+  // "charge if there is a size" charges everybody. It shipped that way, and a
+  // 30 lb dog collected from its free meet & greet was billed $80 for a bath
+  // nobody gave it.
+  it("does not charge a meet & greet a bath just because the dog has a weight", () => {
+    const sized = bathSizeForWeight(30); // "M" — the fallback sign-out uses
+    expect(sized).toBe("M");
+    const e = estimatePrice("meet_greet", ...visit(9, 11), [], false, sized);
+    // Nothing was requested and a meet & greet has no base rate, so there is
+    // nothing to bill at all.
+    expect(e).toBeNull();
+  });
+
+  it("does not add a bath to an ordinary daycare day either", () => {
+    const e = estimatePrice("daycare", ...visit(8, 17), [], false, bathSizeForWeight(30));
+    expect(total(e)).toBe(P.daycareFullDay);
+    expect(e?.breakdown.some((b) => /Bath/.test(b.label))).toBe(false);
+  });
+
+  it("charges it when the bath IS on the visit", () => {
+    const e = estimatePrice("daycare", ...visit(8, 17), ["bath"], false, "M");
+    expect(total(e)).toBe(P.daycareFullDay + P.bath.M);
+    expect(e?.breakdown.some((b) => b.label === "Bath (M)")).toBe(true);
+  });
+
+  it("charges nothing for a bath with no size, as it always did", () => {
+    const e = estimatePrice("daycare", ...visit(8, 17), ["bath"], false, null);
+    expect(total(e)).toBe(P.daycareFullDay);
+  });
+});
+
 describe("estimatePrice — boarding", () => {
   it("charges per night, and less per night for the second dog", () => {
     const [start, end] = [new Date(2026, 7, 17, 9, 0), new Date(2026, 7, 20, 9, 0)];
