@@ -26,13 +26,28 @@ export interface RequestNotice {
 
 export async function notifyStaff(notice: RequestNotice): Promise<void> {
   const { email, business } = getSettings();
-  if (!email.notifyOnNewRequest) return;
+  if (!email.notifyOnNewRequest) {
+    console.warn(
+      "No staff notification sent: Settings → Messaging → 'Email staff when a new request arrives' is off."
+    );
+    return;
+  }
 
   const recipients = email.notifyAddresses
     .split(",")
     .map((a) => a.trim())
     .filter(Boolean);
-  if (!recipients.length) return;
+  if (!recipients.length) {
+    // Says so out loud, because this is the state a fresh database starts in:
+    // the toggle defaults to on and the address list defaults to empty, so the
+    // Settings screen reads as configured while nothing is ever sent. Twice
+    // now that has been diagnosed by reading this file rather than by anything
+    // the app said — once per deployment.
+    console.warn(
+      "No staff notification sent: staff email is on but 'Send staff notifications to' is empty (Settings → Messaging). The client acknowledgement is unaffected."
+    );
+    return;
+  }
 
   const label = notice.kind === "enrollment" ? "enrollment" : "boarding request";
   const subject = `New ${label}: ${notice.dogs} (${notice.who})`;

@@ -1540,6 +1540,21 @@ function Settings() {
             Separate several with commas. Leave blank and no staff email is sent
             — the in-app badge and alerts below still work.
           </p>
+
+          {/* The one combination that looks configured and is not.
+              A new database starts with the tick on and this box empty, so
+              the screen says staff are emailed while notifyStaff returns
+              before sending — see lib/notify.ts. It has been diagnosed twice
+              from scratch, both times by reading the send path, because
+              nothing anywhere said so. */}
+          {draft.email.notifyOnNewRequest && !draft.email.notifyAddresses.trim() && (
+            <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+              ⚠️ Staff email is on, but there is nobody to send it to — so no
+              staff notification is going out for enrollments or boarding
+              requests. Add an address above, or untick the box so the setting
+              matches what actually happens.
+            </p>
+          )}
         </div>
 
         <DesktopAlerts />
