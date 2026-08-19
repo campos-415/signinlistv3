@@ -7,6 +7,7 @@ import { daysUntilExpiry, packageExpired, packageExpiry } from "@/lib/packages";
 import { useSettings } from "@/components/SettingsProvider";
 import { Dog, Package, PackageUse } from "@/types";
 import DogLink from "@/components/DogLink";
+import DateField from "@/components/DateField";
 import Money, { PayState } from "@/components/Money";
 
 // A package rendered as a single collapsible line.
@@ -166,12 +167,19 @@ export function PackageRow({
             <span className="text-[11px] font-medium text-ink-3">
               {expired ? "Expired" : "Expires"}
             </span>
-            <input
-              type="date"
+            {/* DateField, not a bare <input type="date">.
+                A native date input fires onChange on every keystroke, so
+                typing a year wrote four half-finished dates to the database
+                and each one refetched the page — the field emptied and
+                jumped under the cursor. This commits on blur or Enter, and
+                only when what was typed actually parses. Same fix as the
+                vaccination dates on the review screen. */}
+            <DateField
               value={expires ?? ""}
-              onChange={(e) => setExpiry?.(pkg, e.target.value || null)}
-              className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink outline-none focus:border-accent-500"
-              aria-label="Expiry date for this package"
+              onChange={(v) => setExpiry?.(pkg, v || null)}
+              className="w-36 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink outline-none focus:border-accent-500"
+              wrapperClassName="w-36"
+              ariaLabel="Expiry date for this package"
             />
             {pkg.expires_on && (
               <button

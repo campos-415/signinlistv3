@@ -407,7 +407,13 @@ function Packages() {
         .update({ expires_on: date })
         .eq("id", pkg.id);
       if (err) throw err;
-      load();
+      // Patch the one row rather than reloading everything. load() refetches
+      // every package, use and dog, which collapses the open row and throws
+      // away what staff were reading — for a change of one field they can
+      // already see.
+      setPackages((prev) =>
+        prev.map((p) => (p.id === pkg.id ? { ...p, expires_on: date } : p))
+      );
     } catch (e) {
       console.error("Setting the package expiry failed:", e);
       setError(
