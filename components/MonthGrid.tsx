@@ -20,6 +20,15 @@ export interface MonthEntry extends CalendarItem {
   /** Tailwind background and text classes for the bar. */
   color: string;
   icon?: string;
+  /**
+   * Where clicking the bar goes, when the dog profile is the wrong answer.
+   *
+   * A stay bar opens that stay's report: the thing clicked was a set of
+   * dates, and the profile makes staff find their way back to them. A meet &
+   * greet has no report to open, so it keeps the profile.
+   */
+  href?: string;
+  hint?: string;
 }
 
 export default function MonthGrid({
@@ -138,7 +147,12 @@ export default function MonthGrid({
                       }`}>
                       {seg.item.icon && <span aria-hidden>{seg.item.icon}</span>}
                       <span className="truncate" onClick={(e) => e.stopPropagation()}>
-                        <DogLink dog={seg.item.dog} name={seg.item.name} />
+                        <DogLink
+                          dog={seg.item.dog}
+                          name={seg.item.name}
+                          href={seg.item.href}
+                          hint={seg.item.hint}
+                        />
                       </span>
                     </div>
                   ))}

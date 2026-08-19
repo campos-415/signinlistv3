@@ -696,6 +696,12 @@ function BoardingsInner() {
           )} → ${prettyDateKey(b.end_date)}`,
           dog: dogForBoarding(b),
           color: colorFor.get(b.id)?.bar ?? "",
+          // Straight to the stay, not the dog. Clicking a bar that spans
+          // three days and landing on a profile listing every stay the dog
+          // has ever had makes staff find their way back to the one they
+          // were already looking at.
+          href: `/stay-report?boardingId=${b.id}`,
+          hint: "Click to open this stay →",
         });
       });
     }

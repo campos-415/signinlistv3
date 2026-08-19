@@ -23,6 +23,8 @@ export default function DogLink({
   badges,
   className = "",
   avatar = false,
+  href,
+  hint,
 }: {
   dog: Dog | null;
   // Falls back to a plain name when the dog has no client profile on file
@@ -34,6 +36,13 @@ export default function DogLink({
   // recognising a dog at the desk, and it would waste ink and space on a
   // printed list, so it carries print:hidden.
   avatar?: boolean;
+  // Somewhere other than the dog profile. A calendar bar for a STAY should
+  // open that stay's report — the profile is a detour when what you clicked
+  // was a specific set of dates. The hover card is unaffected: it identifies
+  // the dog either way.
+  href?: string;
+  /** Replaces the card's footer, which otherwise promises the profile. */
+  hint?: string;
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -105,7 +114,7 @@ export default function DogLink({
     >
       {thumb}
       <Link
-        href={dogHref(dog.id)}
+        href={href ?? dogHref(dog.id)}
         className={`underline decoration-dotted underline-offset-2 hover:text-accent-600 ${className}`}
       >
         {name}
@@ -159,7 +168,7 @@ export default function DogLink({
           )}
 
           <span className="mt-2 block text-[10px] font-medium text-accent-600">
-            Click to open profile →
+            {hint ?? "Click to open profile →"}
           </span>
         </span>
       )}
