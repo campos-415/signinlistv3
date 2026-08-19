@@ -51,6 +51,7 @@ import StaffGate from "@/components/StaffGate";
 import DateField from "@/components/DateField";
 import { useSettings } from "@/components/SettingsProvider";
 import DogLink from "@/components/DogLink";
+import OwnerLink from "@/components/OwnerLink";
 import StaffCheckIn from "@/components/StaffCheckIn";
 import CardTable from "@/components/CardTable";
 
@@ -2274,7 +2275,12 @@ function RecordsInner() {
                         the time they did it — twelve columns did not fit on
                         a laptop, so Price was scrolled off the right. */}
                     <td data-label="Owner" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">
-                      <span className="block text-ink-2">{r.last_name}</span>
+                      {/* The household, not just its surname. Staff reading a
+                          row and wanting the balance or the other dogs on the
+                          number had to copy the phone and search for it. */}
+                      <span className="block text-ink-2 print:no-underline">
+                        <OwnerLink phone={r.phone} name={r.last_name} />
+                      </span>
                       <span className="block text-[11px] text-ink-3">{r.phone}</span>
                     </td>
                     <td data-label="In" className="whitespace-nowrap px-4 py-3 text-ink-2 print:border print:border-paper-line print:px-2 print:py-1.5">

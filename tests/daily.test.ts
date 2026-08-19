@@ -63,6 +63,27 @@ describe("computeDailyTotals — tips are held, not earned", () => {
     expect(totals.tipsBy.reduce((s, t) => s + t.tip, 0)).toBe(totals.tipsTotal);
   });
 
+  it("attaches the household name so a tip is not just a number", () => {
+    const totals = computeDailyTotals({
+      ...emptyDay,
+      payments: [{ phone: "(415) 555-0002", amount: 70, tip: 20, paid_on: "2026-08-16" }],
+      owners: [{ phone: "(415) 555-0002", owner_name: "Rivera" }],
+    } as never);
+    expect(totals.tipsBy[0].name).toBe("Rivera");
+  });
+
+  it("totals revenue plus tips without touching revenue itself", () => {
+    // Two different questions: what the business earned, and what came
+    // through the till. A payout is reconciled against the second.
+    const totals = computeDailyTotals({
+      ...emptyDay,
+      payments: [{ phone: "a", amount: 50, tip: 15, paid_on: "2026-08-16" }],
+    } as never);
+    expect(totals.revenueTotal).toBe(0);
+    expect(totals.totalWithTips).toBe(totals.revenueTotal + totals.tipsTotal);
+    expect(totals.totalWithTips).toBe(15);
+  });
+
   it("ignores a payment carrying no tip at all", () => {
     const totals = computeDailyTotals({
       ...emptyDay,

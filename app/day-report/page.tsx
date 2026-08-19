@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { todayKey } from "@/lib/dates";
 import { Category, DailyInput, computeDailyTotals, loadDailyData } from "@/lib/daily";
 import Link from "next/link";
-import { ownerHref } from "@/lib/dogs";
+import OwnerLink from "@/components/OwnerLink";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import DateField from "@/components/DateField";
@@ -130,6 +130,7 @@ function Daily() {
     tipsTotal,
     tipsCount,
     tipsBy,
+    totalWithTips,
   } = totals;
   // const {
   //   revenue: categories,
@@ -238,7 +239,15 @@ function Daily() {
         <div className="mb-5 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900">
           <span className="font-medium">💜 ${tipsTotal.toFixed(2)} in tips</span> across{" "}
           {tipsCount} payment{tipsCount === 1 ? "" : "s"} — for staff, and not counted in the
-          revenue above.
+          revenue above.{" "}
+          {/* The reconciliation figure. Revenue answers "what did the business
+              earn"; this answers "what came through the till", which is what a
+              Square payout has to be checked against. Both, because they are
+              different questions and using one for the other overstates
+              income. */}
+          <span className="font-medium">
+            ${totalWithTips.toFixed(2)} revenue + tips.
+          </span>
           {/* Named, not just totalled. A pool nobody can itemise cannot be
               checked against a Square payout, and staff dividing it have no
               way to confirm a tip was captured. Manager-and-owner only, like
@@ -246,12 +255,12 @@ function Daily() {
           <ul className="mt-2 space-y-0.5 border-t border-violet-200 pt-2">
             {tipsBy.map((t, i) => (
               <li key={i} className="flex items-baseline justify-between gap-3 text-xs">
-                <Link
-                  href={ownerHref(t.phone)}
-                  className="font-medium text-violet-800 hover:underline"
-                >
-                  {t.phone}
-                </Link>
+                <OwnerLink
+                  phone={t.phone}
+                  name={t.name}
+                  showPhone
+                  className="font-medium text-violet-800"
+                />
                 <span className="whitespace-nowrap">
                   {t.method && <span className="mr-2 text-violet-700/70">{t.method}</span>}
                   ${t.tip.toFixed(2)}

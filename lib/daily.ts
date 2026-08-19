@@ -48,7 +48,21 @@ export interface DailyTotals {
    * dividing a pool have no way to confirm a tip was captured at all. Phone
    * rather than name because that is what a payment carries.
    */
-  tipsBy: { phone: string; tip: number; method?: string | null; note?: string | null }[];
+  tipsBy: {
+    phone: string;
+    name?: string | null;
+    tip: number;
+    method?: string | null;
+    note?: string | null;
+  }[];
+  /**
+   * Revenue plus tips — everything that came through the till.
+   *
+   * Kept separate from revenueTotal rather than replacing it, because the two
+   * answer different questions: revenue is what the business earned, this is
+   * what was handled. Reconciling a Square payout needs the second.
+   */
+  totalWithTips: number;
 }
 
 
@@ -58,6 +72,7 @@ export function computeDailyTotals({
   packageUses,
   packagesSold,
   payments,
+  owners,
   selectedDate,
 }: DailyInput): DailyTotals {
   const dateKey = selectedDate ?? new Date().toISOString().slice(0, 10);
@@ -338,9 +353,19 @@ export function computeDailyTotals({
     // Summed here, kept out of every figure above. See DailyTotals.
     tipsTotal: (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
     tipsCount: (payments ?? []).filter((p) => (p.tip ?? 0) > 0).length,
+    // Revenue as booked, plus the tips handled on top of it.
+    totalWithTips:
+      revenue.reduce((sum, c) => sum + c.amount, 0) +
+      (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
     tipsBy: (payments ?? [])
       .filter((p) => (p.tip ?? 0) > 0)
-      .map((p) => ({ phone: p.phone, tip: p.tip ?? 0, method: p.method, note: p.note }))
+      .map((p) => ({
+        phone: p.phone,
+        name: (owners ?? []).find((o) => o.phone === p.phone)?.owner_name ?? null,
+        tip: p.tip ?? 0,
+        method: p.method,
+        note: p.note,
+      }))
       .sort((a, b) => b.tip - a.tip),
   };
 }
@@ -364,6 +389,8 @@ export interface DailyInput {
   // revenue — it settles a charge that may belong to any day — so nothing in
   // the revenue totals touches this.
   payments?: Payment[];
+  /** Phone to name, so money can be attributed to a household by name. */
+  owners?: { phone: string; owner_name: string | null }[];
   // Every package on file, not just today's sales. Needed to work out how
   // many of a stay's walks a block still has left to cover.
   selectedDate?: string;
@@ -518,7 +545,7 @@ export async function loadDailyData(dateKey: string): Promise<DailyInput> {
   const fromIso = new Date(`${dateKey}T00:00:00`).toISOString();
   const toIso = new Date(`${dateKey}T23:59:59.999`).toISOString();
 
-  const [signinRes, boardingRes, useRes, soldRes, payRes] = await Promise.all([
+  const [signinRes, boardingRes, useRes, soldRes, payRes, ownerRes] = await Promise.all([
     supabase.from("signins").select("*").gte("created_at", fromIso).lte("created_at", toIso),
     supabase.from("boardings").select("*").lte("start_date", dateKey).gte("end_date", dateKey),
     supabase.from("package_uses").select("*").eq("used_on", dateKey),
@@ -529,6 +556,10 @@ export async function loadDailyData(dateKey: string): Promise<DailyInput> {
     // the business earned is the CHARGES above, and a payment can settle a
     // charge from any day. These are read for one number only.
     supabase.from("payments").select("*").eq("paid_on", dateKey),
+    // Owners, so a tip can be attributed to a NAME. A payment carries only a
+    // phone, and a number is not what staff recognise when they are dividing
+    // a pool at close.
+    supabase.from("owners").select("phone, owner_name"),
   ]);
   if (signinRes.error) throw signinRes.error;
   if (boardingRes.error) throw boardingRes.error;
@@ -544,6 +575,7 @@ export async function loadDailyData(dateKey: string): Promise<DailyInput> {
     packageUses: (useRes.data as PackageUse[]) ?? [],
     packagesSold: (soldRes.data as Package[]) ?? [],
     payments: (payRes.data as Payment[]) ?? [],
+    owners: (ownerRes.data as { phone: string; owner_name: string | null }[]) ?? [],
     // Carried through so the totals are computed against the day that was
     // actually loaded, not whatever "today" is in UTC when they run.
     selectedDate: dateKey,

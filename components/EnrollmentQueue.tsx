@@ -19,6 +19,7 @@ import {
 } from "@/lib/enrollment";
 import DateField from "@/components/DateField";
 import DeclineNote from "@/components/DeclineNote";
+import OwnerLink from "@/components/OwnerLink";
 import type { DogDraft, EnrollmentDraft } from "@/lib/enrollment";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import { copyText } from "@/lib/clipboard";
@@ -544,7 +545,10 @@ export default function Enrollments({ onChanged }: { onChanged?: () => void } = 
                     column rather than moving the buttons down. */}
                 <div className="min-w-0 flex-1 basis-full sm:basis-0">
                   <p className="text-sm font-medium text-ink">
-                    {row.owner_name} {row.last_name}
+                    <OwnerLink
+                      phone={row.phone}
+                      name={`${row.owner_name} ${row.last_name}`.trim()}
+                    />
                     <span className="ml-2 text-xs font-normal text-ink-3">{row.phone}</span>
                   </p>
                   <p className="mt-0.5 text-xs text-ink-3">

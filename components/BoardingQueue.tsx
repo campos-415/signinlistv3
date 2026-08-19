@@ -9,6 +9,7 @@ import { renderTemplate, sendEmail } from "@/lib/email";
 import { useSettings } from "@/components/SettingsProvider";
 import useRole from "@/components/useRole";
 import DeclineNote from "@/components/DeclineNote";
+import OwnerLink from "@/components/OwnerLink";
 import { isManagerOrAbove } from "@/lib/roles";
 import {
   BoardingRequestDraft,
@@ -426,7 +427,11 @@ export default function BoardingRequests({ onChanged }: { onChanged?: () => void
                         </span>
                       )}
                       <span className="ml-2 text-xs font-normal text-ink-3">
-                        {row.owner_name} {row.last_name} · {row.phone}
+                        <OwnerLink
+                          phone={row.phone}
+                          name={`${row.owner_name} ${row.last_name}`.trim()}
+                        />{" "}
+                        · {row.phone}
                       </span>
                     </p>
                     <p className="mt-0.5 text-xs text-ink-2">
