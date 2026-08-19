@@ -601,7 +601,7 @@ function Settings() {
         />
       </Section>
 
-      {/* Boarding add-ons */}
+      {/* Packages: what they cost, and how long they last */}
       <Section
         title="Package pricing"
         blurb="The blocks of daycare days you sell. Selling a package picks one of these, so the price list stays consistent and the discount is deliberate.">
@@ -610,6 +610,11 @@ function Settings() {
           fullDay={draft.pricing.daycareFullDay}
           walkPrice={draft.pricing.addons.walk ?? 0}
           onChange={(packageTiers) => setDraft({ ...draft, packageTiers })}
+        />
+
+        <PackageExpiry
+          months={draft.pricing.packageExpiryMonths}
+          onChange={(v) => patchPricing({ packageExpiryMonths: v })}
         />
       </Section>
       <Section
@@ -632,11 +637,6 @@ function Settings() {
             onChange={(v) => patchPricing({ boardingNailTrim: v })}
           />
         </div>
-
-        <PackageExpiry
-          months={draft.pricing.packageExpiryMonths}
-          onChange={(v) => patchPricing({ packageExpiryMonths: v })}
-        />
       </Section>
 
       {/* Services */}
