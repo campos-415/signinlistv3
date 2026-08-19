@@ -3,6 +3,7 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { SiteImageError, deleteSiteImage, uploadSiteImage } from "@/lib/siteStorage";
+import { daysAtRisk, packageExpired } from "@/lib/packages";
 import { renderTemplate, sendEmail } from "@/lib/email";
 import {
   desktopAlertsOn,
@@ -19,6 +20,7 @@ import {
   saveSettings,
 } from "@/lib/settings";
 import { getSupabase } from "@/lib/supabase";
+import { Package } from "@/types";
 import { canRegisterWithSquare } from "@/lib/square";
 import { useSettings } from "@/components/SettingsProvider";
 import StaffGate from "@/components/StaffGate";
@@ -630,6 +632,11 @@ function Settings() {
             onChange={(v) => patchPricing({ boardingNailTrim: v })}
           />
         </div>
+
+        <PackageExpiry
+          months={draft.pricing.packageExpiryMonths}
+          onChange={(v) => patchPricing({ packageExpiryMonths: v })}
+        />
       </Section>
 
       {/* Services */}
@@ -2373,6 +2380,91 @@ function ShareRow({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * How long a package stays usable, and what switching it on would cost.
+ *
+ * The duration applies to packages ALREADY SOLD, counted from the day of
+ * sale, so typing a number here can expire blocks a client paid for months
+ * ago — some of them the moment it is saved. That is the business's call to
+ * make, but not one to make blind, so this counts the damage first: how many
+ * packages would already be past their date and how many prepaid days sit on
+ * them.
+ *
+ * Zero means packages never expire, and that is where every install starts.
+ */
+function PackageExpiry({
+  months,
+  onChange,
+}: {
+  months: number;
+  onChange: (v: number) => void;
+}) {
+  const [packages, setPackages] = useState<Package[] | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    getSupabase()
+      .from("packages")
+      .select("*")
+      .then(({ data, error }) => {
+        if (!live) return;
+        // Silent: this is a warning about other rows, and failing to load
+        // them must not stop somebody editing their prices.
+        if (error) return console.warn("Could not check packages for expiry:", error.message);
+        setPackages((data as Package[]) ?? []);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const hit = (packages ?? []).filter(
+    (p) => months > 0 && packageExpired(p, months) && daysAtRisk(p) > 0
+  );
+  const daysLost = hit.reduce((sum, p) => sum + daysAtRisk(p), 0);
+
+  return (
+    <div className="mt-4 border-t border-line-soft pt-4">
+      <div className="max-w-xs">
+        <Field label="Packages expire after">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={months}
+              onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+              className={inputClass}
+            />
+            <span className="whitespace-nowrap text-sm text-ink-3">months</span>
+          </div>
+        </Field>
+      </div>
+      <p className="mt-1 text-[11px] text-ink-3">
+        Counted from the day the package was sold. <strong>0 means they never expire.</strong> A
+        manager can extend any single package from the Packages screen.
+      </p>
+
+      {months > 0 && hit.length > 0 && (
+        <p className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs leading-relaxed text-rose-800">
+          ⚠️ Saving this expires <strong>{hit.length}</strong> package
+          {hit.length === 1 ? "" : "s"} straight away, with{" "}
+          <strong>
+            {daysLost} prepaid day{daysLost === 1 ? "" : "s"}
+          </strong>{" "}
+          still on {hit.length === 1 ? "it" : "them"} — clients bought those under no expiry.
+          Extend any of them individually on the Packages screen, or set this back to 0.
+        </p>
+      )}
+      {months > 0 && packages && hit.length === 0 && (
+        <p className="mt-2 text-[11px] text-emerald-700">
+          ✓ No package currently on file would expire under this.
+        </p>
+      )}
     </div>
   );
 }

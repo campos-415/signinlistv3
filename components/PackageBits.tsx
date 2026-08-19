@@ -3,6 +3,8 @@
 import { daysLeft, findDog, packageKind } from "@/lib/dogs";
 import { prettyDateKey } from "@/lib/dates";
 import { boughtAgo } from "@/lib/packageMoney";
+import { daysUntilExpiry, packageExpired, packageExpiry } from "@/lib/packages";
+import { useSettings } from "@/components/SettingsProvider";
 import { Dog, Package, PackageUse } from "@/types";
 import DogLink from "@/components/DogLink";
 import Money, { PayState } from "@/components/Money";
@@ -43,6 +45,7 @@ export function PackageRow({
   showOwner,
   payState,
   mayManage,
+  setExpiry,
 }: {
   pkg: Package;
   allDogs: Dog[];
@@ -61,6 +64,8 @@ export function PackageRow({
   payState: PayState;
   /** Selling and deleting packages are manager actions. */
   mayManage: boolean;
+  /** Sets or clears this package's own expiry date. Manager only. */
+  setExpiry?: (pkg: Package, date: string | null) => void;
 }) {
   const left = daysLeft(pkg);
   const history = pkg.id ? (usesByPackage.get(pkg.id) ?? []) : [];
@@ -69,10 +74,16 @@ export function PackageRow({
   const unit = isWalk ? "walks" : "days";
   const dog = pkg.dog_name ? findDog(allDogs, { dogName: pkg.dog_name, phone: pkg.phone }) : null;
   const age = boughtAgo(pkg.created_at, new Date());
+  const expiryMonths = useSettings().settings.pricing.packageExpiryMonths;
+  const expires = packageExpiry(pkg, expiryMonths);
+  const expired = packageExpired(pkg, expiryMonths);
+  const untilExpiry = daysUntilExpiry(pkg, expiryMonths);
+  // Worth shouting about only while there is something to lose.
+  const expiringSoon = !expired && untilExpiry != null && untilExpiry <= 30 && left > 0;
   const pct = pkg.total_days > 0 ? Math.round((left / pkg.total_days) * 100) : 0;
 
   const meter =
-    left === 0
+    expired || left === 0
       ? "bg-ink-3/40"
       : left <= 2
         ? "bg-rose-400"
@@ -120,6 +131,20 @@ export function PackageRow({
           title={age.stale && left > 0 ? "Bought a while ago and still unused" : undefined}>
           {age.label}
         </span>
+        {/* Said on the row, not hidden inside it. An expiry that only shows
+            once somebody expands the package is one staff find out about
+            from the client. */}
+        {(expired || expiringSoon) && (
+          <span
+            className={`hidden w-28 shrink-0 text-right text-[11px] font-medium sm:block ${
+              expired ? "text-rose-600" : "text-amber-700"
+            }`}
+            title={expires ? `Expires ${expires}` : undefined}>
+            {expired
+              ? `expired · ${left} ${unit} lost`
+              : `${untilExpiry}d left · ${left} ${unit}`}
+          </span>
+        )}
         <span className="w-24 shrink-0 text-right text-xs">
           {pkg.price != null ? (
             <Money amount={pkg.price} state={payState} />
@@ -130,6 +155,40 @@ export function PackageRow({
       </summary>
 
       <div className="border-t border-line-soft bg-surface-2 px-4 py-3">
+        {/* The way out of a hard expiry.
+            Days a client paid for are gone the day after the date passes, so
+            there has to be somewhere to give them back — a family who were
+            away, a goodwill call. Setting a date here overrides the
+            business-wide duration for this package alone. Clearing it puts it
+            back under whatever Settings says. */}
+        {expiryMonths > 0 && mayManage && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-line-soft pb-3">
+            <span className="text-[11px] font-medium text-ink-3">
+              {expired ? "Expired" : "Expires"}
+            </span>
+            <input
+              type="date"
+              value={expires ?? ""}
+              onChange={(e) => setExpiry?.(pkg, e.target.value || null)}
+              className="rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink outline-none focus:border-accent-500"
+              aria-label="Expiry date for this package"
+            />
+            {pkg.expires_on && (
+              <button
+                onClick={() => setExpiry?.(pkg, null)}
+                className="text-[11px] font-medium text-ink-3 hover:text-ink-2"
+                title="Back to the business-wide duration">
+                reset
+              </button>
+            )}
+            {expired && left > 0 && (
+              <span className="text-[11px] text-rose-600">
+                {left} {unit} still on it — push the date out to give {left === 1 ? "it" : "them"}{" "}
+                back.
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11px] font-medium text-ink-3">Correct the count</span>
           <button

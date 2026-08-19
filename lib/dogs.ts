@@ -5,6 +5,8 @@
 
 import { dateKey as localDateKey } from "@/lib/dates";
 import { Dog, Package, PackageKind } from "@/types";
+import { packageExpired } from "@/lib/packages";
+import { getSettings } from "@/lib/settings";
 
 function sameName(a: string | null | undefined, b: string | null | undefined): boolean {
   return (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
@@ -69,6 +71,11 @@ export function eligiblePackagesFor(
     .filter((p) => p.phone === phone)
     .filter((p) => packageKind(p) === kind)
     .filter((p) => !p.dog_name || sameName(p.dog_name, dogName))
+    // Expired blocks are not eligible at all, rather than ranked last: a
+    // hard stop is what an expiry means, and a package that merely sorts
+    // lower would still get picked the moment it was the only one left.
+    // A manager who wants to honour it extends the date on the package.
+    .filter((p) => !packageExpired(p, getSettings().pricing.packageExpiryMonths))
     .sort(
       (a, b) =>
         rank(a) - rank(b) ||

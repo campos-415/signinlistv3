@@ -63,6 +63,16 @@ export interface PricingSettings {
   boardingWalkPerWalk: number;
   boardingMedicationPerDay: number;
   boardingNailTrim: number;
+  /**
+   * How many months a package stays usable, counted from the day it was sold.
+   *
+   * Zero means packages never expire, which is the default: switching this on
+   * decides when a client stops being able to use days they have paid for,
+   * and that should be a deliberate act rather than something inherited from
+   * a default. It applies to packages ALREADY sold as well as new ones, so
+   * the Settings screen shows how many would expire before it is saved.
+   */
+  packageExpiryMonths: number;
 }
 
 export interface CatalogItem {
@@ -376,6 +386,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     boardingWalkPerWalk: 25,
     boardingMedicationPerDay: 10,
     boardingNailTrim: 25,
+    packageExpiryMonths: 0,
   },
   addons: [
     { key: "bath", label: "Bath", icon: "🛁", builtin: true },

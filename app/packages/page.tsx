@@ -18,6 +18,7 @@ import useRole from "@/components/useRole";
 import { isManagerOrAbove } from "@/lib/roles";
 import { packageChargeKey } from "@/lib/billing";
 import { activeDogs } from "@/lib/retire";
+import { isMissingColumn } from "@/lib/enrollment";
 
 export default function PackagesPage() {
   return (
@@ -390,6 +391,33 @@ function Packages() {
   );
   const usedUp = filteredPackages.filter((p) => daysLeft(p) <= 0);
 
+  /**
+   * This package's own expiry, overriding the business-wide duration.
+   *
+   * The one escape hatch from a hard expiry: days a client paid for stop
+   * being usable the day after the date passes, so a manager has to be able
+   * to push it out. Null clears the override and puts the package back under
+   * whatever Settings says.
+   */
+  async function setExpiry(pkg: Package, date: string | null) {
+    if (!pkg.id) return;
+    try {
+      const { error: err } = await getSupabase()
+        .from("packages")
+        .update({ expires_on: date })
+        .eq("id", pkg.id);
+      if (err) throw err;
+      load();
+    } catch (e) {
+      console.error("Setting the package expiry failed:", e);
+      setError(
+        isMissingColumn(e)
+          ? "Extending a package needs a column this database does not have yet — run package-expiry-migration.sql."
+          : "Could not change that expiry date."
+      );
+    }
+  }
+
   const rowProps = {
     allDogs,
     usesByPackage,
@@ -401,6 +429,7 @@ function Packages() {
     adjustUsed,
     deletePackage,
     deletingId,
+    setExpiry,
   };
 
   return (

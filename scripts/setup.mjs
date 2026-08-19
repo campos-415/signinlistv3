@@ -62,6 +62,11 @@ const SCHEMA_FILES = [
   // dropped on the way in — the payment still lands, so nothing looks wrong,
   // and the day report shows no tips to pay out.
   "tips-migration.sql",
+  // Adds packages.expires_on — the per-package override a manager uses to
+  // extend one block. The business-wide duration lives in settings and needs
+  // no column, so without this the duration still works; only extending an
+  // individual package fails.
+  "package-expiry-migration.sql",
 ];
 
 const SECURITY_FILES = [

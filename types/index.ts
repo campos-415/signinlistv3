@@ -110,6 +110,15 @@ export interface Package {
   // counted on the day the package was sold, and the visits it later covers
   // are $0, since the money already changed hands here.
   price?: number | null;
+  /**
+   * When this block stops being usable, overriding the business-wide
+   * duration in settings.
+   *
+   * Null is not "never" — it means "use the duration", which may itself be
+   * off. Set only when a manager has extended (or shortened) this one
+   * package. See packageExpiry in lib/packages.ts.
+   */
+  expires_on?: string | null; // "YYYY-MM-DD"
   created_at?: string;
 }
 
