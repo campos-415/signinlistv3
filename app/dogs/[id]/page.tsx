@@ -45,7 +45,7 @@ import {
   Vaccination,
   WalkLog,
 } from "@/types";
-import { Balance, loadBalanceFor } from "@/lib/billing";
+import { Balance, loadBalanceFor, signinChargeKey } from "@/lib/billing";
 import { Enrollment } from "@/types";
 import {
   ageFromBirthdate,
@@ -683,6 +683,7 @@ function DogProfile() {
       addons: string[];
       pickupWindow?: string | null;
       price?: number | null;
+      pickUpId?: string | null;
     }[] = [];
     let open: SignInRecord | null = null;
     for (const r of ascending) {
@@ -701,6 +702,7 @@ function DogProfile() {
       const anchor = drop ?? pick!;
       return {
         key: `${anchor.id}-${pick?.id ?? "open"}`,
+        pickUpId: pick?.id ?? null,
         date: (anchor.created_at ?? "").slice(0, 10),
         service: drop?.service_type ?? pick?.service_type ?? "—",
         dropOff: drop?.created_at,
@@ -711,6 +713,39 @@ function DogProfile() {
       };
     }
   }, [signins]);
+
+  /**
+   * What THIS dog has run up, and the lines behind each visit.
+   *
+   * Charges can be attributed to a dog because every sign-in carries one.
+   * Payments cannot: a household pays one bill that settles the oldest charge
+   * first, across every dog on the number, so there is no honest way to say
+   * what a single dog "owes". This is therefore what the dog has COST, not
+   * what is outstanding against it — the wording on screen says so, because
+   * the difference is exactly what someone would misread.
+   *
+   * The lines come from the household balance already loaded, keyed by
+   * pick-up id, so nothing is recomputed here.
+   */
+  const dogMoney = useMemo(() => {
+    const byKey = new Map(
+      (balance?.charges ?? [])
+        .filter((c) => c.kind === "visit")
+        .map((c) => [c.key, c] as const)
+    );
+    const items = new Map<string, { label: string; amount: number }[]>();
+    let total = 0;
+    let priced = 0;
+    for (const v of visits) {
+      if (!v.pickUpId) continue;
+      const charge = byKey.get(signinChargeKey(v.pickUpId));
+      if (!charge) continue;
+      total += charge.amount;
+      priced += 1;
+      if (charge.items?.length) items.set(v.pickUpId, charge.items);
+    }
+    return { total, priced, items };
+  }, [balance, visits]);
 
   // Walks from both sources: daycare walks live on the sign-in row, boarding
   // walks in walk_logs keyed by stay + day + slot.
@@ -1575,13 +1610,48 @@ function DogProfile() {
                   </td>
                   <td className="py-2 font-medium text-emerald-700">
                     {v.price != null ? `$${v.price.toFixed(2)}` : "—"}
+                    {/* What made up the amount, when it could be rebuilt to
+                        the cent — see visitItems in lib/billing.ts. */}
+                    {v.pickUpId && dogMoney.items.get(v.pickUpId) && (
+                      <span className="mt-0.5 block font-normal">
+                        {dogMoney.items.get(v.pickUpId)!.map((it, i) => (
+                          <span key={i} className="block text-[10px] leading-tight text-ink-3">
+                            {it.label} ${it.amount.toFixed(2)}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
               {visits.length === 0 && <EmptyRow colSpan={6}>No visits on file.</EmptyRow>}
+              {dogMoney.priced > 0 && (
+                <tr className="border-t border-line">
+                  <td colSpan={5} className="py-2 pr-3 text-xs text-ink-3">
+                    Charged for {dog.dog_name} across {dogMoney.priced} visit
+                    {dogMoney.priced === 1 ? "" : "s"}
+                  </td>
+                  <td className="py-2 font-semibold text-ink">${dogMoney.total.toFixed(2)}</td>
+                </tr>
+              )}
             </tbody>
           </CardTable>
         </ScrollBox>
+        {dogMoney.priced > 0 && (
+          // Said plainly, because it is the thing someone would misread. A
+          // charge belongs to a dog; a PAYMENT belongs to the household and
+          // settles the oldest charge first across every dog on the number.
+          // So this total is what this dog has cost, never what it owes —
+          // there is no honest per-dog outstanding figure to show.
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+            What {dog.dog_name} has cost, not what is owed. One bill covers the whole household
+            and payments settle the oldest charge first, whichever dog it belonged to —{" "}
+            <Link href={ownerHref(dog.phone)} className="text-accent-600 hover:underline">
+              see the household balance
+            </Link>
+            .
+          </p>
+        )}
       </Panel>
 
       {/* Walks */}
