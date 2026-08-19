@@ -41,6 +41,14 @@ export interface DailyTotals {
   // overstate what the business earned to whoever does its books.
   tipsTotal: number;
   tipsCount: number;
+  /**
+   * Who tipped, so the figure can be checked rather than just trusted.
+   *
+   * A total alone cannot be reconciled against a Square payout, and staff
+   * dividing a pool have no way to confirm a tip was captured at all. Phone
+   * rather than name because that is what a payment carries.
+   */
+  tipsBy: { phone: string; tip: number; method?: string | null; note?: string | null }[];
 }
 
 
@@ -330,6 +338,10 @@ export function computeDailyTotals({
     // Summed here, kept out of every figure above. See DailyTotals.
     tipsTotal: (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
     tipsCount: (payments ?? []).filter((p) => (p.tip ?? 0) > 0).length,
+    tipsBy: (payments ?? [])
+      .filter((p) => (p.tip ?? 0) > 0)
+      .map((p) => ({ phone: p.phone, tip: p.tip ?? 0, method: p.method, note: p.note }))
+      .sort((a, b) => b.tip - a.tip),
   };
 }
 export interface Category {

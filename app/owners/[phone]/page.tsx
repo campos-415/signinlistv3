@@ -706,6 +706,16 @@ function OwnerProfile() {
                         <span className="flex items-center gap-2 whitespace-nowrap">
                           <span className="font-medium text-emerald-700">
                             ${p.amount.toFixed(2)}
+                            {/* Shown beside the amount, never added to it.
+                                Without this a recorded tip was invisible
+                                outside the day report total, so there was no
+                                way to check one had been captured or to
+                                reconcile against a Square payout. */}
+                            {(p.tip ?? 0) > 0 && (
+                              <span className="ml-1 font-normal text-violet-600">
+                                +${(p.tip ?? 0).toFixed(2)} tip
+                              </span>
+                            )}
                           </span>
                           <button
                             onClick={() => deletePayment(p)}

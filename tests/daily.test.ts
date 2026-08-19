@@ -43,6 +43,26 @@ describe("computeDailyTotals — tips are held, not earned", () => {
     expect(totals.tipsCount).toBe(0);
   });
 
+  it("names who tipped, biggest first, so the pool can be checked", () => {
+    // A total alone cannot be reconciled against a Square payout, and staff
+    // dividing a pool cannot confirm a tip was captured at all.
+    const totals = computeDailyTotals({
+      ...emptyDay,
+      payments: [
+        { phone: "(415) 555-0001", amount: 50, tip: 5, method: "card", paid_on: "2026-08-16" },
+        { phone: "(415) 555-0002", amount: 70, tip: 20, method: "cash", paid_on: "2026-08-16" },
+        { phone: "(415) 555-0003", amount: 30, paid_on: "2026-08-16" },
+      ],
+    } as never);
+
+    expect(totals.tipsBy.map((t) => t.phone)).toEqual(["(415) 555-0002", "(415) 555-0001"]);
+    expect(totals.tipsBy[0].tip).toBe(20);
+    // The untipped payment is absent, not listed as zero.
+    expect(totals.tipsBy).toHaveLength(2);
+    // And the list still adds up to the headline figure.
+    expect(totals.tipsBy.reduce((s, t) => s + t.tip, 0)).toBe(totals.tipsTotal);
+  });
+
   it("ignores a payment carrying no tip at all", () => {
     const totals = computeDailyTotals({
       ...emptyDay,

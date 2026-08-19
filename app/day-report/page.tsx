@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { todayKey } from "@/lib/dates";
 import { Category, DailyInput, computeDailyTotals, loadDailyData } from "@/lib/daily";
 import Link from "next/link";
+import { ownerHref } from "@/lib/dogs";
 import StaffGate from "@/components/StaffGate";
 import StaffNav from "@/components/StaffNav";
 import DateField from "@/components/DateField";
@@ -128,6 +129,7 @@ function Daily() {
     scheduledToArrive,
     tipsTotal,
     tipsCount,
+    tipsBy,
   } = totals;
   // const {
   //   revenue: categories,
@@ -237,6 +239,26 @@ function Daily() {
           <span className="font-medium">💜 ${tipsTotal.toFixed(2)} in tips</span> across{" "}
           {tipsCount} payment{tipsCount === 1 ? "" : "s"} — for staff, and not counted in the
           revenue above.
+          {/* Named, not just totalled. A pool nobody can itemise cannot be
+              checked against a Square payout, and staff dividing it have no
+              way to confirm a tip was captured. Manager-and-owner only, like
+              the rest of this page. */}
+          <ul className="mt-2 space-y-0.5 border-t border-violet-200 pt-2">
+            {tipsBy.map((t, i) => (
+              <li key={i} className="flex items-baseline justify-between gap-3 text-xs">
+                <Link
+                  href={ownerHref(t.phone)}
+                  className="font-medium text-violet-800 hover:underline"
+                >
+                  {t.phone}
+                </Link>
+                <span className="whitespace-nowrap">
+                  {t.method && <span className="mr-2 text-violet-700/70">{t.method}</span>}
+                  ${t.tip.toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
