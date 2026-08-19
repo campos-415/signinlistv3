@@ -55,14 +55,6 @@ export interface DailyTotals {
     method?: string | null;
     note?: string | null;
   }[];
-  /**
-   * Revenue plus tips — everything that came through the till.
-   *
-   * Kept separate from revenueTotal rather than replacing it, because the two
-   * answer different questions: revenue is what the business earned, this is
-   * what was handled. Reconciling a Square payout needs the second.
-   */
-  totalWithTips: number;
 }
 
 
@@ -266,6 +258,23 @@ export function computeDailyTotals({
       count: (packagesSold ?? []).length,
       color: "#8B5CF6",
     },
+    // Tips, as a category of their own.
+    //
+    // They arrive in the business's own Square deposit, so the day's takings
+    // are wrong without them — which is why they are counted here rather than
+    // reported alongside. They keep a separate line, and the section below
+    // names who tipped, because what the business EARNED and what it is
+    // holding for staff are still different questions at payout time.
+    //
+    // Note what this does NOT change: a tip never settles a balance. That
+    // lives in lib/billing.ts, which does not read this field at all.
+    {
+      key: "tips",
+      label: "Tips",
+      amount: (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
+      count: (payments ?? []).filter((p) => (p.tip ?? 0) > 0).length,
+      color: "#A78BFA",
+    },
   ];
 
   // What the day holds, counted rather than priced. Per-day things (walks,
@@ -353,10 +362,6 @@ export function computeDailyTotals({
     // Summed here, kept out of every figure above. See DailyTotals.
     tipsTotal: (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
     tipsCount: (payments ?? []).filter((p) => (p.tip ?? 0) > 0).length,
-    // Revenue as booked, plus the tips handled on top of it.
-    totalWithTips:
-      revenue.reduce((sum, c) => sum + c.amount, 0) +
-      (payments ?? []).reduce((sum, p) => sum + (p.tip ?? 0), 0),
     tipsBy: (payments ?? [])
       .filter((p) => (p.tip ?? 0) > 0)
       .map((p) => ({

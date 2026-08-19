@@ -130,7 +130,6 @@ function Daily() {
     tipsTotal,
     tipsCount,
     tipsBy,
-    totalWithTips,
   } = totals;
   // const {
   //   revenue: categories,
@@ -238,16 +237,8 @@ function Daily() {
       {tipsTotal > 0 && (
         <div className="mb-5 rounded-2xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900">
           <span className="font-medium">💜 ${tipsTotal.toFixed(2)} in tips</span> across{" "}
-          {tipsCount} payment{tipsCount === 1 ? "" : "s"} — for staff, and not counted in the
-          revenue above.{" "}
-          {/* The reconciliation figure. Revenue answers "what did the business
-              earn"; this answers "what came through the till", which is what a
-              Square payout has to be checked against. Both, because they are
-              different questions and using one for the other overstates
-              income. */}
-          <span className="font-medium">
-            ${totalWithTips.toFixed(2)} revenue + tips.
-          </span>
+          {tipsCount} payment{tipsCount === 1 ? "" : "s"} — counted in revenue above, on
+          its own line, and owed to staff at payout.
           {/* Named, not just totalled. A pool nobody can itemise cannot be
               checked against a Square payout, and staff dividing it have no
               way to confirm a tip was captured. Manager-and-owner only, like

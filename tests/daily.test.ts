@@ -12,12 +12,12 @@ const emptyDay = {
   selectedDate: "2026-08-16",
 };
 
-describe("computeDailyTotals — tips are held, not earned", () => {
-  // A tip arrives on the business's card reader and belongs to whoever
-  // worked that day. Counting it as revenue overstates income to the
-  // accountant and hides what is owed to staff, so it is totalled and kept
-  // out of every other figure.
-  it("totals tips without adding them to revenue or charges", () => {
+describe("computeDailyTotals — tips", () => {
+  // Counted in revenue, because the money lands in the business's own
+  // deposit and the day's takings are wrong without it. Kept as its own
+  // category so the payout stays separable, and kept out of chargedTotal,
+  // which is what pick-ups actually billed.
+  it("totals tips and keeps them out of what was charged", () => {
     const totals = computeDailyTotals({
       ...emptyDay,
       payments: [
@@ -31,7 +31,9 @@ describe("computeDailyTotals — tips are held, not earned", () => {
     // Two of the three carried one. An untipped payment is not a tip of
     // zero — it should not dilute the count staff divide by.
     expect(totals.tipsCount).toBe(2);
-    expect(totals.revenueTotal).toBe(0);
+    // In revenue at the business's instruction; never in chargedTotal,
+    // because a tip is not a charge against anybody.
+    expect(totals.revenueTotal).toBe(15);
     expect(totals.chargedTotal).toBe(0);
   });
 
@@ -72,16 +74,18 @@ describe("computeDailyTotals — tips are held, not earned", () => {
     expect(totals.tipsBy[0].name).toBe("Rivera");
   });
 
-  it("totals revenue plus tips without touching revenue itself", () => {
-    // Two different questions: what the business earned, and what came
-    // through the till. A payout is reconciled against the second.
+  it("counts tips in revenue, on a line of their own", () => {
+    // The money lands in the business's own deposit, so the day's takings are
+    // wrong without it. It keeps its own category so payout stays separable.
     const totals = computeDailyTotals({
       ...emptyDay,
       payments: [{ phone: "a", amount: 50, tip: 15, paid_on: "2026-08-16" }],
     } as never);
-    expect(totals.revenueTotal).toBe(0);
-    expect(totals.totalWithTips).toBe(totals.revenueTotal + totals.tipsTotal);
-    expect(totals.totalWithTips).toBe(15);
+    const tips = totals.revenue.find((c) => c.key === "tips");
+    expect(tips?.amount).toBe(15);
+    expect(tips?.count).toBe(1);
+    expect(totals.revenueTotal).toBe(15);
+    expect(totals.tipsTotal).toBe(15);
   });
 
   it("ignores a payment carrying no tip at all", () => {
