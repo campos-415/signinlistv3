@@ -8,7 +8,8 @@
 import { dateKey as localDateKey } from "@/lib/dates";
 import { getSupabase } from "@/lib/supabase";
 import { packageBillingPickUp } from "@/lib/dogs";
-import { Package, Payment, SignInRecord } from "@/types";
+import { BathSize, Package, Payment, SignInRecord } from "@/types";
+import { estimatePrice } from "@/lib/pricing";
 
 export interface ChargeLine {
   key: string;
@@ -16,6 +17,20 @@ export interface ChargeLine {
   label: string;
   amount: number;
   kind: "visit" | "package";
+  /**
+   * What made up the amount — "Daycare (half day)", "Bath (M)" and so on.
+   *
+   * Rebuilt rather than stored. estimatePrice produces this at sign-out and
+   * only the TOTAL is saved, so the alternative was a column and a migration
+   * that would explain nothing about the visits already on file. Every input
+   * survives on the two sign-in rows, so the sum can be recomputed from them.
+   *
+   * Undefined when it could not be reconstructed to the cent. That is the
+   * whole discipline here: a breakdown that disagrees with what the client
+   * was charged is worse than no breakdown, because it invites staff to
+   * "correct" a bill that was right.
+   */
+  items?: { label: string; amount: number }[];
 }
 
 export interface Balance {
@@ -40,6 +55,80 @@ function foldedIntoAVisit(pkg: Package, pickUps: SignInRecord[]): boolean {
   return packageBillingPickUp(pkg, pickUps) !== null;
 }
 
+
+/**
+ * The lines behind one visit charge, or undefined if they cannot be proved.
+ *
+ * The drop-off row holds the add-ons, the bath size and the start time; the
+ * pick-up holds the end time and the price. What neither records is whether a
+ * package covered the base rate or the walk — that lived in memory at
+ * sign-out. So rather than guess, this tries each combination and keeps the
+ * one whose total matches what was actually charged. A single reconciling
+ * answer is almost certainly the real one, and if nothing reconciles the
+ * caller shows no breakdown at all.
+ */
+function visitItems(
+  pickUp: SignInRecord,
+  signins: SignInRecord[],
+  packages: Package[]
+): { label: string; amount: number }[] | undefined {
+  if (pickUp.price == null || !pickUp.created_at) return undefined;
+
+  // The drop-off this pick-up closes: the latest one for the same dog before
+  // it. Matched on dog_id where both have one, falling back to the name for
+  // rows written before dog_id was stored.
+  const end = new Date(pickUp.created_at);
+  const drop = signins
+    .filter(
+      (s) =>
+        s.action === "drop_off" &&
+        !!s.created_at &&
+        new Date(s.created_at) <= end &&
+        (s.dog_id && pickUp.dog_id
+          ? s.dog_id === pickUp.dog_id
+          : (s.dog_name ?? "").trim().toLowerCase() ===
+            (pickUp.dog_name ?? "").trim().toLowerCase())
+    )
+    .sort((a, b) => new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime())[0];
+  if (!drop?.created_at) return undefined;
+
+  // A package sold on this visit was folded into its price, so it has to go
+  // back in or the total can never reconcile.
+  const sold = packages
+    .filter((pkg) => pkg.price != null && packageBillingPickUp(pkg, [pickUp])?.id === pickUp.id)
+    .map((pkg) => ({
+      days: pkg.total_days,
+      price: pkg.price ?? 0,
+      unit: (pkg.kind ?? "daycare") === "walk" ? "walks" : "days",
+    }));
+
+  const service = (drop.service_type ?? pickUp.service_type ?? "daycare") as
+    | "daycare"
+    | "boarding"
+    | "meet_greet";
+
+  for (const baseCovered of [false, true]) {
+    for (const walkCovered of [false, true]) {
+      for (const additionalDog of [false, true]) {
+        const est = estimatePrice(
+          service,
+          new Date(drop.created_at),
+          end,
+          drop.addons ?? [],
+          baseCovered,
+          (drop.bath_size as BathSize | null) ?? null,
+          true,
+          sold.length ? sold : null,
+          walkCovered,
+          additionalDog
+        );
+        if (est && Math.abs(est.amount - pickUp.price) < 0.01) return est.breakdown;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function computeBalance(
   signins: SignInRecord[],
   packages: Package[],
@@ -57,6 +146,7 @@ export function computeBalance(
       label: `${p.dog_name} — ${String(p.service_type ?? "visit").replace("_", " ")}`,
       amount: p.price,
       kind: "visit",
+      items: visitItems(p, signins, packages),
     });
   }
 

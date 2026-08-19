@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { computeBalance, signinChargeKey, unpaidCharges } from "@/lib/billing";
 import { Package, Payment, SignInRecord } from "@/types";
+import { DEFAULT_SETTINGS } from "@/lib/settings";
 
 // The household balance. One family pays one bill covering every dog on the
 // number, and payments settle the OLDEST charge first — which is the rule that
@@ -139,5 +140,62 @@ describe("computeBalance — a tip is not a payment", () => {
     );
     expect(balance.paid).toBe(0);
     expect(balance.outstanding).toBe(50);
+  });
+});
+
+
+describe("computeBalance — itemising a charge", () => {
+  // The breakdown is rebuilt from the two sign-in rows, because only the
+  // total was ever saved. The rule that makes that safe: show it only when
+  // it reconciles to the cent. A breakdown that disagrees with the bill is
+  // worse than none — it invites staff to "correct" a charge that was right.
+  const drop = (day: string, addons: string[] = [], bath: string | null = null) =>
+    ({
+      id: `d-${day}`,
+      dog_id: "dog-1",
+      dog_name: "Sweeper",
+      phone: "(415) 555-0000",
+      action: "drop_off",
+      service_type: "daycare",
+      addons,
+      bath_size: bath,
+      created_at: `${day}T09:00:00.000Z`,
+    }) as unknown as SignInRecord;
+
+  const out = (day: string, price: number | null) =>
+    ({
+      id: `p-${day}`,
+      dog_id: "dog-1",
+      dog_name: "Sweeper",
+      phone: "(415) 555-0000",
+      action: "pick_up",
+      service_type: "daycare",
+      price,
+      created_at: `${day}T17:00:00.000Z`,
+    }) as unknown as SignInRecord;
+
+  it("breaks a daycare day with a bath into its lines", () => {
+    const P = DEFAULT_SETTINGS.pricing;
+    const total = P.daycareFullDay + P.bath.M;
+    const b = computeBalance([drop("2026-08-16", ["bath"], "M"), out("2026-08-16", total)], [], []);
+    const items = b.charges[0].items;
+    expect(items).toBeDefined();
+    expect(items!.reduce((s, i) => s + i.amount, 0)).toBeCloseTo(total, 2);
+    expect(items!.some((i) => /Bath \(M\)/.test(i.label))).toBe(true);
+  });
+
+  it("offers no breakdown when the stored price cannot be reproduced", () => {
+    // A hand-edited price, or one from pricing that has since changed. The
+    // charge still shows; only the itemisation is withheld.
+    const b = computeBalance([drop("2026-08-16"), out("2026-08-16", 12345)], [], []);
+    expect(b.charges[0].amount).toBe(12345);
+    expect(b.charges[0].items).toBeUndefined();
+  });
+
+  it("offers no breakdown when the drop-off is missing", () => {
+    // Imported history, or a pick-up whose drop-off was deleted.
+    const b = computeBalance([out("2026-08-16", 70)], [], []);
+    expect(b.charges).toHaveLength(1);
+    expect(b.charges[0].items).toBeUndefined();
   });
 });

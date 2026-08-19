@@ -639,13 +639,48 @@ function OwnerProfile() {
                 ) : (
                   <ul className="space-y-1 text-xs">
                     {balance.charges.map((c) => (
-                      <li key={c.key} className="flex items-baseline justify-between gap-3">
-                        <span className="text-ink-2">
-                          <span className="text-ink-3">{c.date}</span> {c.label}
-                        </span>
-                        <span className="whitespace-nowrap font-medium text-ink-2">
-                          ${c.amount.toFixed(2)}
-                        </span>
+                      <li key={c.key}>
+                        {/* Expandable only when the lines were reconstructed
+                            and add up to the cent — see visitItems. A charge
+                            whose make-up could not be proved stays a plain
+                            row rather than offering a breakdown that might
+                            disagree with the bill. */}
+                        {c.items?.length ? (
+                          <details className="group">
+                            <summary className="flex cursor-pointer items-baseline justify-between gap-3 hover:text-ink">
+                              <span className="text-ink-2">
+                                <span className="text-ink-3">{c.date}</span> {c.label}
+                                <span className="ml-1 text-ink-3 group-open:hidden">▸</span>
+                                <span className="ml-1 hidden text-ink-3 group-open:inline">▾</span>
+                              </span>
+                              <span className="whitespace-nowrap font-medium text-ink-2">
+                                ${c.amount.toFixed(2)}
+                              </span>
+                            </summary>
+                            <ul className="mb-1 ml-3 mt-1 space-y-0.5 border-l border-line-soft pl-3">
+                              {c.items.map((it, i) => (
+                                <li
+                                  key={i}
+                                  className="flex items-baseline justify-between gap-3 text-[11px] text-ink-3"
+                                >
+                                  <span>{it.label}</span>
+                                  <span className="whitespace-nowrap">
+                                    ${it.amount.toFixed(2)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : (
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="text-ink-2">
+                              <span className="text-ink-3">{c.date}</span> {c.label}
+                            </span>
+                            <span className="whitespace-nowrap font-medium text-ink-2">
+                              ${c.amount.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
